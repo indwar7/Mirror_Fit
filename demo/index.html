@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LUCY AI Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
+  header { background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 20px 40px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 28px; font-weight: 700; }
+  header span { background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 20px; font-size: 13px; }
+  .tabs { display: flex; gap: 4px; padding: 20px 40px 0; }
+  .tab { padding: 10px 24px; border-radius: 8px 8px 0 0; cursor: pointer; background: #1a1a1a; color: #999; font-size: 15px; border: none; transition: all 0.2s; }
+  .tab.active { background: #1e1e2e; color: #fff; }
+  .panel { display: none; padding: 30px 40px; background: #1e1e2e; margin: 0 40px; border-radius: 0 12px 12px 12px; }
+  .panel.active { display: block; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .card { background: #16213e; border-radius: 12px; padding: 20px; }
+  .card h3 { margin-bottom: 12px; font-size: 13px; color: #a78bfa; text-transform: uppercase; letter-spacing: 1px; }
+  .upload-area { border: 2px dashed #333; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; position: relative; min-height: 180px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; transition: all 0.2s; }
+  .upload-area:hover { border-color: #6366f1; }
+  .upload-area input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .upload-area img { max-width: 100%; max-height: 160px; border-radius: 6px; object-fit: cover; }
+  .placeholder { color: #555; font-size: 14px; pointer-events: none; }
+  .result-box { border: 2px solid #2a2a3e; border-radius: 8px; min-height: 180px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .result-box img, .result-box canvas { max-width: 100%; border-radius: 6px; }
+  video { width: 100%; border-radius: 8px; background: #000; display: block; }
+  canvas { width: 100%; border-radius: 8px; background: #111; display: block; }
+  .btn { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; padding: 13px 28px; border-radius: 8px; font-size: 15px; cursor: pointer; width: 100%; margin-top: 14px; transition: opacity 0.2s; }
+  .btn:hover { opacity: 0.9; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.stop { background: #dc2626; }
+  .btn.on { background: #16a34a; }
+  .status { margin-top: 10px; padding: 10px 14px; border-radius: 6px; font-size: 13px; text-align: center; display: none; }
+  .status.loading { background: rgba(99,102,241,0.2); color: #a78bfa; display: block; }
+  .status.success { background: rgba(34,197,94,0.2); color: #4ade80; display: block; }
+  .status.error { background: rgba(239,68,68,0.2); color: #f87171; display: block; }
+  .ws-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: #999; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
+  .dot.on { background: #22c55e; }
+  .info-bar { background: #16213e; border-radius: 8px; padding: 12px 16px; margin-top: 20px; display: flex; gap: 24px; flex-wrap: wrap; }
+  .info-bar span { font-size: 12px; color: #555; }
+  .info-bar span b { color: #a78bfa; font-family: monospace; font-weight: 400; }
+  .cat-btn { background:#1a1a2e; color:#888; border:1px solid #333; padding:5px 14px; border-radius:20px; font-size:12px; cursor:pointer; transition:all 0.2s; }
+  .cat-btn.active { background:#6366f1; color:#fff; border-color:#6366f1; }
+  .avatar-card { border-radius:10px; overflow:hidden; cursor:pointer; border:2px solid transparent; transition:all 0.2s; position:relative; aspect-ratio:1; }
+  .avatar-card:hover { border-color:#6366f1; transform:scale(1.05); }
+  .avatar-card.selected { border-color:#a78bfa; box-shadow:0 0 12px rgba(167,139,250,0.5); }
+  .avatar-card img { width:100%; height:100%; object-fit:cover; display:block; }
+  .avatar-card span { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.65); font-size:10px; color:#fff; text-align:center; padding:3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LUCY AI</h1>
+  <span>Live Demo</span>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('faceswap')">Face Swap (Static)</button>
+  <button class="tab" onclick="switchTab('liveswap')">Live Face Swap</button>
+  <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
+</div>
+
+<!-- STATIC FACE SWAP -->
+<div class="panel active" id="faceswap">
+  <div class="grid3">
+    <div class="card">
+      <h3>Source Face</h3>
+      <div class="upload-area">
+        <input type="file" accept="image/*" onchange="previewFile(this,'sp','sph')">
+        <img id="sp" style="display:none">
+        <div class="placeholder" id="sph">📁 Upload face to use</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Target Photo</h3>
+      <div class="upload-area">
+        <input type="file" accept="image/*" onchange="previewFile(this,'tp','tph')">
+        <img id="tp" style="display:none">
+        <div class="placeholder" id="tph">📁 Upload target photo</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Result</h3>
+      <div class="result-box">
+        <img id="swapResult" style="display:none">
+        <span id="swapPh" style="color:#555;font-size:13px">Result appears here</span>
+      </div>
+    </div>
+  </div>
+  <button class="btn" id="swapBtn" onclick="doSwap()">Swap Face</button>
+  <div id="swapStatus" class="status"></div>
+  <div class="info-bar">
+    <span>API <b>http://13.233.133.130:7860/face-swap</b></span>
+    <span>GPU <b>NVIDIA A10G 24GB</b></span>
+  </div>
+</div>
+
+<!-- LIVE FACE SWAP -->
+<div class="panel" id="liveswap">
+
+  <!-- Avatar Picker -->
+  <div class="card" style="margin-bottom:20px">
+    <h3>Choose a Face</h3>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <button class="cat-btn active" onclick="filterAvatars('all',this)">All</button>
+      <button class="cat-btn" onclick="filterAvatars('Celebrity',this)">Celebrity</button>
+      <button class="cat-btn" onclick="filterAvatars('AI Avatar',this)">AI Avatar</button>
+      <button class="cat-btn" onclick="filterAvatars('Anime',this)">Anime</button>
+      <button class="cat-btn" onclick="filterAvatars('Fantasy',this)">Fantasy</button>
+    </div>
+    <div id="avatarGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:10px"></div>
+    <div style="margin-top:12px;border-top:1px solid #2a2a3e;padding-top:12px">
+      <p style="font-size:12px;color:#555;margin-bottom:8px">Or upload your own:</p>
+      <div class="upload-area" style="min-height:60px;padding:10px">
+        <input type="file" accept="image/*" onchange="previewFile(this,'lsp','lsph'); setLiveSourceFile(this)">
+        <img id="lsp" style="display:none;max-height:50px">
+        <div class="placeholder" id="lsph" style="font-size:12px">📁 Upload any face</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h3>Your Camera</h3>
+      <video id="liveVideo" autoplay muted playsinline></video>
+      <button class="btn" id="liveCamBtn" onclick="startLiveCamera()">Start Camera</button>
+    </div>
+    <div class="card">
+      <h3>
+        <div class="ws-row">
+          <div class="dot" id="lsDot"></div>
+          <span id="lsStatusText">Not connected</span>
+        </div>
+        Live Result
+      </h3>
+      <canvas id="liveCanvas" height="480"></canvas>
+      <button class="btn" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
+      <div id="liveStatus" class="status"></div>
+    </div>
+  </div>
+  <div class="info-bar">
+    <span>WebSocket <b>ws://13.233.133.130:7860/ws/live-swap</b></span>
+    <span>GPU <b>NVIDIA A10G — ~0.5s/frame</b></span>
+  </div>
+</div>
+
+<!-- LIVE TRY-ON -->
+<div class="panel" id="tryon">
+  <div class="grid2">
+    <div>
+      <div class="card" style="margin-bottom:16px">
+        <h3>Garment / Clothing</h3>
+        <div class="upload-area">
+          <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph'); setGarment(this)">
+          <img id="gp" style="display:none; max-height:140px">
+          <div class="placeholder" id="gph">Upload shirt / jacket / dress</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Your Camera</h3>
+        <video id="tryonVideo" autoplay muted playsinline></video>
+        <button class="btn" id="tryonCamBtn" onclick="startTryOnCamera()">Start Camera</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>
+        <div class="ws-row">
+          <div class="dot" id="toDot"></div>
+          <span id="toStatusText">Not connected</span>
+        </div>
+        Live Result
+      </h3>
+      <canvas id="tryonCanvas" height="480"></canvas>
+      <button class="btn" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
+      <div id="tryonStatus" class="status"></div>
+    </div>
+  </div>
+  <div class="info-bar">
+    <span>WebSocket <b>ws://13.233.133.130:8000/ws/tryon</b></span>
+    <span>GPU <b>SD 1.5 img2img + LCM 2-step + TAESD · ~3-5fps · A10G</b></span>
+  </div>
+</div>
+
+<script>
+const FACE_API = 'http://13.233.133.130:7860';
+const TRYON_WS  = 'ws://13.233.133.130:8000/ws/tryon';
+const SWAP_WS   = 'ws://13.233.133.130:7860/ws/live-swap';
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+function switchTab(t) {
+  ['faceswap','liveswap','tryon'].forEach((id,i) => {
+    document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
+    document.getElementById(id).classList.toggle('active', id===t);
+  });
+}
+function previewFile(inp, imgId, phId) {
+  const f = inp.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = e => {
+    const img = document.getElementById(imgId);
+    img.src = e.target.result; img.style.display = 'block';
+    document.getElementById(phId).style.display = 'none';
+  };
+  r.readAsDataURL(f);
+}
+function setStatus(id, type, msg) {
+  const el = document.getElementById(id);
+  el.className = 'status ' + type;
+  el.textContent = msg;
+}
+function setDot(prefix, on) {
+  document.getElementById(prefix+'Dot').className = 'dot' + (on ? ' on' : '');
+  document.getElementById(prefix+'StatusText').textContent = on ? 'Connected' : 'Disconnected';
+}
+
+// Reusable off-screen canvases — one per feature, allocated once, never GC'd
+const _lsCvs = document.createElement('canvas');
+const _lsCtx = _lsCvs.getContext('2d');
+const _toCvs = document.createElement('canvas');
+const _toCtx = _toCvs.getContext('2d');
+
+// ─── Static Face Swap ─────────────────────────────────────────────────────────
+async function doSwap() {
+  const inputs = document.querySelectorAll('#faceswap .upload-area input');
+  const sf = inputs[0].files[0], tf = inputs[1].files[0];
+  if (!sf || !tf) { setStatus('swapStatus', 'error', 'Upload both images!'); return; }
+  document.getElementById('swapBtn').disabled = true;
+  setStatus('swapStatus', 'loading', 'Processing on GPU...');
+  const fd = new FormData();
+  fd.append('source', sf); fd.append('target', tf);
+  try {
+    const res = await fetch(`${FACE_API}/face-swap`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail);
+    const blob = await res.blob();
+    document.getElementById('swapResult').src = URL.createObjectURL(blob);
+    document.getElementById('swapResult').style.display = 'block';
+    document.getElementById('swapPh').style.display = 'none';
+    setStatus('swapStatus', 'success', 'Face swap complete!');
+  } catch(e) { setStatus('swapStatus', 'error', e.message); }
+  finally { document.getElementById('swapBtn').disabled = false; }
+}
+
+// ─── Avatar Picker ────────────────────────────────────────────────────────────
+let _allAvatars = [], _selectedAvatar = null;
+
+async function loadAvatars() {
+  try {
+    const res  = await fetch(`${FACE_API}/avatars`);
+    const data = await res.json();
+    _allAvatars = data.avatars;
+    renderAvatars(_allAvatars);
+  } catch(e) { console.warn('Avatar load failed:', e); }
+}
+
+function renderAvatars(list) {
+  const grid = document.getElementById('avatarGrid');
+  grid.innerHTML = list.map(a => `
+    <div class="avatar-card${_selectedAvatar===a.id?' selected':''}" id="av_${a.id}" onclick="selectAvatar('${a.id}')">
+      <img src="${FACE_API}${a.image_url}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%23333%22 width=%2280%22 height=%2280%22/><text fill=%22%23888%22 x=%2240%22 y=%2244%22 text-anchor=%22middle%22 font-size=%2212%22>${a.name[0]}</text></svg>'">
+      <span>${a.name}</span>
+    </div>`).join('');
+}
+
+function filterAvatars(cat, btn) {
+  document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderAvatars(cat === 'all' ? _allAvatars : _allAvatars.filter(a => a.category === cat));
+}
+
+async function selectAvatar(id) {
+  _selectedAvatar = id;
+  renderAvatars(document.querySelector('.cat-btn.active').textContent === 'All'
+    ? _allAvatars
+    : _allAvatars.filter(a => a.category === document.querySelector('.cat-btn.active').textContent));
+
+  // Fetch avatar image and set as live source
+  const res   = await fetch(`${FACE_API}/avatars/${id}/image`);
+  const blob  = await res.blob();
+  const reader = new FileReader();
+  reader.onload = e => {
+    liveSource = e.target.result.split(',')[1]; // raw base64
+    document.getElementById('lsp').src = e.target.result;
+    document.getElementById('lsp').style.display = 'block';
+    document.getElementById('lsph').style.display = 'none';
+    checkLiveReady();
+    setStatus('liveStatus', 'success', `${_allAvatars.find(a=>a.id===id).name} selected!`);
+  };
+  reader.readAsDataURL(blob);
+}
+
+function setLiveSourceFile(inp) {
+  _selectedAvatar = null;
+  document.querySelectorAll('.avatar-card').forEach(c => c.classList.remove('selected'));
+  const reader = new FileReader();
+  reader.onload = e => { liveSource = e.target.result.split(',')[1]; checkLiveReady(); };
+  reader.readAsDataURL(inp.files[0]);
+}
+
+// ─── Live Face Swap ────────────────────────────────────────────────────────────
+let liveStream = null, liveWs = null, liveSource = null, liveRunning = false;
+let liveLatestResult = null, liveRafId = null, liveSendTimer = null, liveResultTime = 0;
+
+function checkLiveReady() {
+  if (liveSource && liveStream) document.getElementById('liveSwapBtn').disabled = false;
+}
+loadAvatars();
+async function startLiveCamera() {
+  try {
+    liveStream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480 }, audio:false });
+    document.getElementById('liveVideo').srcObject = liveStream;
+    const btn = document.getElementById('liveCamBtn');
+    btn.textContent = 'Camera On ✓'; btn.className = 'btn on';
+    checkLiveReady();
+  } catch(e) { alert('Camera error: ' + e.message); }
+}
+function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
+
+function startLiveSwap() {
+  if (!liveSource) { setStatus('liveStatus','error','Select a face first!'); return; }
+  liveLatestResult = null;
+  liveWs = new WebSocket(SWAP_WS);
+  liveWs.onopen = () => {
+    setDot('ls', true);
+    liveWs.send(JSON.stringify({ type:'init', source_image: liveSource }));
+    document.getElementById('liveSwapBtn').textContent = 'Stop';
+    document.getElementById('liveSwapBtn').className = 'btn stop';
+    liveRunning = true;
+  };
+  liveWs.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ready') {
+      setStatus('liveStatus', 'success', 'Live swap active!');
+      _startLsRender(); _startLsTimer();
+      sendLiveFrame(); // kick off the first frame immediately
+    } else if (msg.type === 'result') {
+      const img = new Image();
+      img.onload = () => { liveLatestResult = img; liveResultTime = Date.now(); };
+      img.src = 'data:image/jpeg;base64,' + msg.image;
+      sendLiveFrame(); // chain: result received → immediately request next frame
+    } else if (msg.type === 'no_face') {
+      sendLiveFrame(); // no face detected → try again immediately
+    } else if (msg.type === 'error') {
+      setStatus('liveStatus', 'error', msg.message);
+    }
+  };
+  liveWs.onclose = () => { setDot('ls', false); _stopLsTimer(); _stopLsRender(); liveRunning = false; };
+  liveWs.onerror = () => { setStatus('liveStatus', 'error', 'Connection error — is the server running?'); stopLiveSwap(); };
+}
+function stopLiveSwap() {
+  if (liveWs) liveWs.close();
+  _stopLsTimer(); _stopLsRender();
+  liveRunning = false;
+  document.getElementById('liveSwapBtn').textContent = 'Start Live Swap';
+  document.getElementById('liveSwapBtn').className = 'btn';
+}
+function _startLsTimer() {
+  if (liveSendTimer) clearInterval(liveSendTimer);
+  liveSendTimer = setInterval(sendLiveFrame, 100); // backup timer — primary chain is result-driven
+}
+function _stopLsTimer() { if (liveSendTimer) { clearInterval(liveSendTimer); liveSendTimer = null; } }
+function _startLsRender() {
+  if (liveRafId) cancelAnimationFrame(liveRafId);
+  const canvas = document.getElementById('liveCanvas');
+  const video  = document.getElementById('liveVideo');
+  const ctx    = canvas.getContext('2d');
+  (function render() {
+    const vw = video.videoWidth || 480, vh = video.videoHeight || 480;
+    const sz = Math.min(vw, vh);
+    if (canvas.width !== sz || canvas.height !== sz) { canvas.width = sz; canvas.height = sz; }
+    if (liveLatestResult) {
+      ctx.drawImage(liveLatestResult, 0, 0, sz, sz);
+    } else if (video.readyState >= 2) {
+      ctx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
+    }
+    if (liveRunning) liveRafId = requestAnimationFrame(render);
+  })();
+}
+function _stopLsRender() { if (liveRafId) { cancelAnimationFrame(liveRafId); liveRafId = null; } }
+function sendLiveFrame() {
+  if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+  const video = document.getElementById('liveVideo');
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+  const sz = Math.min(vw, vh, 320); // cap at 320 — inswapper is 128px, no need for more
+  if (_lsCvs.width !== sz) { _lsCvs.width = sz; _lsCvs.height = sz; }
+  _lsCtx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
+  liveWs.send(JSON.stringify({ type:'frame', image: _lsCvs.toDataURL('image/jpeg', 0.80).split(',')[1] }));
+}
+
+// ─── Live Try-On ──────────────────────────────────────────────────────────────
+let toStream = null, toWs = null, toGarment = null, toRunning = false;
+let toLatestResult = null, toRafId = null, toSendTimer = null;
+
+function setGarment(inp) {
+  toGarment = inp.files[0];
+  // Enable as soon as garment uploaded — camera can be started anytime
+  if (toGarment) document.getElementById('tryonBtn').disabled = false;
+}
+function checkToReady() {
+  if (toGarment) document.getElementById('tryonBtn').disabled = false;
+}
+async function startTryOnCamera() {
+  try {
+    toStream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode:'user' }, audio:false });
+    document.getElementById('tryonVideo').srcObject = toStream;
+    const btn = document.getElementById('tryonCamBtn');
+    btn.textContent = 'Camera On ✓'; btn.className = 'btn on';
+    checkToReady();
+  } catch(e) { alert('Camera error: ' + e.message); }
+}
+function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
+
+function startTryOn() {
+  if (!toStream) { setStatus('tryonStatus', 'error', 'Pehle "Start Camera" click karo!'); return; }
+  if (!toGarment) { setStatus('tryonStatus', 'error', 'Pehle garment upload karo!'); return; }
+  toLatestResult = null;
+  toWs = new WebSocket(TRYON_WS);
+  toWs.onopen = () => {
+    setDot('to', true);
+    const r = new FileReader();
+    r.onload = e => toWs.send(JSON.stringify({ type:'init', garment_image: e.target.result.split(',')[1] }));
+    r.readAsDataURL(toGarment);
+    document.getElementById('tryonBtn').textContent = 'Stop';
+    document.getElementById('tryonBtn').className = 'btn stop';
+    toRunning = true;
+  };
+  toWs.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ready') {
+      setStatus('tryonStatus', 'success', 'Live try-on active');
+      _startToRender(); _startToTimer();
+      sendToFrame();
+    } else if (msg.type === 'result') {
+      const img = new Image();
+      img.onload = () => { toLatestResult = img; };
+      img.src = 'data:image/jpeg;base64,' + msg.image;
+      sendToFrame(); // chain — next frame immediately
+    } else if (msg.type === 'dropped') {
+      sendToFrame();
+    } else if (msg.type === 'error') {
+      setStatus('tryonStatus', 'error', msg.message);
+    }
+  };
+  toWs.onclose = () => { setDot('to', false); _stopToTimer(); _stopToRender(); toRunning = false; };
+  toWs.onerror = () => { setStatus('tryonStatus', 'error', 'Connection error — is the server running?'); stopTryOn(); };
+}
+function stopTryOn() {
+  if (toWs) toWs.close();
+  _stopToTimer(); _stopToRender();
+  toRunning = false;
+  document.getElementById('tryonBtn').textContent = 'Start Live Try-On';
+  document.getElementById('tryonBtn').className = 'btn';
+}
+function _startToTimer() {
+  if (toSendTimer) clearInterval(toSendTimer);
+  toSendTimer = setInterval(sendToFrame, 1500); // backup timer — primary chain is result-driven
+}
+function _stopToTimer() { if (toSendTimer) { clearInterval(toSendTimer); toSendTimer = null; } }
+function _startToRender() {
+  if (toRafId) cancelAnimationFrame(toRafId);
+  const canvas = document.getElementById('tryonCanvas');
+  const video  = document.getElementById('tryonVideo');
+  const ctx    = canvas.getContext('2d');
+  (function render() {
+    const vw = video.videoWidth || 480, vh = video.videoHeight || 480;
+    const sz = Math.min(vw, vh);
+    if (canvas.width !== sz || canvas.height !== sz) { canvas.width = sz; canvas.height = sz; }
+    if (toLatestResult) {
+      // Show server try-on result (person with garment)
+      ctx.drawImage(toLatestResult, 0, 0, sz, sz);
+    } else if (video.readyState >= 2) {
+      // Show live camera until first result arrives — canvas is never blank
+      ctx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
+    }
+    if (toRunning) toRafId = requestAnimationFrame(render);
+  })();
+}
+function _stopToRender() { if (toRafId) { cancelAnimationFrame(toRafId); toRafId = null; } }
+// Pause frame sending when tab is hidden — no point burning server GPU for an invisible tab
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (liveSendTimer) { clearInterval(liveSendTimer); liveSendTimer = null; }
+    if (toSendTimer)   { clearInterval(toSendTimer);   toSendTimer   = null; }
+  } else {
+    if (liveRunning) _startLsTimer();
+    if (toRunning)   _startToTimer();
+  }
+});
+
+function sendToFrame() {
+  if (!toWs || toWs.readyState !== WebSocket.OPEN) return;
+  const video = document.getElementById('tryonVideo');
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+  const sz = Math.min(vw, vh);
+  if (_toCvs.width !== sz) { _toCvs.width = sz; _toCvs.height = sz; }
+  _toCtx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
+  toWs.send(JSON.stringify({ type:'frame', image: _toCvs.toDataURL('image/jpeg', 0.85).split(',')[1] }));
+}
+</script>
+</body>
+</html>
