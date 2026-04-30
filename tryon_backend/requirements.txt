@@ -1,0 +1,35 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+websockets==12.0
+torch>=2.3.0
+torchvision>=0.18.0
+
+# diffusers with ControlNet extras (AnimateDiff + ControlNet pipelines included)
+diffusers[torch]>=0.29.0
+
+transformers>=4.41.2
+accelerate>=0.30.0
+peft>=0.11.0
+opencv-python-headless>=4.9.0.80
+Pillow>=10.3.0
+numpy>=1.26.4
+huggingface_hub>=0.23.2
+safetensors>=0.4.3
+mediapipe>=0.10.0
+
+# Phase 3 — DWPose body-pose conditioning via ControlNet
+# DWposeDetector + all pose/depth annotators in one package
+controlnet_aux>=0.0.7
+
+# Phase 2 — AnimateDiff video backbone (included in diffusers>=0.29 but listed explicitly)
+# AnimateDiffPipeline, MotionAdapter are part of diffusers — no extra package needed.
+# Install xformers separately for ~20% faster attention (optional):
+#   pip install xformers --index-url https://download.pytorch.org/whl/cu121
+
+# Flash Attention 2 (needs CUDA headers — install separately):
+#   pip install flash-attn --no-build-isolation
+
+# TensorRT (install from NVIDIA wheel matching your CUDA version):
+#   pip install tensorrt==8.6.1 --index-url https://pypi.ngc.nvidia.com
+#   pip install cuda-python
