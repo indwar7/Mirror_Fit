@@ -468,25 +468,19 @@ class TryOnModel:
     # ── Live geometric warp ───────────────────────────────────────────────────
 
     def _infer_live_geometric(self, person_image: Image.Image) -> Image.Image:
-        """
-        Perspective-warp garment onto body keypoints so it looks worn.
-        Shirt widens at shoulders, tapers at waist — natural fitted shape.
-        Moves with body in real-time, zero lag.
-        """
         garment = self._garment_cache
         if garment is None:
             return person_image
 
-        # Center-crop + resize to square
-        pw, ph = person_image.size
-        sq     = min(pw, ph)
+        pw, ph    = person_image.size
+        sq        = min(pw, ph)
         person_sq = person_image.crop(((pw-sq)//2, (ph-sq)//2,
                                         (pw+sq)//2, (ph+sq)//2))
         person_sq = person_sq.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
-        frame = np.array(person_sq)
-        H, W  = frame.shape[:2]
+        frame     = np.array(person_sq)
+        H, W      = frame.shape[:2]
 
-        # ── Detect face ───────────────────────────────────────────────────
+        # Face detection → dynamic torso placement
         gray  = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
             cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)
@@ -494,70 +488,45 @@ class TryOnModel:
 
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-            cx = fx + fw // 2
-
-            # Body keypoints derived from face
-            neck_y       = fy + fh                          # bottom of face = neck
-            shoulder_y   = neck_y + int(fh * 0.25)          # shoulders just below neck
-            shoulder_hw  = int(fw * 1.6)                    # half-shoulder width
-            waist_y      = min(H, neck_y + int(fh * 3.2))  # waist
-            waist_hw     = int(fw * 1.3)                    # waist slightly narrower
+            cx          = fx + fw // 2
+            top         = fy + fh
+            bottom      = min(H, top + int(fh * 3.2))
+            left        = max(0, cx - int(fw * 1.9))
+            right       = min(W, cx + int(fw * 1.9))
+            face_bottom = top
         else:
-            cx           = W // 2
-            neck_y       = int(H * 0.34)
-            shoulder_y   = int(H * 0.38)
-            shoulder_hw  = int(W * 0.38)
-            waist_y      = H
-            waist_hw     = int(W * 0.32)
+            top = int(H * 0.30); bottom = H
+            left = int(W * 0.05); right = int(W * 0.95)
+            face_bottom = top
 
-        # ── Perspective warp: shirt corners → body keypoints ─────────────
-        garment_arr = np.array(garment)      # already LIVE_SIZE × LIVE_SIZE
-        gh, gw      = garment_arr.shape[:2]
+        th = max(1, bottom - top)
+        tw = max(1, right  - left)
 
-        # Source: shirt image corners (leaving small border)
-        src = np.float32([
-            [gw * 0.05, gh * 0.00],   # left  collar
-            [gw * 0.95, gh * 0.00],   # right collar
-            [gw * 0.00, gh * 1.00],   # left  hem
-            [gw * 1.00, gh * 1.00],   # right hem
-        ])
+        # Resize shirt to torso area
+        shirt = np.array(garment.resize((tw, th), Image.LANCZOS))
 
-        # Destination: body keypoints on person frame
-        dst = np.float32([
-            [cx - shoulder_hw, shoulder_y],   # left  shoulder
-            [cx + shoulder_hw, shoulder_y],   # right shoulder
-            [cx - waist_hw,    waist_y   ],   # left  waist
-            [cx + waist_hw,    waist_y   ],   # right waist
-        ])
-
-        M          = cv2.getPerspectiveTransform(src, dst)
-        shirt_warp = cv2.warpPerspective(garment_arr, M, (W, H),
-                                          flags=cv2.INTER_LINEAR,
-                                          borderMode=cv2.BORDER_CONSTANT,
-                                          borderValue=(255, 255, 255))
-
-        # ── Warp alpha mask the same way ──────────────────────────────────
+        # Alpha: use real PNG alpha channel if available
         if self._garment_alpha is not None:
-            alpha_src  = self._garment_alpha  # (LIVE_SIZE, LIVE_SIZE) float32
+            alpha = cv2.resize(self._garment_alpha, (tw, th),
+                               interpolation=cv2.INTER_LINEAR)
         else:
-            g_gray     = cv2.cvtColor(garment_arr, cv2.COLOR_RGB2GRAY)
-            _, bg      = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
-            alpha_src  = (255 - bg).astype(np.float32) / 255.0
+            g_gray = cv2.cvtColor(shirt, cv2.COLOR_RGB2GRAY)
+            _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
+            alpha  = (255 - bg).astype(np.float32) / 255.0
 
-        alpha_warp = cv2.warpPerspective(alpha_src, M, (W, H),
-                                          flags=cv2.INTER_LINEAR,
-                                          borderMode=cv2.BORDER_CONSTANT,
-                                          borderValue=0.0)
-        alpha_warp = cv2.GaussianBlur(alpha_warp, (7, 7), 0)[:, :, np.newaxis]
+        alpha = cv2.GaussianBlur(alpha, (11, 11), 0)[:, :, np.newaxis]
 
-        # ── Blend shirt onto person — face stays 100% original ────────────
-        result = (shirt_warp.astype(np.float32) * alpha_warp
-                  + frame.astype(np.float32) * (1.0 - alpha_warp)).astype(np.uint8)
+        # Blend shirt onto torso region
+        result = frame.copy()
+        roi    = result[top:top+th, left:left+tw]
+        if roi.shape[:2] == (th, tw):
+            result[top:top+th, left:left+tw] = (
+                shirt.astype(np.float32) * alpha
+                + roi.astype(np.float32) * (1.0 - alpha)
+            ).astype(np.uint8)
 
-        # Restore face area — shirt should NEVER cover the face
-        face_bottom = neck_y
+        # Face always 100% original
         result[:face_bottom] = frame[:face_bottom]
-
         return Image.fromarray(result)
 
     # ── Tier 4: AnimateDiff video sequence inference ──────────────────────────
