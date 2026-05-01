@@ -35,7 +35,7 @@ _HERE          = pathlib.Path(__file__).parent
 _AVATAR_CACHE  = _HERE / "avatars_cache"
 _AVATAR_CACHE.mkdir(exist_ok=True)
 
-_INSWAPPER_PATH = str(_HERE / "inswapper_128.onnx")
+_INSWAPPER_PATH = str(_HERE / "models" / "models" / "inswapper_128.onnx")
 _CASCADE_PATH   = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
 # ─────────────────────────────────────────────────────────────────────────────
