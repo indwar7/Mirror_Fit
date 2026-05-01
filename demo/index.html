@@ -320,31 +320,49 @@ function filterAvatars(cat, btn) {
 
 async function selectAvatar(id) {
   _selectedAvatar = id;
-  renderAvatars(document.querySelector('.cat-btn.active').textContent === 'All'
-    ? _allAvatars
-    : _allAvatars.filter(a => a.category === document.querySelector('.cat-btn.active').textContent));
+  const activeBtn = document.querySelector('.cat-btn.active');
+  const activeCat = activeBtn ? activeBtn.textContent : 'All';
+  renderAvatars(activeCat === 'All' ? _allAvatars : _allAvatars.filter(a => a.category === activeCat));
 
-  // Fetch avatar image and set as live source
-  const res   = await fetch(`${FACE_API}/avatars/${id}/image`);
-  const blob  = await res.blob();
-  const reader = new FileReader();
-  reader.onload = e => {
-    liveSource = e.target.result.split(',')[1]; // raw base64
-    document.getElementById('lsp').src = e.target.result;
-    document.getElementById('lsp').style.display = 'block';
-    document.getElementById('lsph').style.display = 'none';
-    checkLiveReady();
-    const av = _allAvatars.find(a => a.id === id);
-    const name = av ? av.name : id;
-    setStatus('liveStatus', 'success', `${name} selected!`);
+  const av   = _allAvatars.find(a => a.id === id);
+  const name = av ? av.name : id;
+  setStatus('liveStatus', 'loading', `Loading ${name}...`);
 
-    // Show voice transform card and set avatar label
-    document.getElementById('voiceCard').style.display = 'block';
-    document.getElementById('voiceAvatarName').textContent = name;
-    // Reset voice UI when switching avatars
-    _resetVoiceUI();
-  };
-  reader.readAsDataURL(blob);
+  try {
+    // Try backend first, fall back to direct randomuser.me URL
+    let imgUrl = `${FACE_API}/avatars/${id}/image`;
+    let res    = await fetch(imgUrl);
+    if (!res.ok) throw new Error('backend fail');
+    const blob = await res.blob();
+    const reader = new FileReader();
+    reader.onload = e => _applyAvatarSource(e.target.result, name);
+    reader.readAsDataURL(blob);
+  } catch(e) {
+    // Fallback: load directly from randomuser.me
+    if (!av) { setStatus('liveStatus', 'error', 'Avatar not found'); return; }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      _applyAvatarSource(c.toDataURL('image/jpeg', 0.92), name);
+    };
+    img.onerror = () => setStatus('liveStatus', 'error', 'Could not load avatar image');
+    img.src = av.url;
+  }
+}
+
+function _applyAvatarSource(dataUrl, name) {
+  liveSource = dataUrl.split(',')[1];
+  document.getElementById('lsp').src = dataUrl;
+  document.getElementById('lsp').style.display = 'block';
+  document.getElementById('lsph').style.display = 'none';
+  checkLiveReady();
+  setStatus('liveStatus', 'success', `${name} selected — click Start Live Swap!`);
+  document.getElementById('voiceCard').style.display = 'block';
+  document.getElementById('voiceAvatarName').textContent = name;
+  _resetVoiceUI();
 }
 
 function setLiveSourceFile(inp) {
