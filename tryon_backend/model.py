@@ -489,14 +489,14 @@ class TryOnModel:
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
-            top         = fy + fh
-            bottom      = min(H, top + int(fh * 3.2))
-            left        = max(0, cx - int(fw * 1.9))
-            right       = min(W, cx + int(fw * 1.9))
-            face_bottom = top
+            top         = fy + fh - int(fh * 0.1)   # slight overlap with neck
+            bottom      = min(H, top + int(fh * 2.6))
+            left        = max(0, cx - int(fw * 1.3))
+            right       = min(W, cx + int(fw * 1.3))
+            face_bottom = fy + fh
         else:
-            top = int(H * 0.30); bottom = H
-            left = int(W * 0.05); right = int(W * 0.95)
+            top = int(H * 0.32); bottom = int(H * 0.88)
+            left = int(W * 0.15); right = int(W * 0.85)
             face_bottom = top
 
         th = max(1, bottom - top)
@@ -514,9 +514,18 @@ class TryOnModel:
             _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
             alpha  = (255 - bg).astype(np.float32) / 255.0
 
-        alpha = cv2.GaussianBlur(alpha, (11, 11), 0)[:, :, np.newaxis]
+        alpha = cv2.GaussianBlur(alpha, (11, 11), 0)
 
-        # Blend shirt onto torso region
+        # Darken edges of shirt slightly — depth cue makes it look worn not pasted
+        edge_shadow        = np.ones_like(alpha)
+        edge_shadow[:, :int(tw*0.08)]  *= np.linspace(0.6, 1.0, int(tw*0.08))
+        edge_shadow[:, -int(tw*0.08):] *= np.linspace(1.0, 0.6, int(tw*0.08))
+        shirt = np.clip(shirt.astype(np.float32) * edge_shadow[:, :, np.newaxis],
+                        0, 255).astype(np.uint8)
+
+        alpha = alpha[:, :, np.newaxis]
+
+        # Blend shirt onto torso
         result = frame.copy()
         roi    = result[top:top+th, left:left+tw]
         if roi.shape[:2] == (th, tw):
