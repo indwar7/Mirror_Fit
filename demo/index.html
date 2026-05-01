@@ -318,7 +318,7 @@ function filterAvatars(cat, btn) {
   renderAvatars(cat === 'all' ? _allAvatars : _allAvatars.filter(a => a.category === cat));
 }
 
-async function selectAvatar(id) {
+function selectAvatar(id) {
   _selectedAvatar = id;
   const activeBtn = document.querySelector('.cat-btn.active');
   const activeCat = activeBtn ? activeBtn.textContent : 'All';
@@ -326,40 +326,18 @@ async function selectAvatar(id) {
 
   const av   = _allAvatars.find(a => a.id === id);
   const name = av ? av.name : id;
-  setStatus('liveStatus', 'loading', `Loading ${name}...`);
 
-  try {
-    // Try backend first, fall back to direct randomuser.me URL
-    let imgUrl = `${FACE_API}/avatars/${id}/image`;
-    let res    = await fetch(imgUrl);
-    if (!res.ok) throw new Error('backend fail');
-    const blob = await res.blob();
-    const reader = new FileReader();
-    reader.onload = e => _applyAvatarSource(e.target.result, name);
-    reader.readAsDataURL(blob);
-  } catch(e) {
-    // Fallback: load directly from randomuser.me
-    if (!av) { setStatus('liveStatus', 'error', 'Avatar not found'); return; }
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      c.getContext('2d').drawImage(img, 0, 0);
-      _applyAvatarSource(c.toDataURL('image/jpeg', 0.92), name);
-    };
-    img.onerror = () => setStatus('liveStatus', 'error', 'Could not load avatar image');
-    img.src = av.url;
-  }
-}
-
-function _applyAvatarSource(dataUrl, name) {
-  liveSource = dataUrl.split(',')[1];
-  document.getElementById('lsp').src = dataUrl;
+  // Show preview using direct URL (display only — no CORS canvas needed)
+  document.getElementById('lsp').src = av.url;
   document.getElementById('lsp').style.display = 'block';
   document.getElementById('lsph').style.display = 'none';
+
+  // liveSource stores the avatar_id — backend loads image server-side
+  liveSource = { avatar_id: id };
   checkLiveReady();
   setStatus('liveStatus', 'success', `${name} selected — click Start Live Swap!`);
+
+  // Show voice card immediately
   document.getElementById('voiceCard').style.display = 'block';
   document.getElementById('voiceAvatarName').textContent = name;
   _resetVoiceUI();
@@ -383,6 +361,7 @@ let liveLatestResult = null, liveRafId = null, liveSendTimer = null, liveResultT
 function checkLiveReady() {
   if (liveSource && liveStream) document.getElementById('liveSwapBtn').disabled = false;
 }
+function _hasLiveSource() { return liveSource !== null && liveSource !== undefined; }
 loadAvatars();
 async function startLiveCamera() {
   try {
@@ -401,7 +380,11 @@ function startLiveSwap() {
   liveWs = new WebSocket(SWAP_WS);
   liveWs.onopen = () => {
     setDot('ls', true);
-    liveWs.send(JSON.stringify({ type:'init', source_image: liveSource }));
+    // avatar_id object → send id; raw base64 string → send image bytes
+    const initMsg = (liveSource && liveSource.avatar_id)
+      ? { type:'init', avatar_id: liveSource.avatar_id }
+      : { type:'init', source_image: liveSource };
+    liveWs.send(JSON.stringify(initMsg));
     document.getElementById('liveSwapBtn').textContent = 'Stop';
     document.getElementById('liveSwapBtn').className = 'btn stop';
     liveRunning = true;

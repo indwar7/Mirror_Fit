@@ -671,10 +671,23 @@ async def ws_live_swap(ws: WebSocket):
             msg = json.loads(raw)
 
             if msg["type"] == "init":
-                # Decode base64 source image
-                b64 = msg["source_image"]
-                img_bytes = base64.b64decode(b64)
-                src_img = await loop.run_in_executor(None, _decode_image, img_bytes)
+                if "avatar_id" in msg:
+                    # Load avatar from server cache — no image upload needed
+                    av_id      = msg["avatar_id"]
+                    cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
+                    if not cache_path.exists():
+                        av = _AVATAR_MAP.get(av_id)
+                        if av is None:
+                            await ws.send_text(json.dumps({"type":"error","message":"Unknown avatar"}))
+                            continue
+                        async with httpx.AsyncClient(timeout=10) as client:
+                            r = await client.get(av["url"])
+                            cache_path.write_bytes(r.content)
+                    src_img = await loop.run_in_executor(None, _decode_image, cache_path.read_bytes())
+                else:
+                    b64       = msg["source_image"]
+                    img_bytes = base64.b64decode(b64)
+                    src_img   = await loop.run_in_executor(None, _decode_image, img_bytes)
                 await ws.send_text(json.dumps({"type": "ready"}))
 
             elif msg["type"] == "frame":
