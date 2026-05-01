@@ -50,6 +50,35 @@
   .avatar-card.selected { border-color:#a78bfa; box-shadow:0 0 12px rgba(167,139,250,0.5); }
   .avatar-card img { width:100%; height:100%; object-fit:cover; display:block; }
   .avatar-card span { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.65); font-size:10px; color:#fff; text-align:center; padding:3px; }
+
+  /* ── Voice Transform card ── */
+  #voiceCard { display: none; margin-top: 20px; }
+  #voiceCard .voice-avatar-label {
+    font-size: 13px; color: #c4b5fd; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  #voiceCard .voice-avatar-label strong { color: #fff; }
+  .voice-btn {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff; border: none; padding: 13px 28px;
+    border-radius: 8px; font-size: 15px; cursor: pointer;
+    width: 100%; margin-top: 0; transition: opacity 0.2s;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .voice-btn:hover { opacity: 0.9; }
+  .voice-btn.recording { background: #dc2626; }
+  .voice-btn.recording .rec-dot { animation: pulse 1s ease-in-out infinite; }
+  .rec-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #fff; flex-shrink: 0;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.3; transform: scale(0.6); }
+  }
+  #voiceAudioWrap { margin-top: 14px; display: none; }
+  #voiceAudioWrap audio { width: 100%; border-radius: 8px; }
+  #voiceStatus { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -143,6 +172,23 @@
       <div id="liveStatus" class="status"></div>
     </div>
   </div>
+
+  <!-- Voice Transform -->
+  <div class="card" id="voiceCard">
+    <h3>Voice Transform</h3>
+    <div class="voice-avatar-label">
+      Speaking as: <strong id="voiceAvatarName">—</strong>
+    </div>
+    <button class="voice-btn" id="voiceBtn" onclick="toggleVoice()">
+      <span class="rec-dot" id="recDot" style="display:none"></span>
+      <span id="voiceBtnLabel">Tap to Speak</span>
+    </button>
+    <div id="voiceAudioWrap">
+      <audio id="voiceAudio" controls></audio>
+    </div>
+    <div id="voiceStatus" class="status"></div>
+  </div>
+
   <div class="info-bar">
     <span>WebSocket <b>ws://13.233.133.130:7860/ws/live-swap</b></span>
     <span>GPU <b>NVIDIA A10G — ~0.5s/frame</b></span>
@@ -288,7 +334,15 @@ async function selectAvatar(id) {
     document.getElementById('lsp').style.display = 'block';
     document.getElementById('lsph').style.display = 'none';
     checkLiveReady();
-    setStatus('liveStatus', 'success', `${_allAvatars.find(a=>a.id===id).name} selected!`);
+    const av = _allAvatars.find(a => a.id === id);
+    const name = av ? av.name : id;
+    setStatus('liveStatus', 'success', `${name} selected!`);
+
+    // Show voice transform card and set avatar label
+    document.getElementById('voiceCard').style.display = 'block';
+    document.getElementById('voiceAvatarName').textContent = name;
+    // Reset voice UI when switching avatars
+    _resetVoiceUI();
   };
   reader.readAsDataURL(blob);
 }
@@ -296,6 +350,9 @@ async function selectAvatar(id) {
 function setLiveSourceFile(inp) {
   _selectedAvatar = null;
   document.querySelectorAll('.avatar-card').forEach(c => c.classList.remove('selected'));
+  // Hide voice card when switching to custom upload (no avatar_id for voice API)
+  document.getElementById('voiceCard').style.display = 'none';
+  _resetVoiceUI();
   const reader = new FileReader();
   reader.onload = e => { liveSource = e.target.result.split(',')[1]; checkLiveReady(); };
   reader.readAsDataURL(inp.files[0]);
@@ -389,6 +446,88 @@ function sendLiveFrame() {
   if (_lsCvs.width !== sz) { _lsCvs.width = sz; _lsCvs.height = sz; }
   _lsCtx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
   liveWs.send(JSON.stringify({ type:'frame', image: _lsCvs.toDataURL('image/jpeg', 0.80).split(',')[1] }));
+}
+
+// ─── Voice Transform ──────────────────────────────────────────────────────────
+let _voiceRecorder = null, _voiceChunks = [], _voiceRecording = false;
+
+function _resetVoiceUI() {
+  _voiceRecording = false;
+  if (_voiceRecorder && _voiceRecorder.state !== 'inactive') {
+    try { _voiceRecorder.stop(); } catch(_) {}
+  }
+  _voiceRecorder = null;
+  _voiceChunks = [];
+  document.getElementById('voiceBtn').classList.remove('recording');
+  document.getElementById('recDot').style.display = 'none';
+  document.getElementById('voiceBtnLabel').textContent = 'Tap to Speak';
+  document.getElementById('voiceAudioWrap').style.display = 'none';
+  const st = document.getElementById('voiceStatus');
+  st.className = 'status'; st.textContent = '';
+}
+
+async function toggleVoice() {
+  if (_voiceRecording) {
+    // Stop recording — onStop handler fires automatically
+    _voiceRecorder.stop();
+  } else {
+    // Start recording
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch(e) {
+      setStatus('voiceStatus', 'error', 'Microphone access denied: ' + e.message);
+      return;
+    }
+    _voiceChunks = [];
+    _voiceRecorder = new MediaRecorder(stream);
+    _voiceRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
+    _voiceRecorder.onstop = async () => {
+      // Stop all mic tracks
+      stream.getTracks().forEach(t => t.stop());
+      _voiceRecording = false;
+      document.getElementById('voiceBtn').classList.remove('recording');
+      document.getElementById('recDot').style.display = 'none';
+      document.getElementById('voiceBtnLabel').textContent = 'Tap to Speak';
+
+      const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
+      _voiceChunks = [];
+      await _sendVoice(blob);
+    };
+    _voiceRecorder.start();
+    _voiceRecording = true;
+    document.getElementById('voiceBtn').classList.add('recording');
+    document.getElementById('recDot').style.display = 'inline-block';
+    document.getElementById('voiceBtnLabel').textContent = 'Recording… (tap to stop)';
+    setStatus('voiceStatus', 'loading', 'Recording…');
+  }
+}
+
+async function _sendVoice(blob) {
+  if (!_selectedAvatar) {
+    setStatus('voiceStatus', 'error', 'No avatar selected.');
+    return;
+  }
+  setStatus('voiceStatus', 'loading', 'Transforming voice on server…');
+  const fd = new FormData();
+  fd.append('audio', blob, 'recording.webm');
+  fd.append('avatar_id', _selectedAvatar);
+  try {
+    const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const wavBlob = await res.blob();
+    const url = URL.createObjectURL(wavBlob);
+    const audio = document.getElementById('voiceAudio');
+    audio.src = url;
+    document.getElementById('voiceAudioWrap').style.display = 'block';
+    audio.play().catch(() => {}); // auto-play (may be blocked by browser policy)
+    setStatus('voiceStatus', 'success', 'Voice transformed! Playing…');
+  } catch(e) {
+    setStatus('voiceStatus', 'error', 'Voice transform failed: ' + e.message);
+  }
 }
 
 // ─── Live Try-On ──────────────────────────────────────────────────────────────
