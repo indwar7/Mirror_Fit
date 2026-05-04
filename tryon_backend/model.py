@@ -221,9 +221,15 @@ class TryOnModel:
             self._load_sd_ipadapter()
 
     def _load_catvton(self):
-        from diffusers import StableDiffusionInpaintPipeline, DDIMScheduler, AutoencoderTiny
+        """
+        SD Inpainting + IP-Adapter for garment reference.
+        Inpainting ONLY modifies the torso mask — face/background are 100% original
+        by design (no manual compositing needed). IP-Adapter feeds garment visually.
+        This is the correct architecture for try-on: mask = where to put garment.
+        """
+        from diffusers import StableDiffusionInpaintPipeline, LCMScheduler, AutoencoderTiny
 
-        log.info("Loading CatVTON (try-on trained, latent concat)…")
+        log.info("Loading SD Inpainting + IP-Adapter try-on pipeline…")
 
         self.pipeline = StableDiffusionInpaintPipeline.from_pretrained(
             "runwayml/stable-diffusion-inpainting",
@@ -232,26 +238,30 @@ class TryOnModel:
             requires_safety_checker=False,
         ).to(self.device)
 
-        # Load CatVTON attention weights — fine-tuned on try-on data
-        self.pipeline.unet.load_attn_procs("zheng-chong/CatVTON")
-
         # TAESD: 5x faster decode
         self.pipeline.vae = AutoencoderTiny.from_pretrained(
             "madebyollin/taesd", torch_dtype=self.dtype,
         ).to(self.device)
 
-        # DDIM at 20 steps — good quality/speed balance
-        self.pipeline.scheduler = DDIMScheduler.from_config(
-            self.pipeline.scheduler.config
-        )
-        self._steps      = VTON_STEPS if VTON_STEPS > 0 else 20
-        self._ip_loaded  = False
-        self._catvton    = True
+        # LCM for fast inference
+        self.pipeline.scheduler = LCMScheduler.from_config(
+            self.pipeline.scheduler.config)
+        self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
+        self.pipeline.fuse_lora()
+
+        # IP-Adapter: garment image as visual reference for inpainting
+        self.pipeline.load_ip_adapter(
+            "h94/IP-Adapter", subfolder="models",
+            weight_name="ip-adapter_sd15.bin")
+        self.pipeline.set_ip_adapter_scale(1.0)
+
+        self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
+        self._ip_loaded = True
+        self._catvton   = True   # use inpainting path
 
         if self.device == "cuda":
             try:
                 self.pipeline.enable_xformers_memory_efficient_attention()
-                log.info("xformers enabled.")
             except Exception:
                 pass
             try:
@@ -260,7 +270,7 @@ class TryOnModel:
             except Exception:
                 pass
 
-        log.info(f"CatVTON ready — {self._steps}-step DDIM. ~1-2s/frame on A10G")
+        log.info(f"Inpainting try-on ready — {self._steps}-step LCM. Face+BG preserved by mask.")
 
     def _load_sd_ipadapter(self):
         from diffusers import AutoPipelineForImage2Image, LCMScheduler, AutoencoderTiny
@@ -741,23 +751,30 @@ class TryOnModel:
               int(LIVE_SIZE*0.03):int(LIVE_SIZE*0.97)] = 1.0
             self._fixed_mask_cache = cv2.GaussianBlur(m, (31, 31), 0)[:, :, np.newaxis]
 
-        # ── CatVTON path — try-on trained, no guessing ────────────────────────
+        # ── Inpainting path — mask ensures ONLY torso is modified ────────────
         if self._catvton:
             mask_pil = Image.fromarray(
                 (self._fixed_mask_cache[:, :, 0] * 255).astype(np.uint8)
             )
+            ip_kw = ({"ip_adapter_image_embeds": self._ip_embeds}
+                     if self._ip_embeds is not None
+                     else {"ip_adapter_image": garment})
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="",
+                    prompt="person wearing the jacket, photorealistic, fashion",
+                    negative_prompt="naked, bare chest, deformed, blurry",
                     image=person,
                     mask_image=mask_pil,
-                    condition_image=garment,   # CatVTON-specific: garment reference
                     num_inference_steps=self._steps,
-                    guidance_scale=2.5,
+                    guidance_scale=1.0,
                     generator=generator,
+                    **ip_kw,
                 ).images[0]
+            # Inpainting already preserves face+bg — no compositing needed
+            self._prev_result = np.array(result)
+            return result
 
-        # ── SD + IP-Adapter fallback ──────────────────────────────────────────
+        # ── SD img2img + IP-Adapter fallback ─────────────────────────────────
         else:
             prompt = (
                 "photo of person wearing jacket on body, shirt on torso, "
