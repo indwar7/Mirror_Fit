@@ -462,8 +462,17 @@ class TryOnModel:
         if self._animatediff_pipe is not None:
             return self._infer_tier4_animatediff(person_image, garment)
 
-        # ── Live: geometric warp (stable, moves with body, no hallucination) ──
-        return self._infer_live_geometric(person_image)
+        # ── SD img2img — realistic jacket rendering ───────────────────────────
+        result = self._infer_tier3(person_image, garment, strength=0.72)
+        result_arr = np.array(result)
+
+        # Smooth OUTPUT (not input) — stable jacket without hallucinations
+        if self._prev_result is not None:
+            result_arr = (result_arr.astype(np.float32) * 0.45
+                          + self._prev_result.astype(np.float32) * 0.55).astype(np.uint8)
+
+        self._prev_result = result_arr.copy()
+        return Image.fromarray(result_arr)
 
     # ── Live geometric warp ───────────────────────────────────────────────────
 
