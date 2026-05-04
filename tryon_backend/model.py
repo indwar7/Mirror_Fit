@@ -463,13 +463,15 @@ class TryOnModel:
             return self._infer_tier4_animatediff(person_image, garment)
 
         # ── SD img2img — realistic jacket rendering ───────────────────────────
-        result = self._infer_tier3(person_image, garment, strength=0.72)
+        # Save prev BEFORE calling _infer_tier3 (which overwrites _prev_result)
+        saved_prev = self._prev_result
+        result     = self._infer_tier3(person_image, garment, strength=0.80)
         result_arr = np.array(result)
 
-        # Smooth OUTPUT (not input) — stable jacket without hallucinations
-        if self._prev_result is not None:
-            result_arr = (result_arr.astype(np.float32) * 0.45
-                          + self._prev_result.astype(np.float32) * 0.55).astype(np.uint8)
+        # Smooth OUTPUT with the PREVIOUS frame (not current)
+        if saved_prev is not None:
+            result_arr = (result_arr.astype(np.float32) * 0.50
+                          + saved_prev.astype(np.float32) * 0.50).astype(np.uint8)
 
         self._prev_result = result_arr.copy()
         return Image.fromarray(result_arr)
