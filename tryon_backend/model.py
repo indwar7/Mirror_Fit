@@ -242,7 +242,7 @@ class TryOnModel:
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin",
         )
-        self.pipeline.set_ip_adapter_scale(1.0)
+        self.pipeline.set_ip_adapter_scale(1.2)
         self._ip_loaded = True
         self._steps = VTON_STEPS if VTON_STEPS > 0 else 4
 
@@ -414,8 +414,10 @@ class TryOnModel:
         padded = Image.new("RGB", (sq, sq), (255, 255, 255))
         padded.paste(g, ((sq - gw) // 2, (sq - gh) // 2))
         garment_sq = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
-        self._garment_cache = garment_sq
-        self._ip_embeds     = None
+        self._garment_cache    = garment_sq
+        self._ip_embeds        = None
+        self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
+        self._prev_result      = None   # reset temporal state for new garment
 
         # Store alpha mask if original had transparency — used by geometric warp
         if garment_image.mode == 'RGBA':
@@ -706,14 +708,24 @@ class TryOnModel:
         # Fixed seed → same noise pattern every frame → jacket texture stays consistent
         generator = torch.Generator(device=self.device).manual_seed(42)
 
+        prompt = (
+            "photo of person wearing the clothing item, shirt on body, jacket on torso, "
+            "photorealistic, fashion photography, detailed fabric texture, well-fitted clothes"
+        )
+        neg_prompt = (
+            "naked, nude, bare chest, no shirt, deformed, blurry, distorted, "
+            "bad anatomy, wrong clothing, floating clothes"
+        )
+        steps = max(self._steps, 6)   # at least 6 for decent jacket quality
+
         with torch.inference_mode():
             if pose_image is not None and hasattr(self.pipeline, "controlnet"):
                 result = self.pipeline(
-                    prompt="person wearing the garment, photorealistic, fashion",
-                    negative_prompt="blurry, distorted, deformed",
+                    prompt=prompt,
+                    negative_prompt=neg_prompt,
                     image=person,
                     control_image=pose_image,
-                    num_inference_steps=self._steps,
+                    num_inference_steps=steps,
                     strength=strength,
                     guidance_scale=1.0,
                     controlnet_conditioning_scale=0.6,
@@ -722,10 +734,10 @@ class TryOnModel:
                 ).images[0]
             else:
                 result = self.pipeline(
-                    prompt="person wearing the garment, photorealistic, fashion",
-                    negative_prompt="blurry, distorted, deformed",
+                    prompt=prompt,
+                    negative_prompt=neg_prompt,
                     image=person,
-                    num_inference_steps=self._steps,
+                    num_inference_steps=steps,
                     strength=strength,
                     guidance_scale=1.0,
                     generator=generator,
@@ -737,9 +749,9 @@ class TryOnModel:
         # ── Clothing mask: only torso area uses SD result ─────────────────────
         if self._fixed_mask_cache is None:
             m = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
-            m[int(LIVE_SIZE*0.38):int(LIVE_SIZE*0.92),
-              int(LIVE_SIZE*0.05):int(LIVE_SIZE*0.95)] = 1.0
-            # Remove face area from mask (top 38% = face/head)
+            m[int(LIVE_SIZE*0.40):int(LIVE_SIZE*0.93),
+              int(LIVE_SIZE*0.03):int(LIVE_SIZE*0.97)] = 1.0
+            # Remove face area from mask (top 40% = face/head)
             self._fixed_mask_cache = cv2.GaussianBlur(m, (31, 31), 0)[:, :, np.newaxis]
 
         clothing_mask = self._fixed_mask_cache
