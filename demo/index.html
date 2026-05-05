@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LUCY AI Demo</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js" defer></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
@@ -484,6 +484,10 @@ async function toggleRealtimeVoice() {
 async function startRealtimeVoice() {
   if (!_selectedAvatar) {
     setStatus('voiceStatus', 'error', 'Pehle avatar select karo!');
+    return;
+  }
+  if (typeof Tone === 'undefined') {
+    setStatus('voiceStatus', 'error', 'Tone.js load nahi hua — page reload karo');
     return;
   }
   try {
