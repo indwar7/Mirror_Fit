@@ -396,11 +396,72 @@ def _swap(src_img: np.ndarray, tgt_img: np.ndarray) -> np.ndarray:
     return _swap_real(src_img, tgt_img)
 
 
-def _swap_live(src_img: np.ndarray, tgt_img: np.ndarray) -> np.ndarray:
-    """Dispatcher for live (lower latency) swap."""
-    if _is_cartoon(src_img):
-        return _swap_geometric(src_img, tgt_img)
-    return _swap_real(src_img, tgt_img)
+def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.ndarray:
+    """Match brightness/color of swapped face region to target face region."""
+    x1,y1,x2,y2 = [int(v) for v in bbox]
+    x1,y1 = max(0,x1),max(0,y1)
+    x2,y2 = min(swapped.shape[1],x2),min(swapped.shape[0],y2)
+    if x2<=x1 or y2<=y1: return swapped
+    sw_patch  = swapped[y1:y2,x1:x2].astype(np.float32)
+    tgt_patch = target[y1:y2,x1:x2].astype(np.float32)
+    if sw_patch.size==0 or tgt_patch.size==0: return swapped
+    # Match mean brightness per channel
+    for c in range(3):
+        sm,tm = sw_patch[:,:,c].mean()+1e-6, tgt_patch[:,:,c].mean()+1e-6
+        sw_patch[:,:,c] = np.clip(sw_patch[:,:,c]*(tm/sm)*0.5 + sw_patch[:,:,c]*0.5,0,255)
+    result = swapped.copy()
+    result[y1:y2,x1:x2] = sw_patch.astype(np.uint8)
+    return result
+
+
+def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
+    """
+    Fast live swap with cached src_detection.
+    Real faces: inswapper + color correction + feathered boundary.
+    Cartoon:    geometric warp.
+    """
+    src_face, src_kps, src_bbox, src_real = src_detection
+    tgt_faces = _face_app.get(target_img)
+    tgt_face  = _largest_face(tgt_faces)
+    if src_face is None or tgt_face is None:
+        # Fallback: try Haar
+        return None
+
+    if src_real and tgt_face is not None:
+        # Inswapper
+        result = _run_inswapper(src_face, tgt_face, target_img)
+        # Color correct — match skin tone of swapped face to target
+        result = _color_correct_face(result, target_img, tgt_face.bbox)
+        # Hair oval above face (fast — no GrabCut)
+        tx1,ty1,tx2,ty2 = [int(v) for v in tgt_face.bbox]
+        fh = ty2-ty1; fw = tx2-tx1
+        cx = (tx1+tx2)//2
+        h,w = result.shape[:2]
+        M_aff,_ = cv2.estimateAffinePartial2D(
+            src_face.kps.astype(np.float32),
+            tgt_face.kps.astype(np.float32),
+        )
+        if M_aff is not None:
+            src_warp = cv2.warpAffine(src_img,M_aff,(w,h),
+                                      flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_REPLICATE)
+            hair_top  = max(0, ty1 - int(fh*1.8))
+            ov_cy     = max(1,(hair_top+ty1)//2)
+            ov_ry     = max(1,(ty1-hair_top)//2)
+            ov_rx     = max(1,int(fw*0.70))
+            hair_mask = np.zeros((h,w),np.uint8)
+            cv2.ellipse(hair_mask,(cx,ov_cy),(ov_rx,ov_ry),0,0,360,255,-1)
+            hair_mask[ty1:] = 0
+            if hair_mask.sum()>500:
+                alpha = cv2.GaussianBlur(hair_mask,(31,31),0).astype(np.float32)/255.0
+                a3 = alpha[:,:,np.newaxis]
+                result = (src_warp.astype(np.float32)*a3 +
+                          result.astype(np.float32)*(1-a3)).astype(np.uint8)
+        return result
+
+    # Cartoon source
+    try: return _swap_geometric(src_img, target_img)
+    except: return None
 
 
 def _do_swap(src_img: np.ndarray, frame: np.ndarray) -> Optional[np.ndarray]:
@@ -738,7 +799,7 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 92])
                         await send({"type":"result","image": base64.b64encode(buf).decode()})
                 finally:
                     processing = False
