@@ -508,24 +508,30 @@ header {
       </div>
     </div>
 
-    <!-- Live try-on canvas -->
-    <div class="canvas-wrap" id="tryonWrap" style="display:none">
-      <canvas id="tryonCanvas"></canvas>
-      <div class="canvas-overlay">
-        <div class="overlay-badge">
-          <div class="dot" id="toDot2"></div>
-          <span id="toLabel">Live Try-On</span>
+    <!-- Live try-on: camera + result side by side -->
+    <div id="tryonWrap" style="display:none;width:100%;display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" style="max-width:100%">
+          <video id="tryonVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">📷 Your Camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%">
+          <canvas id="tryonCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="toDot2"></div>
+              <span>Live Result</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Camera preview strip -->
+    <!-- Camera preview strip (face swap only) -->
     <div class="cam-strip" id="liveCamStrip" style="display:none">
       <video id="liveVideo" autoplay muted playsinline></video>
-      <span class="cam-strip-label">Your Camera</span>
-    </div>
-    <div class="cam-strip" id="tryonCamStrip" style="display:none">
-      <video id="tryonVideo" autoplay muted playsinline></video>
       <span class="cam-strip-label">Your Camera</span>
     </div>
 
@@ -552,11 +558,9 @@ function switchTab(t) {
   });
   document.getElementById('swapResultWrap').style.display = t==='faceswap' ? 'block' : 'none';
   document.getElementById('liveWrap').style.display       = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('tryonWrap').style.display      = t==='tryon'    ? 'block' : 'none';
+  document.getElementById('tryonWrap').style.display      = t==='tryon'    ? 'grid'  : 'none';
   document.getElementById('liveCamStrip').style.display   = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('tryonCamStrip').style.display  = t==='tryon'    ? 'block' : 'none';
   document.getElementById('placeholder').style.display    = 'none';
-  if (t==='faceswap') document.getElementById('placeholder').style.display = 'none';
 }
 
 function previewFile(inp, imgId, phId) {
@@ -834,7 +838,6 @@ async function startTryOnCamera() {
     document.getElementById('tryonVideo').srcObject=toStream;
     const btn=document.getElementById('tryonCamBtn');
     btn.textContent='✅ Camera On'; btn.className='btn btn-active';
-    document.getElementById('tryonCamStrip').style.display='block';
   } catch(e) { alert('Camera error: '+e.message); }
 }
 function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
