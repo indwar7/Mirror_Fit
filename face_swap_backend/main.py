@@ -27,6 +27,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Paths
@@ -600,6 +601,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="LUCY AI Face Swap Backend", version="1.0.0", lifespan=lifespan)
+
+# Serve demo UI at http://<host>:7860/
+app.mount("/demo", StaticFiles(directory=str(_HERE.parent / "demo"), html=True), name="demo")
 
 app.add_middleware(
     CORSMiddleware,
