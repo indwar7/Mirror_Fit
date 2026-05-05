@@ -501,19 +501,8 @@ class TryOnModel:
         if self._animatediff_pipe is not None:
             return self._infer_tier4_animatediff(person_image, garment)
 
-        # ── SD img2img — realistic jacket rendering ───────────────────────────
-        # Save prev BEFORE calling _infer_tier3 (which overwrites _prev_result)
-        saved_prev = self._prev_result
-        result     = self._infer_tier3(person_image, garment, strength=0.80)
-        result_arr = np.array(result)
-
-        # Smooth OUTPUT with the PREVIOUS frame (not current)
-        if saved_prev is not None:
-            result_arr = (result_arr.astype(np.float32) * 0.50
-                          + saved_prev.astype(np.float32) * 0.50).astype(np.uint8)
-
-        self._prev_result = result_arr.copy()
-        return Image.fromarray(result_arr)
+        # ── Geometric warp — jacket visible, face preserved, real-time ──────
+        return self._infer_live_geometric(person_image)
 
     # ── Live geometric warp ───────────────────────────────────────────────────
 
@@ -539,15 +528,15 @@ class TryOnModel:
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
-            top         = fy + fh - int(fh * 0.1)   # slight overlap with neck
-            bottom      = min(H, top + int(fh * 2.6))
-            left        = max(0, cx - int(fw * 1.3))
-            right       = min(W, cx + int(fw * 1.3))
-            face_bottom = fy + fh
+            top         = fy + fh - int(fh * 0.05)  # just below chin
+            bottom      = min(H, top + int(fh * 3.0))
+            left        = max(0, cx - int(fw * 1.8))  # wide enough for shoulders
+            right       = min(W, cx + int(fw * 1.8))
+            face_bottom = fy + fh + int(fh * 0.05)
         else:
-            top = int(H * 0.32); bottom = int(H * 0.88)
-            left = int(W * 0.15); right = int(W * 0.85)
-            face_bottom = top
+            top = int(H * 0.32); bottom = H
+            left = int(W * 0.05); right = int(W * 0.95)
+            face_bottom = int(H * 0.40)
 
         th = max(1, bottom - top)
         tw = max(1, right  - left)
