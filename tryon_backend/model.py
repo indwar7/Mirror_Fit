@@ -561,6 +561,10 @@ class TryOnModel:
         if self._animatediff_pipe is not None:
             return self._infer_tier4_animatediff(person_image, garment)
 
+        # ── SD Inpainting / img2img + IP-Adapter (tier 3 AI path) ────────────
+        if self.pipeline is not None:
+            return self._infer_tier3(person_image, garment)
+
         # ── Geometric warp fallback — no model required ───────────────────────
         return self._infer_live_geometric(person_image)
 
