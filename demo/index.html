@@ -3,293 +3,620 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LUCY AI Demo</title>
+<title>LUCY AI — Live Try-On & Face Swap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js" defer></script>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
-  header { background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 20px 40px; display: flex; align-items: center; gap: 16px; }
-  header h1 { font-size: 28px; font-weight: 700; }
-  header span { background: rgba(255,255,255,0.2); padding: 4px 12px; border-radius: 20px; font-size: 13px; }
-  .tabs { display: flex; gap: 4px; padding: 20px 40px 0; }
-  .tab { padding: 10px 24px; border-radius: 8px 8px 0 0; cursor: pointer; background: #1a1a1a; color: #999; font-size: 15px; border: none; transition: all 0.2s; }
-  .tab.active { background: #1e1e2e; color: #fff; }
-  .panel { display: none; padding: 30px 40px; background: #1e1e2e; margin: 0 40px; border-radius: 0 12px 12px 12px; }
-  .panel.active { display: block; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
-  .card { background: #16213e; border-radius: 12px; padding: 20px; }
-  .card h3 { margin-bottom: 12px; font-size: 13px; color: #a78bfa; text-transform: uppercase; letter-spacing: 1px; }
-  .upload-area { border: 2px dashed #333; border-radius: 8px; padding: 20px; text-align: center; cursor: pointer; position: relative; min-height: 180px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; transition: all 0.2s; }
-  .upload-area:hover { border-color: #6366f1; }
-  .upload-area input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
-  .upload-area img { max-width: 100%; max-height: 160px; border-radius: 6px; object-fit: cover; }
-  .placeholder { color: #555; font-size: 14px; pointer-events: none; }
-  .result-box { border: 2px solid #2a2a3e; border-radius: 8px; min-height: 180px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .result-box img, .result-box canvas { max-width: 100%; border-radius: 6px; }
-  video { width: 100%; border-radius: 8px; background: #000; display: block; }
-  canvas { width: 100%; border-radius: 8px; background: #111; display: block; }
-  .btn { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; padding: 13px 28px; border-radius: 8px; font-size: 15px; cursor: pointer; width: 100%; margin-top: 14px; transition: opacity 0.2s; }
-  .btn:hover { opacity: 0.9; }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn.stop { background: #dc2626; }
-  .btn.on { background: #16a34a; }
-  .status { margin-top: 10px; padding: 10px 14px; border-radius: 6px; font-size: 13px; text-align: center; display: none; }
-  .status.loading { background: rgba(99,102,241,0.2); color: #a78bfa; display: block; }
-  .status.success { background: rgba(34,197,94,0.2); color: #4ade80; display: block; }
-  .status.error { background: rgba(239,68,68,0.2); color: #f87171; display: block; }
-  .ws-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: #999; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
-  .dot.on { background: #22c55e; }
-  .info-bar { background: #16213e; border-radius: 8px; padding: 12px 16px; margin-top: 20px; display: flex; gap: 24px; flex-wrap: wrap; }
-  .info-bar span { font-size: 12px; color: #555; }
-  .info-bar span b { color: #a78bfa; font-family: monospace; font-weight: 400; }
-  .cat-btn { background:#1a1a2e; color:#888; border:1px solid #333; padding:5px 14px; border-radius:20px; font-size:12px; cursor:pointer; transition:all 0.2s; }
-  .cat-btn.active { background:#6366f1; color:#fff; border-color:#6366f1; }
-  .avatar-card { border-radius:10px; overflow:hidden; cursor:pointer; border:2px solid transparent; transition:all 0.2s; position:relative; aspect-ratio:1; }
-  .avatar-card:hover { border-color:#6366f1; transform:scale(1.05); }
-  .avatar-card.selected { border-color:#a78bfa; box-shadow:0 0 12px rgba(167,139,250,0.5); }
-  .avatar-card img { width:100%; height:100%; object-fit:cover; display:block; }
-  .avatar-card span { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.65); font-size:10px; color:#fff; text-align:center; padding:3px; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* ── Voice Transform card ── */
-  #voiceCard { display: none; margin-top: 20px; }
-  #voiceCard .voice-avatar-label {
-    font-size: 13px; color: #c4b5fd; margin-bottom: 14px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  #voiceCard .voice-avatar-label strong { color: #fff; }
-  .voice-btn {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6);
-    color: #fff; border: none; padding: 13px 28px;
-    border-radius: 8px; font-size: 15px; cursor: pointer;
-    width: 100%; margin-top: 0; transition: opacity 0.2s;
-    display: flex; align-items: center; justify-content: center; gap: 10px;
-  }
-  .voice-btn:hover { opacity: 0.9; }
-  .voice-btn.recording { background: #dc2626; }
-  .voice-btn.recording .rec-dot { animation: pulse 1s ease-in-out infinite; }
-  .rec-dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: #fff; flex-shrink: 0;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%       { opacity: 0.3; transform: scale(0.6); }
-  }
-  #voiceAudioWrap { margin-top: 14px; display: none; }
-  #voiceAudioWrap audio { width: 100%; border-radius: 8px; }
-  #voiceStatus { margin-top: 10px; }
+:root {
+  --bg:       #080810;
+  --surface:  rgba(255,255,255,0.04);
+  --border:   rgba(255,255,255,0.08);
+  --accent:   #7c3aed;
+  --accent2:  #a78bfa;
+  --text:     #f1f0ff;
+  --muted:    #6b6b8a;
+  --green:    #22c55e;
+  --red:      #ef4444;
+  --radius:   14px;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  background: rgba(8,8,16,0.8);
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+.logo-dot {
+  width: 8px; height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--accent);
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+.tab {
+  padding: 6px 18px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(124,58,237,0.4);
+}
+.tab:hover:not(.active) { color: var(--text); }
+
+/* ── Layout ── */
+.app {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: calc(100vh - 56px);
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 20px 16px;
+  gap: 12px;
+  background: rgba(8,8,16,0.6);
+}
+.sidebar::-webkit-scrollbar { width: 4px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.panel { display: none; flex-direction: column; gap: 12px; }
+.panel.active { display: flex; }
+
+/* ── Cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.card-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 12px;
+}
+
+/* ── Upload zone ── */
+.upload-zone {
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.2s, background 0.2s;
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+}
+.upload-zone:hover { border-color: var(--accent); background: rgba(124,58,237,0.05); }
+.upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.upload-zone img { max-width: 100%; max-height: 100px; border-radius: 8px; object-fit: cover; }
+.upload-hint { font-size: 12px; color: var(--muted); pointer-events: none; }
+.upload-icon { font-size: 20px; pointer-events: none; }
+
+/* ── Buttons ── */
+.btn {
+  width: 100%;
+  padding: 11px;
+  border-radius: 10px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 16px rgba(124,58,237,0.35);
+}
+.btn-primary:hover { opacity: 0.88; }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-stop { background: var(--red); color: #fff; }
+.btn-active { background: var(--green); color: #fff; }
+.btn-ghost {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { border-color: var(--accent2); }
+
+/* ── Status pill ── */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; transition: background 0.3s; }
+.dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+.status-msg { font-size: 12px; margin-top: 8px; padding: 8px 12px; border-radius: 8px; display: none; }
+.status-msg.info { background: rgba(124,58,237,0.15); color: var(--accent2); display: block; }
+.status-msg.success { background: rgba(34,197,94,0.12); color: #4ade80; display: block; }
+.status-msg.error { background: rgba(239,68,68,0.12); color: #f87171; display: block; }
+
+/* ── Avatar grid ── */
+.cat-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.pill {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pill:hover:not(.active) { color: var(--text); border-color: var(--accent2); }
+
+.avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+}
+.av-card {
+  border-radius: 9px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.15s;
+  aspect-ratio: 1;
+  position: relative;
+}
+.av-card:hover { border-color: var(--accent2); transform: scale(1.04); }
+.av-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.av-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.av-name {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.7);
+  font-size: 9px; text-align: center; padding: 3px;
+  color: #fff;
+}
+.av-check {
+  position: absolute; top: 3px; right: 3px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent);
+  display: none;
+  align-items: center; justify-content: center;
+  font-size: 9px;
+}
+.av-card.selected .av-check { display: flex; }
+
+/* ── Voice card ── */
+.voice-card {
+  display: none;
+  background: linear-gradient(135deg, rgba(124,58,237,0.12), rgba(167,139,250,0.06));
+  border: 1px solid rgba(124,58,237,0.3);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.voice-avatar { font-size: 12px; color: var(--accent2); margin-bottom: 10px; }
+.voice-avatar strong { color: #fff; }
+.voice-btn {
+  width: 100%;
+  padding: 11px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(124,58,237,0.25);
+  border: 1px solid rgba(124,58,237,0.4);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+.voice-btn:hover { background: rgba(124,58,237,0.4); }
+.voice-btn.active { background: var(--red); border-color: var(--red); }
+.rec-pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--red);
+  display: none;
+  animation: pulse 1s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── Main canvas area ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  position: relative;
+  gap: 16px;
+}
+.canvas-wrap {
+  width: 100%;
+  max-width: 640px;
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 80px rgba(0,0,0,0.5);
+  aspect-ratio: 1;
+}
+.canvas-wrap canvas, .canvas-wrap video {
+  width: 100%; height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.canvas-overlay {
+  position: absolute;
+  top: 12px; left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.overlay-badge {
+  background: rgba(8,8,16,0.75);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Camera strip ── */
+.cam-strip {
+  width: 100%;
+  max-width: 640px;
+  height: 80px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  position: relative;
+  background: rgba(255,255,255,0.02);
+}
+.cam-strip video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+.cam-strip-label {
+  position: absolute;
+  top: 8px; left: 10px;
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ── Divider ── */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ── Scrollbar ── */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>LUCY AI</h1>
-  <span>Live Demo</span>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    LUCY AI
+  </div>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('faceswap')">Face Swap</button>
+    <button class="tab" onclick="switchTab('liveswap')">Live Face Swap</button>
+    <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
+  </div>
+  <div style="width:120px"></div>
 </header>
 
-<div class="tabs">
-  <button class="tab active" onclick="switchTab('faceswap')">Face Swap (Static)</button>
-  <button class="tab" onclick="switchTab('liveswap')">Live Face Swap</button>
-  <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
-</div>
+<div class="app">
 
-<!-- STATIC FACE SWAP -->
-<div class="panel active" id="faceswap">
-  <div class="grid3">
-    <div class="card">
-      <h3>Source Face</h3>
-      <div class="upload-area">
-        <input type="file" accept="image/*" onchange="previewFile(this,'sp','sph')">
-        <img id="sp" style="display:none">
-        <div class="placeholder" id="sph">📁 Upload face to use</div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Target Photo</h3>
-      <div class="upload-area">
-        <input type="file" accept="image/*" onchange="previewFile(this,'tp','tph')">
-        <img id="tp" style="display:none">
-        <div class="placeholder" id="tph">📁 Upload target photo</div>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Result</h3>
-      <div class="result-box">
-        <img id="swapResult" style="display:none">
-        <span id="swapPh" style="color:#555;font-size:13px">Result appears here</span>
-      </div>
-    </div>
-  </div>
-  <button class="btn" id="swapBtn" onclick="doSwap()">Swap Face</button>
-  <div id="swapStatus" class="status"></div>
-  <div class="info-bar">
-    <span>API <b>http://13.203.75.149:7860/face-swap</b></span>
-    <span>GPU <b>NVIDIA A10G 24GB</b></span>
-  </div>
-</div>
+  <!-- ══════════════ SIDEBAR ══════════════ -->
+  <div class="sidebar">
 
-<!-- LIVE FACE SWAP -->
-<div class="panel" id="liveswap">
-
-  <!-- Avatar Picker -->
-  <div class="card" style="margin-bottom:20px">
-    <h3>Choose a Face</h3>
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-      <button class="cat-btn active" onclick="filterAvatars('all',this)">All</button>
-      <button class="cat-btn" onclick="filterAvatars('Celebrity',this)">Celebrity</button>
-      <button class="cat-btn" onclick="filterAvatars('AI Avatar',this)">AI Avatar</button>
-      <button class="cat-btn" onclick="filterAvatars('Anime',this)">Anime</button>
-      <button class="cat-btn" onclick="filterAvatars('Fantasy',this)">Fantasy</button>
-    </div>
-    <div id="avatarGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:10px"></div>
-    <div style="margin-top:12px;border-top:1px solid #2a2a3e;padding-top:12px">
-      <p style="font-size:12px;color:#555;margin-bottom:8px">Or upload your own:</p>
-      <div class="upload-area" style="min-height:60px;padding:10px">
-        <input type="file" accept="image/*" onchange="previewFile(this,'lsp','lsph'); setLiveSourceFile(this)">
-        <img id="lsp" style="display:none;max-height:50px">
-        <div class="placeholder" id="lsph" style="font-size:12px">📁 Upload any face</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <h3>Your Camera</h3>
-      <video id="liveVideo" autoplay muted playsinline></video>
-      <button class="btn" id="liveCamBtn" onclick="startLiveCamera()">Start Camera</button>
-    </div>
-    <div class="card">
-      <h3>
-        <div class="ws-row">
-          <div class="dot" id="lsDot"></div>
-          <span id="lsStatusText">Not connected</span>
-        </div>
-        Live Result
-      </h3>
-      <canvas id="liveCanvas" height="480"></canvas>
-      <button class="btn" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
-      <div id="liveStatus" class="status"></div>
-    </div>
-  </div>
-
-  <!-- Voice Transform — real-time, no recording -->
-  <div class="card" id="voiceCard">
-    <h3>Live Voice Transform</h3>
-    <div class="voice-avatar-label">
-      Speaking as: <strong id="voiceAvatarName">—</strong>
-    </div>
-    <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
-      <span class="rec-dot" id="recDot" style="display:none"></span>
-      <span id="voiceBtnLabel">🎤 Start Live Voice</span>
-    </button>
-    <div id="voiceStatus" class="status"></div>
-  </div>
-
-  <div class="info-bar">
-    <span>WebSocket <b>ws://13.203.75.149:7860/ws/live-swap</b></span>
-    <span>GPU <b>NVIDIA A10G — ~0.5s/frame</b></span>
-  </div>
-</div>
-
-<!-- LIVE TRY-ON -->
-<div class="panel" id="tryon">
-  <div class="grid2">
-    <div>
-      <div class="card" style="margin-bottom:16px">
-        <h3>Garment / Clothing</h3>
-        <div class="upload-area">
-          <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph'); setGarment(this)">
-          <img id="gp" style="display:none; max-height:140px">
-          <div class="placeholder" id="gph">Upload shirt / jacket / dress</div>
+    <!-- STATIC FACE SWAP -->
+    <div class="panel active" id="panel-faceswap">
+      <div class="card">
+        <div class="card-label">Source Face</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'sp','sph');_srcFile=this.files[0]">
+          <img id="sp" style="display:none">
+          <span class="upload-icon" id="sph">📷</span>
+          <span class="upload-hint" id="sph2">Upload source face</span>
         </div>
       </div>
       <div class="card">
-        <h3>Your Camera</h3>
-        <video id="tryonVideo" autoplay muted playsinline></video>
-        <button class="btn" id="tryonCamBtn" onclick="startTryOnCamera()">Start Camera</button>
+        <div class="card-label">Target Photo</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'tp','tph');_tgtFile=this.files[0]">
+          <img id="tp" style="display:none">
+          <span class="upload-icon" id="tph">🖼️</span>
+          <span class="upload-hint" id="tph2">Upload target photo</span>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="doSwap()">Swap Face</button>
+      <div id="swapStatus" class="status-msg"></div>
+    </div>
+
+    <!-- LIVE FACE SWAP -->
+    <div class="panel" id="panel-liveswap">
+      <div class="card">
+        <div class="card-label">Choose Avatar</div>
+        <div class="cat-pills">
+          <button class="pill active" onclick="filterAvatars('all',this)">All</button>
+          <button class="pill" onclick="filterAvatars('Celebrity',this)">Celebrity</button>
+          <button class="pill" onclick="filterAvatars('AI Avatar',this)">AI</button>
+          <button class="pill" onclick="filterAvatars('Anime',this)">Anime</button>
+          <button class="pill" onclick="filterAvatars('Fantasy',this)">Fantasy</button>
+        </div>
+        <div class="avatar-grid" id="avatarGrid"></div>
+        <div class="divider" style="margin-top:12px"></div>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted);margin-bottom:8px">Or upload your own</div>
+        <div class="upload-zone" style="min-height:56px">
+          <input type="file" accept="image/*" onchange="previewFile(this,'lsp','lsph');setLiveSourceFile(this)">
+          <img id="lsp" style="display:none;max-height:50px">
+          <span class="upload-hint" id="lsph">📁 Upload any face</span>
+        </div>
+      </div>
+
+      <!-- Voice card -->
+      <div class="voice-card" id="voiceCard">
+        <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
+        <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
+          <span class="rec-pulse" id="recDot"></span>
+          <span id="voiceBtnLabel">🎤 Start Live Voice</span>
+        </button>
+        <div id="voiceStatus" class="status-msg"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Camera</div>
+        <button class="btn btn-ghost" id="liveCamBtn" onclick="startLiveCamera()">📷 Start Camera</button>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <div class="status-row" style="flex:1">
+          <div class="dot" id="lsDot"></div>
+          <span id="lsStatusText" style="font-size:12px">Not connected</span>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
+      <div id="liveStatus" class="status-msg"></div>
+    </div>
+
+    <!-- LIVE TRY-ON -->
+    <div class="panel" id="panel-tryon">
+      <div class="card">
+        <div class="card-label">Garment / Clothing</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph');setGarment(this)">
+          <img id="gp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="gph">👕</span>
+          <span class="upload-hint" id="gph2">Upload shirt, jacket, dress</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Camera</div>
+        <button class="btn btn-ghost" id="tryonCamBtn" onclick="startTryOnCamera()">📷 Start Camera</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <div class="status-row" style="flex:1">
+          <div class="dot" id="toDot"></div>
+          <span id="toStatusText" style="font-size:12px">Not connected</span>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
+      <div id="tryonStatus" class="status-msg"></div>
+    </div>
+
+  </div>
+
+  <!-- ══════════════ MAIN DISPLAY ══════════════ -->
+  <div class="main">
+
+    <!-- Static face swap result -->
+    <div class="canvas-wrap" id="swapResultWrap" style="display:none;aspect-ratio:auto;min-height:320px">
+      <img id="swapResult" style="width:100%;height:100%;object-fit:contain;display:none">
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:14px" id="swapPh">Result will appear here</div>
+    </div>
+
+    <!-- Live face swap canvas -->
+    <div class="canvas-wrap" id="liveWrap" style="display:none">
+      <canvas id="liveCanvas"></canvas>
+      <div class="canvas-overlay">
+        <div class="overlay-badge">
+          <div class="dot" id="lsDot2"></div>
+          <span id="lsLabel">Live Face Swap</span>
+        </div>
       </div>
     </div>
-    <div class="card">
-      <h3>
-        <div class="ws-row">
-          <div class="dot" id="toDot"></div>
-          <span id="toStatusText">Not connected</span>
+
+    <!-- Live try-on canvas -->
+    <div class="canvas-wrap" id="tryonWrap" style="display:none">
+      <canvas id="tryonCanvas"></canvas>
+      <div class="canvas-overlay">
+        <div class="overlay-badge">
+          <div class="dot" id="toDot2"></div>
+          <span id="toLabel">Live Try-On</span>
         </div>
-        Live Result
-      </h3>
-      <canvas id="tryonCanvas" height="480"></canvas>
-      <button class="btn" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
-      <div id="tryonStatus" class="status"></div>
+      </div>
     </div>
-  </div>
-  <div class="info-bar">
-    <span>WebSocket <b>ws://13.203.75.149:8000/ws/tryon</b></span>
-    <span>GPU <b>SD 1.5 img2img + LCM 2-step + TAESD · ~3-5fps · A10G</b></span>
+
+    <!-- Camera preview strip -->
+    <div class="cam-strip" id="liveCamStrip" style="display:none">
+      <video id="liveVideo" autoplay muted playsinline></video>
+      <span class="cam-strip-label">Your Camera</span>
+    </div>
+    <div class="cam-strip" id="tryonCamStrip" style="display:none">
+      <video id="tryonVideo" autoplay muted playsinline></video>
+      <span class="cam-strip-label">Your Camera</span>
+    </div>
+
+    <!-- Placeholder -->
+    <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px;color:var(--muted)">
+      <div style="font-size:60px;opacity:0.3">✨</div>
+      <div style="font-size:15px;font-weight:500">Select a mode and get started</div>
+      <div style="font-size:13px;opacity:0.6">Face Swap · Live Face Swap · Virtual Try-On</div>
+    </div>
+
   </div>
 </div>
 
 <script>
 const FACE_API = 'http://13.203.75.149:7860';
-const TRYON_WS  = 'ws://13.203.75.149:8000/ws/tryon';
-const SWAP_WS   = 'ws://13.203.75.149:7860/ws/live-swap';
+const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
+const SWAP_WS  = 'ws://13.203.75.149:7860/ws/live-swap';
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
+// ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
   ['faceswap','liveswap','tryon'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
-    document.getElementById(id).classList.toggle('active', id===t);
+    document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
+  document.getElementById('swapResultWrap').style.display = t==='faceswap' ? 'block' : 'none';
+  document.getElementById('liveWrap').style.display       = t==='liveswap' ? 'block' : 'none';
+  document.getElementById('tryonWrap').style.display      = t==='tryon'    ? 'block' : 'none';
+  document.getElementById('liveCamStrip').style.display   = t==='liveswap' ? 'block' : 'none';
+  document.getElementById('tryonCamStrip').style.display  = t==='tryon'    ? 'block' : 'none';
+  document.getElementById('placeholder').style.display    = 'none';
+  if (t==='faceswap') document.getElementById('placeholder').style.display = 'none';
 }
+
 function previewFile(inp, imgId, phId) {
   const f = inp.files[0]; if (!f) return;
   const r = new FileReader();
   r.onload = e => {
     const img = document.getElementById(imgId);
     img.src = e.target.result; img.style.display = 'block';
-    document.getElementById(phId).style.display = 'none';
+    const ph = document.getElementById(phId);
+    if (ph) ph.style.display = 'none';
+    const ph2 = document.getElementById(phId+'2');
+    if (ph2) ph2.style.display = 'none';
   };
   r.readAsDataURL(f);
 }
+
 function setStatus(id, type, msg) {
   const el = document.getElementById(id);
-  el.className = 'status ' + type;
+  if (!el) return;
+  el.className = 'status-msg ' + (type==='loading'?'info':type);
   el.textContent = msg;
 }
+
 function setDot(prefix, on) {
-  document.getElementById(prefix+'Dot').className = 'dot' + (on ? ' on' : '');
-  document.getElementById(prefix+'StatusText').textContent = on ? 'Connected' : 'Disconnected';
+  ['','2'].forEach(sfx => {
+    const d = document.getElementById(prefix+'Dot'+sfx);
+    if (d) d.className = 'dot' + (on?' on':'');
+  });
+  const lbl = document.getElementById(prefix+'StatusText');
+  if (lbl) lbl.textContent = on ? 'Connected' : 'Disconnected';
 }
 
-// Reusable off-screen canvases — one per feature, allocated once, never GC'd
+// ── Off-screen canvases ────────────────────────────────────────────────────────
 const _lsCvs = document.createElement('canvas');
 const _lsCtx = _lsCvs.getContext('2d');
 const _toCvs = document.createElement('canvas');
 const _toCtx = _toCvs.getContext('2d');
 
-// ─── Static Face Swap ─────────────────────────────────────────────────────────
+// ── Static Face Swap ───────────────────────────────────────────────────────────
+let _srcFile = null, _tgtFile = null;
 async function doSwap() {
-  const inputs = document.querySelectorAll('#faceswap .upload-area input');
-  const sf = inputs[0].files[0], tf = inputs[1].files[0];
-  if (!sf || !tf) { setStatus('swapStatus', 'error', 'Upload both images!'); return; }
-  document.getElementById('swapBtn').disabled = true;
-  setStatus('swapStatus', 'loading', 'Processing on GPU...');
+  if (!_srcFile || !_tgtFile) { setStatus('swapStatus','error','Upload both images first'); return; }
+  setStatus('swapStatus','loading','Processing on GPU…');
   const fd = new FormData();
-  fd.append('source', sf); fd.append('target', tf);
+  fd.append('source', _srcFile); fd.append('target', _tgtFile);
   try {
-    const res = await fetch(`${FACE_API}/face-swap`, { method: 'POST', body: fd });
+    const res  = await fetch(`${FACE_API}/face-swap`, { method:'POST', body:fd });
     if (!res.ok) throw new Error((await res.json()).detail);
     const blob = await res.blob();
-    document.getElementById('swapResult').src = URL.createObjectURL(blob);
-    document.getElementById('swapResult').style.display = 'block';
+    const img  = document.getElementById('swapResult');
+    img.src    = URL.createObjectURL(blob);
+    img.style.display = 'block';
     document.getElementById('swapPh').style.display = 'none';
-    setStatus('swapStatus', 'success', 'Face swap complete!');
-  } catch(e) { setStatus('swapStatus', 'error', e.message); }
-  finally { document.getElementById('swapBtn').disabled = false; }
+    document.getElementById('swapResultWrap').style.display = 'block';
+    document.getElementById('placeholder').style.display = 'none';
+    setStatus('swapStatus','success','Done!');
+  } catch(e) { setStatus('swapStatus','error',e.message); }
 }
 
-// ─── Avatar Picker ────────────────────────────────────────────────────────────
+// ── Avatar Picker ──────────────────────────────────────────────────────────────
 let _allAvatars = [], _selectedAvatar = null;
 
 async function loadAvatars() {
@@ -302,49 +629,44 @@ async function loadAvatars() {
 }
 
 function renderAvatars(list) {
-  const grid = document.getElementById('avatarGrid');
-  grid.innerHTML = list.map(a => `
-    <div class="avatar-card${_selectedAvatar===a.id?' selected':''}" id="av_${a.id}" onclick="selectAvatar('${a.id}')">
-      <img src="${FACE_API}${a.image_url}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%23333%22 width=%2280%22 height=%2280%22/><text fill=%22%23888%22 x=%2240%22 y=%2244%22 text-anchor=%22middle%22 font-size=%2212%22>${a.name[0]}</text></svg>'">
-      <span>${a.name}</span>
+  document.getElementById('avatarGrid').innerHTML = list.map(a => `
+    <div class="av-card${_selectedAvatar===a.id?' selected':''}" id="av_${a.id}" onclick="selectAvatar('${a.id}')">
+      <img src="${FACE_API}${a.image_url}" loading="lazy" onerror="this.src=''">
+      <div class="av-name">${a.name}</div>
+      <div class="av-check">✓</div>
     </div>`).join('');
 }
 
 function filterAvatars(cat, btn) {
-  document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  renderAvatars(cat === 'all' ? _allAvatars : _allAvatars.filter(a => a.category === cat));
+  renderAvatars(cat==='all' ? _allAvatars : _allAvatars.filter(a=>a.category===cat));
 }
 
 function selectAvatar(id) {
   _selectedAvatar = id;
-  const activeBtn = document.querySelector('.cat-btn.active');
+  const activeBtn = document.querySelector('.pill.active');
   const activeCat = activeBtn ? activeBtn.textContent : 'All';
-  renderAvatars(activeCat === 'All' ? _allAvatars : _allAvatars.filter(a => a.category === activeCat));
+  renderAvatars(activeCat==='All' ? _allAvatars : _allAvatars.filter(a=>a.category===activeCat));
 
-  const av   = _allAvatars.find(a => a.id === id);
-  const name = av ? av.name : id;
+  const av = _allAvatars.find(a=>a.id===id);
+  if (!av) return;
 
-  // Show preview using direct URL (display only — no CORS canvas needed)
-  document.getElementById('lsp').src = av.url;
+  document.getElementById('lsp').src = `${FACE_API}/avatars/${id}/image`;
   document.getElementById('lsp').style.display = 'block';
   document.getElementById('lsph').style.display = 'none';
-
-  // liveSource stores the avatar_id — backend loads image server-side
   liveSource = { avatar_id: id };
   checkLiveReady();
-  setStatus('liveStatus', 'success', `${name} selected — click Start Live Swap!`);
+  setStatus('liveStatus','success',`${av.name} selected`);
 
-  // Show voice card immediately
   document.getElementById('voiceCard').style.display = 'block';
-  document.getElementById('voiceAvatarName').textContent = name;
+  document.getElementById('voiceAvatarName').textContent = av.name;
   _resetVoiceUI();
 }
 
 function setLiveSourceFile(inp) {
   _selectedAvatar = null;
-  document.querySelectorAll('.avatar-card').forEach(c => c.classList.remove('selected'));
-  // Hide voice card when switching to custom upload (no avatar_id for voice API)
+  document.querySelectorAll('.av-card').forEach(c=>c.classList.remove('selected'));
   document.getElementById('voiceCard').style.display = 'none';
   _resetVoiceUI();
   const reader = new FileReader();
@@ -352,298 +674,251 @@ function setLiveSourceFile(inp) {
   reader.readAsDataURL(inp.files[0]);
 }
 
-// ─── Live Face Swap ────────────────────────────────────────────────────────────
-let liveStream = null, liveWs = null, liveSource = null, liveRunning = false;
-let liveLatestResult = null, liveRafId = null, liveSendTimer = null, liveResultTime = 0;
-
-function checkLiveReady() {
-  if (liveSource && liveStream) document.getElementById('liveSwapBtn').disabled = false;
-}
-function _hasLiveSource() { return liveSource !== null && liveSource !== undefined; }
 loadAvatars();
-async function startLiveCamera() {
-  try {
-    liveStream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480 }, audio:false });
-    document.getElementById('liveVideo').srcObject = liveStream;
-    const btn = document.getElementById('liveCamBtn');
-    btn.textContent = 'Camera On ✓'; btn.className = 'btn on';
-    checkLiveReady();
-  } catch(e) { alert('Camera error: ' + e.message); }
-}
-function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
 
-function startLiveSwap() {
-  if (!liveSource) { setStatus('liveStatus','error','Select a face first!'); return; }
-  liveLatestResult = null;
-  liveWs = new WebSocket(SWAP_WS);
-  liveWs.onopen = () => {
-    setDot('ls', true);
-    // avatar_id object → send id; raw base64 string → send image bytes
-    const initMsg = (liveSource && liveSource.avatar_id)
-      ? { type:'init', avatar_id: liveSource.avatar_id }
-      : { type:'init', source_image: liveSource };
-    liveWs.send(JSON.stringify(initMsg));
-    document.getElementById('liveSwapBtn').textContent = 'Stop';
-    document.getElementById('liveSwapBtn').className = 'btn stop';
-    liveRunning = true;
-  };
-  liveWs.onmessage = e => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'ready') {
-      setStatus('liveStatus', 'success', 'Live swap active!');
-      _startLsRender(); _startLsTimer();
-      sendLiveFrame(); // kick off the first frame immediately
-    } else if (msg.type === 'result') {
-      const img = new Image();
-      img.onload = () => { liveLatestResult = img; liveResultTime = Date.now(); };
-      img.src = 'data:image/jpeg;base64,' + msg.image;
-      sendLiveFrame(); // chain: result received → immediately request next frame
-    } else if (msg.type === 'no_face') {
-      sendLiveFrame(); // no face detected → try again immediately
-    } else if (msg.type === 'error') {
-      setStatus('liveStatus', 'error', msg.message);
-    }
-  };
-  liveWs.onclose = () => { setDot('ls', false); _stopLsTimer(); _stopLsRender(); liveRunning = false; };
-  liveWs.onerror = () => { setStatus('liveStatus', 'error', 'Connection error — is the server running?'); stopLiveSwap(); };
-}
-function stopLiveSwap() {
-  if (liveWs) liveWs.close();
-  _stopLsTimer(); _stopLsRender();
-  liveRunning = false;
-  document.getElementById('liveSwapBtn').textContent = 'Start Live Swap';
-  document.getElementById('liveSwapBtn').className = 'btn';
-}
-function _startLsTimer() {
-  if (liveSendTimer) clearInterval(liveSendTimer);
-  liveSendTimer = setInterval(sendLiveFrame, 100); // backup timer — primary chain is result-driven
-}
-function _stopLsTimer() { if (liveSendTimer) { clearInterval(liveSendTimer); liveSendTimer = null; } }
-function _startLsRender() {
-  if (liveRafId) cancelAnimationFrame(liveRafId);
-  const canvas = document.getElementById('liveCanvas');
-  const video  = document.getElementById('liveVideo');
-  const ctx    = canvas.getContext('2d');
-  (function render() {
-    const vw = video.videoWidth || 480, vh = video.videoHeight || 480;
-    const sz = Math.min(vw, vh);
-    if (canvas.width !== sz || canvas.height !== sz) { canvas.width = sz; canvas.height = sz; }
-    if (liveLatestResult) {
-      ctx.drawImage(liveLatestResult, 0, 0, sz, sz);
-    } else if (video.readyState >= 2) {
-      ctx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
-    }
-    if (liveRunning) liveRafId = requestAnimationFrame(render);
-  })();
-}
-function _stopLsRender() { if (liveRafId) { cancelAnimationFrame(liveRafId); liveRafId = null; } }
-function sendLiveFrame() {
-  if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
-  const video = document.getElementById('liveVideo');
-  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
-  const sz = Math.min(vw, vh, 320); // cap at 320 — inswapper is 128px, no need for more
-  if (_lsCvs.width !== sz) { _lsCvs.width = sz; _lsCvs.height = sz; }
-  _lsCtx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
-  liveWs.send(JSON.stringify({ type:'frame', image: _lsCvs.toDataURL('image/jpeg', 0.80).split(',')[1] }));
-}
-
-// ─── Real-time Voice Transform (Tone.js — no recording, instant pitch shift) ──
-let _voiceMic = null, _voicePitch = null, _voiceActive = false;
-
-// Semitone map per avatar category
+// ── Real-time Voice ────────────────────────────────────────────────────────────
+let _voiceMic=null, _voicePitch=null, _voiceActive=false;
 const _VOICE_SEMITONES = {
-  'cel_f': 2, 'cel_m': -2,
-  'ai_':   0, // robot effect — handled by AM modulation below
-  'ani_f': 8, 'ani_m': 5,
-  'fan_f': 3, 'fan_m': -5,
+  'cel_f':2,'cel_m':-2,'ai_':0,'ani_f':8,'ani_m':5,'fan_f':3,'fan_m':-5
 };
-
-function _getSemitones(avatarId) {
-  for (const [prefix, val] of Object.entries(_VOICE_SEMITONES)) {
-    if (avatarId && avatarId.startsWith(prefix)) return val;
+function _getSemitones(id) {
+  for (const [k,v] of Object.entries(_VOICE_SEMITONES)) {
+    if (id&&id.startsWith(k)) return v;
   }
   return 0;
 }
-
 function _resetVoiceUI() {
   stopRealtimeVoice();
   document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
   document.getElementById('recDot').style.display = 'none';
+  document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
-  st.className = 'status'; st.textContent = '';
+  if (st) { st.className='status-msg'; st.textContent=''; }
 }
-
 async function toggleRealtimeVoice() {
-  if (_voiceActive) {
-    stopRealtimeVoice();
-  } else {
-    await startRealtimeVoice();
-  }
+  _voiceActive ? stopRealtimeVoice() : await startRealtimeVoice();
 }
-
 async function startRealtimeVoice() {
-  if (!_selectedAvatar) {
-    setStatus('voiceStatus', 'error', 'Pehle avatar select karo!');
-    return;
-  }
-  if (typeof Tone === 'undefined') {
-    setStatus('voiceStatus', 'error', 'Tone.js load nahi hua — page reload karo');
-    return;
-  }
+  if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
+  if (typeof Tone==='undefined') { setStatus('voiceStatus','error','Audio engine loading…'); return; }
   try {
     await Tone.start();
     const semitones = _getSemitones(_selectedAvatar);
-
     _voiceMic   = new Tone.UserMedia();
-    _voicePitch = new Tone.PitchShift({ pitch: semitones, windowSize: 0.1 });
-
-    // AI Avatar → add robot tremolo effect
+    _voicePitch = new Tone.PitchShift({ pitch:semitones, windowSize:0.1 });
     if (_selectedAvatar.startsWith('ai_')) {
-      const tremolo = new Tone.Tremolo({ frequency: 10, depth: 0.6 }).start();
-      _voiceMic.connect(_voicePitch);
-      _voicePitch.connect(tremolo);
-      tremolo.toDestination();
+      const tremolo = new Tone.Tremolo({frequency:10,depth:0.6}).start();
+      _voiceMic.connect(_voicePitch); _voicePitch.connect(tremolo); tremolo.toDestination();
     } else if (_selectedAvatar.startsWith('fan_f')) {
-      // Fantasy female → pitch + reverb
-      const reverb = new Tone.Reverb({ decay: 2.5, wet: 0.4 });
-      _voiceMic.connect(_voicePitch);
-      _voicePitch.connect(reverb);
-      reverb.toDestination();
+      const reverb = new Tone.Reverb({decay:2.5,wet:0.4});
+      _voiceMic.connect(_voicePitch); _voicePitch.connect(reverb); reverb.toDestination();
     } else {
-      _voiceMic.connect(_voicePitch);
-      _voicePitch.toDestination();
+      _voiceMic.connect(_voicePitch); _voicePitch.toDestination();
     }
-
     await _voiceMic.open();
     _voiceActive = true;
-
-    document.getElementById('voiceBtnLabel').textContent = '🔴 Stop Live Voice';
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Voice';
     document.getElementById('recDot').style.display = 'inline-block';
-    const av = _allAvatars.find(a => a.id === _selectedAvatar);
-    setStatus('voiceStatus', 'success',
-      `Live: ${av?.name || ''} voice active (${semitones > 0 ? '+' : ''}${semitones} semitones)`);
-  } catch(e) {
-    setStatus('voiceStatus', 'error', 'Mic error: ' + e.message);
-  }
+    document.getElementById('voiceBtn').classList.add('active');
+    const av = _allAvatars.find(a=>a.id===_selectedAvatar);
+    setStatus('voiceStatus','success',`Live: ${av?.name||''} (${semitones>0?'+':''}${semitones} semitones)`);
+  } catch(e) { setStatus('voiceStatus','error','Mic error: '+e.message); }
 }
-
 function stopRealtimeVoice() {
-  if (_voiceMic)   { try { _voiceMic.close(); _voiceMic.disconnect(); } catch(_) {} _voiceMic = null; }
-  if (_voicePitch) { try { _voicePitch.disconnect(); } catch(_) {} _voicePitch = null; }
-  _voiceActive = false;
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
-  document.getElementById('recDot').style.display = 'none';
+  if (_voiceMic)   { try{_voiceMic.close();_voiceMic.disconnect();}catch(_){} _voiceMic=null; }
+  if (_voicePitch) { try{_voicePitch.disconnect();}catch(_){} _voicePitch=null; }
+  _voiceActive=false;
+  document.getElementById('voiceBtnLabel').textContent='🎤 Start Live Voice';
+  document.getElementById('recDot').style.display='none';
+  document.getElementById('voiceBtn').classList.remove('active');
 }
 
-// ─── Live Try-On ──────────────────────────────────────────────────────────────
-let toStream = null, toWs = null, toGarment = null, toRunning = false;
-let toLatestResult = null, toRafId = null, toSendTimer = null;
+// ── Live Face Swap ─────────────────────────────────────────────────────────────
+let liveStream=null,liveWs=null,liveSource=null,liveRunning=false;
+let liveLatestResult=null,liveRafId=null,liveSendTimer=null;
+
+function checkLiveReady() {
+  if (liveSource && liveStream) document.getElementById('liveSwapBtn').disabled=false;
+}
+async function startLiveCamera() {
+  try {
+    liveStream = await navigator.mediaDevices.getUserMedia({video:{width:640,height:480},audio:false});
+    document.getElementById('liveVideo').srcObject = liveStream;
+    const btn = document.getElementById('liveCamBtn');
+    btn.textContent='✅ Camera On'; btn.className='btn btn-active';
+    checkLiveReady();
+    document.getElementById('liveCamStrip').style.display='block';
+  } catch(e) { alert('Camera error: '+e.message); }
+}
+function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
+function startLiveSwap() {
+  if (!liveSource) { setStatus('liveStatus','error','Select a face first'); return; }
+  liveLatestResult=null;
+  liveWs = new WebSocket(SWAP_WS);
+  liveWs.onopen = () => {
+    setDot('ls',true);
+    const initMsg = (liveSource&&liveSource.avatar_id)
+      ? {type:'init',avatar_id:liveSource.avatar_id}
+      : {type:'init',source_image:liveSource};
+    liveWs.send(JSON.stringify(initMsg));
+    document.getElementById('liveSwapBtn').textContent='⏹ Stop';
+    document.getElementById('liveSwapBtn').className='btn btn-stop';
+    liveRunning=true;
+  };
+  liveWs.onmessage = e => {
+    const msg=JSON.parse(e.data);
+    if (msg.type==='ready') {
+      setStatus('liveStatus','success','Live swap active');
+      _startLsRender(); _startLsTimer(); sendLiveFrame();
+    } else if (msg.type==='result') {
+      const img=new Image();
+      img.onload=()=>{ liveLatestResult=img; };
+      img.src='data:image/jpeg;base64,'+msg.image;
+      sendLiveFrame();
+    } else if (msg.type==='no_face'||msg.type==='dropped') {
+      sendLiveFrame();
+    } else if (msg.type==='error') {
+      setStatus('liveStatus','error',msg.message);
+    }
+  };
+  liveWs.onclose=()=>{ setDot('ls',false); _stopLsTimer(); _stopLsRender(); liveRunning=false; };
+  liveWs.onerror=()=>{ setStatus('liveStatus','error','Connection error'); stopLiveSwap(); };
+}
+function stopLiveSwap() {
+  if (liveWs) liveWs.close();
+  _stopLsTimer(); _stopLsRender(); liveRunning=false;
+  document.getElementById('liveSwapBtn').textContent='Start Live Swap';
+  document.getElementById('liveSwapBtn').className='btn btn-primary';
+}
+function _startLsTimer() {
+  if (liveSendTimer) clearInterval(liveSendTimer);
+  liveSendTimer=setInterval(sendLiveFrame,100);
+}
+function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
+function _startLsRender() {
+  if (liveRafId) cancelAnimationFrame(liveRafId);
+  const canvas=document.getElementById('liveCanvas');
+  const video=document.getElementById('liveVideo');
+  const ctx=canvas.getContext('2d');
+  (function render(){
+    const vw=video.videoWidth||480,vh=video.videoHeight||480;
+    const sz=Math.min(vw,vh);
+    if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
+    if(liveLatestResult){ ctx.drawImage(liveLatestResult,0,0,sz,sz); }
+    else if(video.readyState>=2){ ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz); }
+    if(liveRunning) liveRafId=requestAnimationFrame(render);
+  })();
+}
+function _stopLsRender(){if(liveRafId){cancelAnimationFrame(liveRafId);liveRafId=null;}}
+function sendLiveFrame() {
+  if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
+  const video=document.getElementById('liveVideo');
+  const vw=video.videoWidth||640,vh=video.videoHeight||480;
+  const sz=Math.min(vw,vh,320);
+  if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
+  _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.80).split(',')[1]}));
+}
+
+// ── Live Try-On ────────────────────────────────────────────────────────────────
+let toStream=null,toWs=null,toGarment=null,toRunning=false;
+let toLatestResult=null,toRafId=null,toSendTimer=null;
 
 function setGarment(inp) {
-  toGarment = inp.files[0];
-  // Enable as soon as garment uploaded — camera can be started anytime
-  if (toGarment) document.getElementById('tryonBtn').disabled = false;
-}
-function checkToReady() {
-  if (toGarment) document.getElementById('tryonBtn').disabled = false;
+  toGarment=inp.files[0];
+  if(toGarment) document.getElementById('tryonBtn').disabled=false;
 }
 async function startTryOnCamera() {
   try {
-    toStream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode:'user' }, audio:false });
-    document.getElementById('tryonVideo').srcObject = toStream;
-    const btn = document.getElementById('tryonCamBtn');
-    btn.textContent = 'Camera On ✓'; btn.className = 'btn on';
-    checkToReady();
-  } catch(e) { alert('Camera error: ' + e.message); }
+    toStream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'},audio:false});
+    document.getElementById('tryonVideo').srcObject=toStream;
+    const btn=document.getElementById('tryonCamBtn');
+    btn.textContent='✅ Camera On'; btn.className='btn btn-active';
+    document.getElementById('tryonCamStrip').style.display='block';
+  } catch(e) { alert('Camera error: '+e.message); }
 }
 function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
-
 function startTryOn() {
-  if (!toStream) { setStatus('tryonStatus', 'error', 'Pehle "Start Camera" click karo!'); return; }
-  if (!toGarment) { setStatus('tryonStatus', 'error', 'Pehle garment upload karo!'); return; }
-  toLatestResult = null;
-  toWs = new WebSocket(TRYON_WS);
-  toWs.onopen = () => {
-    setDot('to', true);
-    const r = new FileReader();
-    r.onload = e => toWs.send(JSON.stringify({ type:'init', garment_image: e.target.result.split(',')[1] }));
+  if(!toStream) { setStatus('tryonStatus','error','Start camera first'); return; }
+  if(!toGarment) { setStatus('tryonStatus','error','Upload garment first'); return; }
+  toLatestResult=null;
+  toWs=new WebSocket(TRYON_WS);
+  toWs.onopen=()=>{
+    setDot('to',true);
+    const r=new FileReader();
+    r.onload=e=>toWs.send(JSON.stringify({type:'init',garment_image:e.target.result.split(',')[1]}));
     r.readAsDataURL(toGarment);
-    document.getElementById('tryonBtn').textContent = 'Stop';
-    document.getElementById('tryonBtn').className = 'btn stop';
-    toRunning = true;
+    document.getElementById('tryonBtn').textContent='⏹ Stop';
+    document.getElementById('tryonBtn').className='btn btn-stop';
+    toRunning=true;
   };
-  toWs.onmessage = e => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'ready') {
-      setStatus('tryonStatus', 'success', 'Live try-on active');
-      _startToRender(); _startToTimer();
+  toWs.onmessage=e=>{
+    const msg=JSON.parse(e.data);
+    if(msg.type==='ready'){
+      setStatus('tryonStatus','success','Try-on active');
+      _startToRender(); _startToTimer(); sendToFrame();
+    } else if(msg.type==='result'){
+      const img=new Image();
+      img.onload=()=>{ toLatestResult=img; };
+      img.src='data:image/jpeg;base64,'+msg.image;
       sendToFrame();
-    } else if (msg.type === 'result') {
-      const img = new Image();
-      img.onload = () => { toLatestResult = img; };
-      img.src = 'data:image/jpeg;base64,' + msg.image;
-      sendToFrame(); // chain — next frame immediately
-    } else if (msg.type === 'dropped') {
+    } else if(msg.type==='dropped') {
       sendToFrame();
-    } else if (msg.type === 'error') {
-      setStatus('tryonStatus', 'error', msg.message);
+    } else if(msg.type==='error') {
+      setStatus('tryonStatus','error',msg.message);
     }
   };
-  toWs.onclose = () => { setDot('to', false); _stopToTimer(); _stopToRender(); toRunning = false; };
-  toWs.onerror = () => { setStatus('tryonStatus', 'error', 'Connection error — is the server running?'); stopTryOn(); };
+  toWs.onclose=()=>{ setDot('to',false); _stopToTimer(); _stopToRender(); toRunning=false; };
+  toWs.onerror=()=>{ setStatus('tryonStatus','error','Connection error'); stopTryOn(); };
 }
 function stopTryOn() {
-  if (toWs) toWs.close();
-  _stopToTimer(); _stopToRender();
-  toRunning = false;
-  document.getElementById('tryonBtn').textContent = 'Start Live Try-On';
-  document.getElementById('tryonBtn').className = 'btn';
+  if(toWs) toWs.close();
+  _stopToTimer(); _stopToRender(); toRunning=false;
+  document.getElementById('tryonBtn').textContent='Start Live Try-On';
+  document.getElementById('tryonBtn').className='btn btn-primary';
 }
-function _startToTimer() {
-  if (toSendTimer) clearInterval(toSendTimer);
-  toSendTimer = setInterval(sendToFrame, 1500); // backup timer — primary chain is result-driven
-}
-function _stopToTimer() { if (toSendTimer) { clearInterval(toSendTimer); toSendTimer = null; } }
-function _startToRender() {
-  if (toRafId) cancelAnimationFrame(toRafId);
-  const canvas = document.getElementById('tryonCanvas');
-  const video  = document.getElementById('tryonVideo');
-  const ctx    = canvas.getContext('2d');
-  (function render() {
-    const vw = video.videoWidth || 480, vh = video.videoHeight || 480;
-    const sz = Math.min(vw, vh);
-    if (canvas.width !== sz || canvas.height !== sz) { canvas.width = sz; canvas.height = sz; }
-    if (toLatestResult) {
-      // Show server try-on result (person with garment)
-      ctx.drawImage(toLatestResult, 0, 0, sz, sz);
-    } else if (video.readyState >= 2) {
-      // Show live camera until first result arrives — canvas is never blank
-      ctx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
-    }
-    if (toRunning) toRafId = requestAnimationFrame(render);
+function _startToTimer(){if(toSendTimer)clearInterval(toSendTimer);toSendTimer=setInterval(sendToFrame,1500);}
+function _stopToTimer(){if(toSendTimer){clearInterval(toSendTimer);toSendTimer=null;}}
+function _startToRender(){
+  if(toRafId) cancelAnimationFrame(toRafId);
+  const canvas=document.getElementById('tryonCanvas');
+  const video=document.getElementById('tryonVideo');
+  const ctx=canvas.getContext('2d');
+  (function render(){
+    const vw=video.videoWidth||480,vh=video.videoHeight||480;
+    const sz=Math.min(vw,vh);
+    if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
+    if(toLatestResult){ ctx.drawImage(toLatestResult,0,0,sz,sz); }
+    else if(video.readyState>=2){ ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz); }
+    if(toRunning) toRafId=requestAnimationFrame(render);
   })();
 }
-function _stopToRender() { if (toRafId) { cancelAnimationFrame(toRafId); toRafId = null; } }
-// Pause frame sending when tab is hidden — no point burning server GPU for an invisible tab
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    if (liveSendTimer) { clearInterval(liveSendTimer); liveSendTimer = null; }
-    if (toSendTimer)   { clearInterval(toSendTimer);   toSendTimer   = null; }
+function _stopToRender(){if(toRafId){cancelAnimationFrame(toRafId);toRafId=null;}}
+function sendToFrame(){
+  if(!toWs||toWs.readyState!==WebSocket.OPEN) return;
+  const video=document.getElementById('tryonVideo');
+  const vw=video.videoWidth||640,vh=video.videoHeight||480;
+  const sz=Math.min(vw,vh);
+  if(_toCvs.width!==sz){_toCvs.width=sz;_toCvs.height=sz;}
+  _toCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  toWs.send(JSON.stringify({type:'frame',image:_toCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
+}
+
+// Pause when tab hidden
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;}
+    if(toSendTimer){clearInterval(toSendTimer);toSendTimer=null;}
   } else {
-    if (liveRunning) _startLsTimer();
-    if (toRunning)   _startToTimer();
+    if(liveRunning) _startLsTimer();
+    if(toRunning)   _startToTimer();
   }
 });
 
-function sendToFrame() {
-  if (!toWs || toWs.readyState !== WebSocket.OPEN) return;
-  const video = document.getElementById('tryonVideo');
-  const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
-  const sz = Math.min(vw, vh);
-  if (_toCvs.width !== sz) { _toCvs.width = sz; _toCvs.height = sz; }
-  _toCtx.drawImage(video, (vw-sz)/2, (vh-sz)/2, sz, sz, 0, 0, sz, sz);
-  toWs.send(JSON.stringify({ type:'frame', image: _toCvs.toDataURL('image/jpeg', 0.85).split(',')[1] }));
-}
+// Show placeholder initially
+switchTab('faceswap');
+document.getElementById('swapResultWrap').style.display='block';
+document.getElementById('placeholder').style.display='none';
 </script>
 </body>
 </html>
