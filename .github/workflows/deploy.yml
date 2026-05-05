@@ -1,0 +1,23 @@
+name: Deploy to G5
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: |
+          cd C:\virtual-try-on
+          git pull origin main
+
+      - name: Restart backends
+        run: |
+          Stop-Process -Name python -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Start-Process -FilePath python -ArgumentList "C:\virtual-try-on\tryon_backend\server.py" -WorkingDirectory "C:\virtual-try-on\tryon_backend"
+          Start-Sleep -Seconds 2
+          Start-Process -FilePath python -ArgumentList "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1" -WorkingDirectory "C:\virtual-try-on\face_swap_backend"
+          Write-Host "Backends restarted."
