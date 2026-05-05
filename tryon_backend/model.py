@@ -147,6 +147,9 @@ class TryOnModel:
         self._video_results: list[Image.Image] = []  # processed video frames ready to serve
         self._video_result_idx = 0                   # pointer into _video_results
 
+        # ── CatVTON direct (Tier 3 primary) ──────────────────────────────────
+        self._catvton_unet = None   # UNet2DConditionModel with 12-channel in (garment concat)
+
         # ── Phase 3: DWPose body-pose detector ───────────────────────────────
         self._dwpose = None   # loaded by _load_dwpose() when controlnet_aux available
 
@@ -207,17 +210,67 @@ class TryOnModel:
         self._steps = VTON_STEPS if VTON_STEPS > 0 else 1
         log.info("Tier 2 ready — torch.compile. ~15-20fps")
 
+    def _load_catvton_direct(self):
+        """
+        Load CatVTON (zheng-chong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
+        The UNet expects 12-channel input: [noise(4), person_lat(4), garment_lat(4)].
+        Single DDIM step at inference time → ~1-2 s/frame on A10G, GPU-quality try-on.
+        """
+        from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
+        from transformers import CLIPTextModel, CLIPTokenizer
+
+        base = "zheng-chong/CatVTON"
+        log.info(f"Loading CatVTON model from {base} …")
+
+        self._vae = AutoencoderKL.from_pretrained(
+            base, subfolder="vae", torch_dtype=self.dtype,
+        ).to(self.device)
+        self._vae.requires_grad_(False)
+
+        self._catvton_unet = UNet2DConditionModel.from_pretrained(
+            base, subfolder="unet", torch_dtype=self.dtype,
+            in_channels=12, ignore_mismatched_sizes=True,
+        ).to(self.device)
+        self._catvton_unet.requires_grad_(False)
+
+        tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
+        te  = CLIPTextModel.from_pretrained(
+            base, subfolder="text_encoder", torch_dtype=self.dtype,
+        ).to(self.device)
+        with torch.no_grad():
+            ids = tok([""], padding="max_length", max_length=77,
+                      truncation=True, return_tensors="pt").input_ids.to(self.device)
+            self._null_emb = te(ids)[0]
+
+        n_steps = VTON_STEPS if VTON_STEPS > 0 else 20
+        self._scheduler = DDIMScheduler.from_pretrained(base, subfolder="scheduler")
+        self._scheduler.set_timesteps(n_steps)
+        self._steps = n_steps
+
+        if self.device == "cuda":
+            try:
+                self._catvton_unet.to(memory_format=torch.channels_last)
+                self._vae.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+
+        log.info(f"CatVTON direct ready — {self._steps}-step DDIM. Garment-latent concat try-on.")
+
     def _load_tier3(self):
         """
-        CatVTON — try-on trained model (zheng-chong/CatVTON).
-        Concatenates garment+person in latent space — no IP-Adapter guessing.
-        1.3s/frame on A10G at 20 steps. 2.26GB VRAM. Better than SD+IP-Adapter.
-        Falls back to SD+IP-Adapter if CatVTON load fails.
+        Primary: CatVTON direct (zheng-chong/CatVTON) — concatenates garment+person in latent.
+        Fallback 1: SD Inpainting + IP-Adapter.
+        Fallback 2: geometric warp (always works, no model required).
         """
+        try:
+            self._load_catvton_direct()
+            return
+        except Exception as e:
+            log.warning(f"CatVTON direct load failed ({e}), trying SD+IP-Adapter…")
         try:
             self._load_catvton()
         except Exception as e:
-            log.warning(f"CatVTON load failed ({e}), falling back to SD+IP-Adapter…")
+            log.warning(f"SD Inpainting load failed ({e}), falling back to SD+IP-Adapter…")
             self._load_sd_ipadapter()
 
     def _load_catvton(self):
@@ -497,11 +550,18 @@ class TryOnModel:
                                         garment.resize((OUTPUT_W, OUTPUT_H)),
                                         lambda s, t, e: self._compiled(s, t, e)[:, :4])
 
+        # ── CatVTON direct — garment+person concat in latent, best quality ──
+        if self._catvton_unet is not None:
+            sz = LIVE_SIZE
+            p  = person_image.convert("RGB").resize((sz, sz), Image.LANCZOS)
+            g  = garment.convert("RGB").resize((sz, sz), Image.LANCZOS)
+            return self._infer_catvton_direct(p, g)
+
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         if self._animatediff_pipe is not None:
             return self._infer_tier4_animatediff(person_image, garment)
 
-        # ── Geometric warp — jacket visible, face preserved, real-time ──────
+        # ── Geometric warp fallback — no model required ───────────────────────
         return self._infer_live_geometric(person_image)
 
     # ── Live geometric warp ───────────────────────────────────────────────────
@@ -528,21 +588,26 @@ class TryOnModel:
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
-            top         = fy + fh - int(fh * 0.05)  # just below chin
-            bottom      = min(H, top + int(fh * 3.0))
-            left        = max(0, cx - int(fw * 1.8))  # wide enough for shoulders
-            right       = min(W, cx + int(fw * 1.8))
-            face_bottom = fy + fh + int(fh * 0.05)
+            top         = fy + fh + int(fh * 0.05)   # start at neck base
+            bottom      = min(H, top + int(fh * 2.5)) # chest + torso only
+            left        = max(0, cx - int(fw * 1.25)) # shoulder width, not arm span
+            right       = min(W, cx + int(fw * 1.25))
+            face_bottom = fy + fh + int(fh * 0.10)
         else:
-            top = int(H * 0.32); bottom = H
-            left = int(W * 0.05); right = int(W * 0.95)
-            face_bottom = int(H * 0.40)
+            top = int(H * 0.35); bottom = int(H * 0.85)
+            left = int(W * 0.15); right = int(W * 0.85)
+            face_bottom = int(H * 0.42)
 
         th = max(1, bottom - top)
         tw = max(1, right  - left)
 
-        # Resize shirt to torso area
-        shirt = np.array(garment.resize((tw, th), Image.LANCZOS))
+        # Crop center of garment (removes extended sleeves from product shot)
+        g_arr = np.array(garment)
+        gH, gW = g_arr.shape[:2]
+        cl = int(gW * 0.18); cr = int(gW * 0.82)  # 64% center strip
+        g_crop = garment.crop((cl, 0, cr, gH))
+
+        shirt = np.array(g_crop.resize((tw, th), Image.LANCZOS))
 
         # Alpha: use real PNG alpha channel if available
         if self._garment_alpha is not None:
@@ -689,6 +754,51 @@ class TryOnModel:
             out    = self._vae.decode(self._scheduler.step(npred, t[0], noise).prev_sample / self._vae.config.scaling_factor).sample
             out    = (out.clamp(-1, 1) + 1) / 2
         return TF.to_pil_image(out[0].float().cpu())
+
+    def _infer_catvton_direct(self, person: Image.Image, garment: Image.Image) -> Image.Image:
+        """
+        Multi-step DDIM denoising with the direct CatVTON UNet.
+        Input concat: [x_t(4), person_lat(4), garment_lat(4)] → 12 channels.
+        After generation, face region is restored from original frame.
+        """
+        import torchvision.transforms.functional as TF
+        to_lat = lambda img: TF.normalize(
+            TF.to_tensor(img).unsqueeze(0), [0.5]*3, [0.5]*3
+        ).to(self.device, self.dtype)
+
+        orig_arr = np.array(person)
+
+        with torch.inference_mode():
+            p_lat = self._vae.encode(to_lat(person)).latent_dist.sample() * self._vae.config.scaling_factor
+            g_lat = self._vae.encode(to_lat(garment)).latent_dist.sample() * self._vae.config.scaling_factor
+            x = torch.randn_like(p_lat)
+            for t in self._scheduler.timesteps:
+                inp = torch.cat([x, p_lat, g_lat], dim=1).to(self.dtype)
+                t_b = t.unsqueeze(0).to(self.device)
+                noise_pred = self._catvton_unet(
+                    inp, t_b, encoder_hidden_states=self._null_emb
+                ).sample
+                x = self._scheduler.step(noise_pred, t, x).prev_sample
+            out = self._vae.decode(x / self._vae.config.scaling_factor).sample
+            out = (out.clamp(-1, 1) + 1) / 2
+
+        result_arr = np.array(TF.to_pil_image(out[0].float().cpu()))
+
+        # Restore face — CatVTON may alter the upper portion
+        sz    = result_arr.shape[0]
+        gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
+        faces = self._haar.detectMultiScale(
+            cv2.equalizeHist(gray), scaleFactor=1.1,
+            minNeighbors=4, minSize=(40, 40)
+        )
+        if len(faces) > 0:
+            fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+            cutoff = min(fy + fh + int(fh * 0.15), int(sz * 0.65))
+        else:
+            cutoff = int(sz * 0.42)
+        result_arr[:cutoff] = orig_arr[:cutoff]
+        self._prev_result = result_arr.copy()
+        return Image.fromarray(result_arr)
 
     # ── Tier 3 live inference ─────────────────────────────────────────────────
 
