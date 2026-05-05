@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LUCY AI Demo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #fff; min-height: 100vh; }
@@ -173,19 +174,16 @@
     </div>
   </div>
 
-  <!-- Voice Transform -->
+  <!-- Voice Transform — real-time, no recording -->
   <div class="card" id="voiceCard">
-    <h3>Voice Transform</h3>
+    <h3>Live Voice Transform</h3>
     <div class="voice-avatar-label">
       Speaking as: <strong id="voiceAvatarName">—</strong>
     </div>
-    <button class="voice-btn" id="voiceBtn" onclick="toggleVoice()">
+    <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
       <span class="rec-dot" id="recDot" style="display:none"></span>
-      <span id="voiceBtnLabel">Tap to Speak</span>
+      <span id="voiceBtnLabel">🎤 Start Live Voice</span>
     </button>
-    <div id="voiceAudioWrap">
-      <audio id="voiceAudio" controls></audio>
-    </div>
     <div id="voiceStatus" class="status"></div>
   </div>
 
@@ -449,86 +447,89 @@ function sendLiveFrame() {
   liveWs.send(JSON.stringify({ type:'frame', image: _lsCvs.toDataURL('image/jpeg', 0.80).split(',')[1] }));
 }
 
-// ─── Voice Transform ──────────────────────────────────────────────────────────
-let _voiceRecorder = null, _voiceChunks = [], _voiceRecording = false;
+// ─── Real-time Voice Transform (Tone.js — no recording, instant pitch shift) ──
+let _voiceMic = null, _voicePitch = null, _voiceActive = false;
+
+// Semitone map per avatar category
+const _VOICE_SEMITONES = {
+  'cel_f': 2, 'cel_m': -2,
+  'ai_':   0, // robot effect — handled by AM modulation below
+  'ani_f': 8, 'ani_m': 5,
+  'fan_f': 3, 'fan_m': -5,
+};
+
+function _getSemitones(avatarId) {
+  for (const [prefix, val] of Object.entries(_VOICE_SEMITONES)) {
+    if (avatarId && avatarId.startsWith(prefix)) return val;
+  }
+  return 0;
+}
 
 function _resetVoiceUI() {
-  _voiceRecording = false;
-  if (_voiceRecorder && _voiceRecorder.state !== 'inactive') {
-    try { _voiceRecorder.stop(); } catch(_) {}
-  }
-  _voiceRecorder = null;
-  _voiceChunks = [];
-  document.getElementById('voiceBtn').classList.remove('recording');
+  stopRealtimeVoice();
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
   document.getElementById('recDot').style.display = 'none';
-  document.getElementById('voiceBtnLabel').textContent = 'Tap to Speak';
-  document.getElementById('voiceAudioWrap').style.display = 'none';
   const st = document.getElementById('voiceStatus');
   st.className = 'status'; st.textContent = '';
 }
 
-async function toggleVoice() {
-  if (_voiceRecording) {
-    // Stop recording — onStop handler fires automatically
-    _voiceRecorder.stop();
+async function toggleRealtimeVoice() {
+  if (_voiceActive) {
+    stopRealtimeVoice();
   } else {
-    // Start recording
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch(e) {
-      setStatus('voiceStatus', 'error', 'Microphone access denied: ' + e.message);
-      return;
-    }
-    _voiceChunks = [];
-    _voiceRecorder = new MediaRecorder(stream);
-    _voiceRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
-    _voiceRecorder.onstop = async () => {
-      // Stop all mic tracks
-      stream.getTracks().forEach(t => t.stop());
-      _voiceRecording = false;
-      document.getElementById('voiceBtn').classList.remove('recording');
-      document.getElementById('recDot').style.display = 'none';
-      document.getElementById('voiceBtnLabel').textContent = 'Tap to Speak';
-
-      const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
-      _voiceChunks = [];
-      await _sendVoice(blob);
-    };
-    _voiceRecorder.start();
-    _voiceRecording = true;
-    document.getElementById('voiceBtn').classList.add('recording');
-    document.getElementById('recDot').style.display = 'inline-block';
-    document.getElementById('voiceBtnLabel').textContent = 'Recording… (tap to stop)';
-    setStatus('voiceStatus', 'loading', 'Recording…');
+    await startRealtimeVoice();
   }
 }
 
-async function _sendVoice(blob) {
+async function startRealtimeVoice() {
   if (!_selectedAvatar) {
-    setStatus('voiceStatus', 'error', 'No avatar selected.');
+    setStatus('voiceStatus', 'error', 'Pehle avatar select karo!');
     return;
   }
-  setStatus('voiceStatus', 'loading', 'Transforming voice on server…');
-  const fd = new FormData();
-  fd.append('audio', blob, 'recording.webm');
-  fd.append('avatar_id', _selectedAvatar);
   try {
-    const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || res.statusText);
+    await Tone.start();
+    const semitones = _getSemitones(_selectedAvatar);
+
+    _voiceMic   = new Tone.UserMedia();
+    _voicePitch = new Tone.PitchShift({ pitch: semitones, windowSize: 0.1 });
+
+    // AI Avatar → add robot tremolo effect
+    if (_selectedAvatar.startsWith('ai_')) {
+      const tremolo = new Tone.Tremolo({ frequency: 10, depth: 0.6 }).start();
+      _voiceMic.connect(_voicePitch);
+      _voicePitch.connect(tremolo);
+      tremolo.toDestination();
+    } else if (_selectedAvatar.startsWith('fan_f')) {
+      // Fantasy female → pitch + reverb
+      const reverb = new Tone.Reverb({ decay: 2.5, wet: 0.4 });
+      _voiceMic.connect(_voicePitch);
+      _voicePitch.connect(reverb);
+      reverb.toDestination();
+    } else {
+      _voiceMic.connect(_voicePitch);
+      _voicePitch.toDestination();
     }
-    const wavBlob = await res.blob();
-    const url = URL.createObjectURL(wavBlob);
-    const audio = document.getElementById('voiceAudio');
-    audio.src = url;
-    document.getElementById('voiceAudioWrap').style.display = 'block';
-    audio.play().catch(() => {}); // auto-play (may be blocked by browser policy)
-    setStatus('voiceStatus', 'success', 'Voice transformed! Playing…');
+
+    await _voiceMic.open();
+    _voiceActive = true;
+
+    document.getElementById('voiceBtnLabel').textContent = '🔴 Stop Live Voice';
+    document.getElementById('recDot').style.display = 'inline-block';
+    const av = _allAvatars.find(a => a.id === _selectedAvatar);
+    setStatus('voiceStatus', 'success',
+      `Live: ${av?.name || ''} voice active (${semitones > 0 ? '+' : ''}${semitones} semitones)`);
   } catch(e) {
-    setStatus('voiceStatus', 'error', 'Voice transform failed: ' + e.message);
+    setStatus('voiceStatus', 'error', 'Mic error: ' + e.message);
   }
+}
+
+function stopRealtimeVoice() {
+  if (_voiceMic)   { try { _voiceMic.close(); _voiceMic.disconnect(); } catch(_) {} _voiceMic = null; }
+  if (_voicePitch) { try { _voicePitch.disconnect(); } catch(_) {} _voicePitch = null; }
+  _voiceActive = false;
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
+  document.getElementById('recDot').style.display = 'none';
+}
 }
 
 // ─── Live Try-On ──────────────────────────────────────────────────────────────

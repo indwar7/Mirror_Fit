@@ -681,55 +681,73 @@ async def voice_transform(
 async def ws_live_swap(ws: WebSocket):
     await ws.accept()
 
-    src_img: Optional[np.ndarray] = None
-    loop = asyncio.get_event_loop()
+    src_img       = None
+    src_detection = None   # cached once — saves ~100ms/frame
+    processing    = False
+    loop          = asyncio.get_event_loop()
+
+    async def send(obj):
+        await ws.send_text(json.dumps(obj))
 
     try:
-        async for raw in ws.iter_text():
+        while True:
+            raw = await ws.receive_text()
             msg = json.loads(raw)
 
             if msg["type"] == "init":
                 if "avatar_id" in msg:
-                    # Load avatar from server cache — no image upload needed
                     av_id      = msg["avatar_id"]
                     cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
                     if not cache_path.exists():
                         av = _AVATAR_MAP.get(av_id)
                         if av is None:
-                            await ws.send_text(json.dumps({"type":"error","message":"Unknown avatar"}))
+                            await send({"type":"error","message":"Unknown avatar"})
                             continue
                         async with httpx.AsyncClient(timeout=10) as client:
                             r = await client.get(av["url"])
                             cache_path.write_bytes(r.content)
                     src_img = await loop.run_in_executor(None, _decode_image, cache_path.read_bytes())
                 else:
-                    b64       = msg["source_image"]
-                    img_bytes = base64.b64decode(b64)
+                    img_bytes = base64.b64decode(msg["source_image"])
                     src_img   = await loop.run_in_executor(None, _decode_image, img_bytes)
-                await ws.send_text(json.dumps({"type": "ready"}))
+
+                # Cache source face detection once — never re-run per frame
+                src_detection = await loop.run_in_executor(None, _detect, src_img)
+                _, kps, _, _  = src_detection
+                if kps is None:
+                    await send({"type":"error","message":"No face detected in source image"})
+                    src_img = src_detection = None
+                else:
+                    await send({"type":"ready"})
 
             elif msg["type"] == "frame":
                 if src_img is None:
-                    await ws.send_text(json.dumps({"type": "error", "message": "Send init first"}))
+                    await send({"type":"error","message":"Send init first"})
+                    continue
+                if processing:
+                    await send({"type":"dropped"})
                     continue
 
-                b64 = msg["image"]
-                frame_bytes = base64.b64decode(b64)
-                frame = await loop.run_in_executor(None, _decode_image, frame_bytes)
-
-                result = await loop.run_in_executor(None, _do_swap, src_img, frame)
-                if result is None:
-                    await ws.send_text(json.dumps({"type": "no_face"}))
-                else:
-                    _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    b64_out = base64.b64encode(buf).decode("ascii")
-                    await ws.send_text(json.dumps({"type": "result", "image": b64_out}))
+                processing = True
+                try:
+                    frame_bytes = base64.b64decode(msg["image"])
+                    frame  = await loop.run_in_executor(None, _decode_image, frame_bytes)
+                    result = await loop.run_in_executor(
+                        None, _swap_live, src_img, src_detection, frame
+                    )
+                    if result is None:
+                        await send({"type":"no_face"})
+                    else:
+                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        await send({"type":"result","image": base64.b64encode(buf).decode()})
+                finally:
+                    processing = False
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
         with contextlib.suppress(Exception):
-            await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
+            await send({"type":"error","message":str(e)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
