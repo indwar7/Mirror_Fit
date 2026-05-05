@@ -465,9 +465,27 @@ def _transform_voice(audio_bytes: bytes, avatar_id: str) -> bytes:
             fx_params = _VOICE_FX[prefix]
             break
 
-    # Decode audio from bytes (handles webm, ogg, mp3, wav, etc.)
-    buf = io.BytesIO(audio_bytes)
-    y, sr = librosa.load(buf, sr=None, mono=True)
+    # Browser MediaRecorder sends webm/ogg — convert to wav via ffmpeg first
+    import subprocess, tempfile
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_in:
+        tmp_in.write(audio_bytes)
+        tmp_in_path = tmp_in.name
+    tmp_out_path = tmp_in_path.replace(".webm", ".wav")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_in_path, "-ar", "44100", "-ac", "1", tmp_out_path],
+            capture_output=True, check=True
+        )
+        y, sr = librosa.load(tmp_out_path, sr=None, mono=True)
+    except Exception:
+        # ffmpeg not available — try librosa directly (may fail on webm)
+        buf = io.BytesIO(audio_bytes)
+        y, sr = librosa.load(buf, sr=None, mono=True)
+    finally:
+        import os
+        for p in [tmp_in_path, tmp_out_path]:
+            try: os.unlink(p)
+            except: pass
 
     # Pitch shift
     semitones = fx_params["semitones"]
