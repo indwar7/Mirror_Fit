@@ -770,9 +770,20 @@ class TryOnModel:
                     generator=generator,
                     **ip_kw,
                 ).images[0]
-            # Force-restore face from original camera — SD/TAESD can soften it
-            result_arr  = np.array(result)
-            face_cutoff = int(LIVE_SIZE * 0.40)
+            # Detect face to find exact cutoff — restore everything above chin
+            result_arr = np.array(result)
+            gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
+            faces = self._haar.detectMultiScale(
+                cv2.equalizeHist(gray), scaleFactor=1.1,
+                minNeighbors=4, minSize=(40, 40)
+            )
+            if len(faces) > 0:
+                fx, fy, fw, fh = max(faces, key=lambda r: r[2]*r[3])
+                # Cutoff = chin + small neck gap
+                face_cutoff = min(fy + fh + int(fh * 0.15), int(LIVE_SIZE * 0.70))
+            else:
+                face_cutoff = int(LIVE_SIZE * 0.45)
+
             result_arr[:face_cutoff] = orig_arr[:face_cutoff]
             self._prev_result = result_arr.copy()
             return Image.fromarray(result_arr)
