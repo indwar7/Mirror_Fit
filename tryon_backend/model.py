@@ -253,7 +253,7 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(1.0)
+        self.pipeline.set_ip_adapter_scale(1.5)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -761,12 +761,12 @@ class TryOnModel:
                      else {"ip_adapter_image": garment})
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="person wearing jacket over body, clothes on torso, photorealistic, fashion photography",
-                    negative_prompt="naked, bare chest, no clothes, deformed, blurry, same as before",
+                    prompt="person wearing jacket over body, clothes on torso, photorealistic",
+                    negative_prompt="naked, bare chest, no clothes, deformed, blurry",
                     image=person,
                     mask_image=mask_pil,
                     num_inference_steps=max(self._steps, 8),
-                    guidance_scale=2.5,
+                    guidance_scale=1.0,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
