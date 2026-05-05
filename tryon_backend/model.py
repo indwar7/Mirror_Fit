@@ -770,9 +770,12 @@ class TryOnModel:
                     generator=generator,
                     **ip_kw,
                 ).images[0]
-            # Inpainting already preserves face+bg — no compositing needed
-            self._prev_result = np.array(result)
-            return result
+            # Force-restore face from original camera — SD/TAESD can soften it
+            result_arr  = np.array(result)
+            face_cutoff = int(LIVE_SIZE * 0.40)
+            result_arr[:face_cutoff] = orig_arr[:face_cutoff]
+            self._prev_result = result_arr.copy()
+            return Image.fromarray(result_arr)
 
         # ── SD img2img + IP-Adapter fallback ─────────────────────────────────
         else:
