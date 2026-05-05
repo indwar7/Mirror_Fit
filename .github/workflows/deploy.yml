@@ -9,15 +9,22 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Pull latest code
-        run: |
-          cd C:\virtual-try-on
-          git pull origin main
+        run: git -C C:\virtual-try-on pull origin main
 
       - name: Restart backends
         run: |
           Stop-Process -Name python -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
-          Start-Process -FilePath python -ArgumentList "C:\virtual-try-on\tryon_backend\server.py" -WorkingDirectory "C:\virtual-try-on\tryon_backend"
+          New-Item -ItemType Directory -Force -Path C:\logs | Out-Null
+          Start-Process -FilePath "C:\miniconda3\python.exe" `
+            -ArgumentList "C:\virtual-try-on\tryon_backend\server.py" `
+            -WorkingDirectory "C:\virtual-try-on\tryon_backend" `
+            -RedirectStandardOutput "C:\logs\tryon.log" `
+            -RedirectStandardError "C:\logs\tryon_err.log"
           Start-Sleep -Seconds 2
-          Start-Process -FilePath python -ArgumentList "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1" -WorkingDirectory "C:\virtual-try-on\face_swap_backend"
-          Write-Host "Backends restarted."
+          Start-Process -FilePath "C:\miniconda3\python.exe" `
+            -ArgumentList "-m uvicorn main:app --host 0.0.0.0 --port 7860 --workers 1" `
+            -WorkingDirectory "C:\virtual-try-on\face_swap_backend" `
+            -RedirectStandardOutput "C:\logs\faceswap.log" `
+            -RedirectStandardError "C:\logs\faceswap_err.log"
+          Write-Host "Backends restarted. Logs at C:\logs\"
