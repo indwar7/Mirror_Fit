@@ -124,7 +124,7 @@
   <button class="btn" id="swapBtn" onclick="doSwap()">Swap Face</button>
   <div id="swapStatus" class="status"></div>
   <div class="info-bar">
-    <span>API <b>http://13.233.133.130:7860/face-swap</b></span>
+    <span>API <b>http://13.203.75.149:7860/face-swap</b></span>
     <span>GPU <b>NVIDIA A10G 24GB</b></span>
   </div>
 </div>
@@ -190,7 +190,7 @@
   </div>
 
   <div class="info-bar">
-    <span>WebSocket <b>ws://13.233.133.130:7860/ws/live-swap</b></span>
+    <span>WebSocket <b>ws://13.203.75.149:7860/ws/live-swap</b></span>
     <span>GPU <b>NVIDIA A10G — ~0.5s/frame</b></span>
   </div>
 </div>
@@ -227,15 +227,15 @@
     </div>
   </div>
   <div class="info-bar">
-    <span>WebSocket <b>ws://13.233.133.130:8000/ws/tryon</b></span>
+    <span>WebSocket <b>ws://13.203.75.149:8000/ws/tryon</b></span>
     <span>GPU <b>SD 1.5 img2img + LCM 2-step + TAESD · ~3-5fps · A10G</b></span>
   </div>
 </div>
 
 <script>
-const FACE_API = 'http://13.233.133.130:7860';
-const TRYON_WS  = 'ws://13.233.133.130:8000/ws/tryon';
-const SWAP_WS   = 'ws://13.233.133.130:7860/ws/live-swap';
+const FACE_API = 'http://13.203.75.149:7860';
+const TRYON_WS  = 'ws://13.203.75.149:8000/ws/tryon';
+const SWAP_WS   = 'ws://13.203.75.149:7860/ws/live-swap';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 function switchTab(t) {
