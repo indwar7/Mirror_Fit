@@ -761,12 +761,12 @@ class TryOnModel:
                      else {"ip_adapter_image": garment})
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="person wearing the jacket, photorealistic, fashion",
-                    negative_prompt="naked, bare chest, deformed, blurry",
+                    prompt="person wearing jacket over body, clothes on torso, photorealistic, fashion photography",
+                    negative_prompt="naked, bare chest, no clothes, deformed, blurry, same as before",
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=self._steps,
-                    guidance_scale=1.0,
+                    num_inference_steps=max(self._steps, 8),
+                    guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
