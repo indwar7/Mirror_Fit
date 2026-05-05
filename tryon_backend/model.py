@@ -620,10 +620,28 @@ class TryOnModel:
 
         alpha = cv2.GaussianBlur(alpha, (11, 11), 0)
 
-        # Darken edges of shirt slightly — depth cue makes it look worn not pasted
-        edge_shadow        = np.ones_like(alpha)
-        edge_shadow[:, :int(tw*0.08)]  *= np.linspace(0.6, 1.0, int(tw*0.08))
-        edge_shadow[:, -int(tw*0.08):] *= np.linspace(1.0, 0.6, int(tw*0.08))
+        # MediaPipe body segmentation — clip jacket to actual body silhouette
+        body_mask_roi = None
+        if self._mp_seg is not None:
+            try:
+                rgb_frame = frame  # already RGB
+                seg_result = self._mp_seg.process(rgb_frame)
+                if seg_result.segmentation_mask is not None:
+                    body_mask = (seg_result.segmentation_mask > 0.5).astype(np.float32)
+                    body_mask = cv2.GaussianBlur(body_mask, (21, 21), 0)
+                    body_mask_roi = body_mask[top:top+th, left:left+tw]
+            except Exception:
+                pass
+
+        # Multiply jacket alpha by body mask so jacket never appears outside silhouette
+        if body_mask_roi is not None and body_mask_roi.shape == (th, tw):
+            alpha = alpha * body_mask_roi
+
+        # Darken left/right edges — subtle depth cue
+        edge_w = max(1, int(tw * 0.06))
+        edge_shadow = np.ones_like(alpha)
+        edge_shadow[:, :edge_w]  *= np.linspace(0.55, 1.0, edge_w)
+        edge_shadow[:, -edge_w:] *= np.linspace(1.0, 0.55, edge_w)
         shirt = np.clip(shirt.astype(np.float32) * edge_shadow[:, :, np.newaxis],
                         0, 255).astype(np.uint8)
 
