@@ -242,7 +242,7 @@ class TryOnModel:
                       truncation=True, return_tensors="pt").input_ids.to(self.device)
             self._null_emb = te(ids)[0]
 
-        n_steps = VTON_STEPS if VTON_STEPS > 0 else 20
+        n_steps = VTON_STEPS if VTON_STEPS > 0 else 6
         self._scheduler = DDIMScheduler.from_pretrained(base, subfolder="scheduler")
         self._scheduler.set_timesteps(n_steps)
         self._steps = n_steps
@@ -579,7 +579,7 @@ class TryOnModel:
         frame     = np.array(person_sq)
         H, W      = frame.shape[:2]
 
-        # Face detection → dynamic torso placement
+        # ── Face detection → torso placement ─────────────────────────────────
         gray  = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
             cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)
@@ -588,32 +588,31 @@ class TryOnModel:
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
-            top         = fy + fh + int(fh * 0.05)   # start at neck base
-            bottom      = min(H, top + int(fh * 2.5)) # chest + torso only
-            left        = max(0, cx - int(fw * 1.25)) # shoulder width, not arm span
-            right       = min(W, cx + int(fw * 1.25))
-            face_bottom = fy + fh + int(fh * 0.10)
+            # Jacket top = just below chin, shoulder-width placement
+            top         = fy + fh - int(fh * 0.05)
+            bottom      = min(H, top + int(fh * 2.8))
+            left        = max(0, cx - int(fw * 1.4))
+            right       = min(W, cx + int(fw * 1.4))
+            face_bottom = fy + fh + int(fh * 0.08)
         else:
-            top = int(H * 0.35); bottom = int(H * 0.85)
-            left = int(W * 0.15); right = int(W * 0.85)
-            face_bottom = int(H * 0.42)
+            top = int(H * 0.32); bottom = int(H * 0.88)
+            left = int(W * 0.10); right = int(W * 0.90)
+            face_bottom = int(H * 0.40)
+            cx = W // 2
 
         th = max(1, bottom - top)
         tw = max(1, right  - left)
 
-        # Crop center of garment (removes extended sleeves from product shot)
-        g_arr = np.array(garment)
-        gH, gW = g_arr.shape[:2]
+        # ── Garment crop — strip sleeves ──────────────────────────────────────
+        gH, gW = np.array(garment).shape[:2]
         cl = int(gW * 0.15); cr = int(gW * 0.85)
         g_crop = garment.crop((cl, 0, cr, gH))
+        shirt  = np.array(g_crop.resize((tw, th), Image.LANCZOS))
 
-        shirt = np.array(g_crop.resize((tw, th), Image.LANCZOS))
-
-        # Alpha: use real PNG alpha channel if available
+        # ── Alpha mask ────────────────────────────────────────────────────────
         if self._garment_alpha is not None:
-            # Crop alpha the same way as the garment image
-            alpha_pil = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
-            aw, ah = alpha_pil.size
+            alpha_pil  = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
+            aw, ah     = alpha_pil.size
             alpha_crop = alpha_pil.crop((int(aw*0.15), 0, int(aw*0.85), ah))
             alpha = np.array(alpha_crop.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
         else:
@@ -621,51 +620,67 @@ class TryOnModel:
             _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
             alpha  = (255 - bg).astype(np.float32) / 255.0
 
-        alpha = cv2.GaussianBlur(alpha, (11, 11), 0)
+        alpha = cv2.GaussianBlur(alpha, (9, 9), 0)
+
+        # ── Perspective warp — taper bottom 6% to simulate body wrap ─────────
+        taper = max(1, int(tw * 0.06))
+        src_pts = np.float32([[0,0],[tw,0],[tw,th],[0,th]])
+        dst_pts = np.float32([[0,0],[tw,0],[tw-taper,th],[taper,th]])
+        M_persp = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        shirt = cv2.warpPerspective(shirt, M_persp, (tw, th),
+                                    flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_REPLICATE)
+        alpha = cv2.warpPerspective(alpha, M_persp, (tw, th))
 
         # ── Ambient light harmonization ───────────────────────────────────────
-        # Sample the torso region from original frame and match jacket lighting
-        roi_orig = frame[top:top+th, left:left+tw].astype(np.float32)
+        roi_orig  = frame[top:top+th, left:left+tw].astype(np.float32)
         if roi_orig.size > 0:
-            orig_mean = roi_orig.mean(axis=(0, 1))          # [R, G, B] scene brightness
-            shirt_f   = shirt.astype(np.float32)
-            shirt_mean = shirt_f.mean(axis=(0, 1)) + 1e-6
-            # Soft blend: 40% toward scene light, 60% keep garment color
-            ratio = np.clip((orig_mean / shirt_mean) * 0.4 + 0.6, 0.4, 1.8)
-            shirt = np.clip(shirt_f * ratio, 0, 255).astype(np.uint8)
+            orig_mean  = roi_orig.mean(axis=(0, 1))
+            shirt_mean = shirt.astype(np.float32).mean(axis=(0, 1)) + 1e-6
+            ratio = np.clip((orig_mean / shirt_mean) * 0.35 + 0.65, 0.4, 1.8)
+            shirt = np.clip(shirt.astype(np.float32) * ratio, 0, 255).astype(np.uint8)
 
-        # ── MediaPipe body segmentation — clip to person silhouette ──────────
+        # ── Body mask — MediaPipe if available, else soft torso ellipse ───────
         body_mask_roi = None
         if self._mp_seg is not None:
             try:
                 seg_result = self._mp_seg.process(frame)
                 if seg_result.segmentation_mask is not None:
-                    body_mask = (seg_result.segmentation_mask > 0.4).astype(np.float32)
-                    body_mask = cv2.GaussianBlur(body_mask, (21, 21), 0)
-                    body_mask_roi = body_mask[top:top+th, left:left+tw]
+                    bm = (seg_result.segmentation_mask > 0.4).astype(np.float32)
+                    bm = cv2.GaussianBlur(bm, (21, 21), 0)
+                    body_mask_roi = bm[top:top+th, left:left+tw]
             except Exception:
                 pass
 
-        if body_mask_roi is not None and body_mask_roi.shape == (th, tw):
+        if body_mask_roi is None:
+            # Fallback: soft ellipse approximating torso silhouette
+            bm = np.zeros((H, W), np.float32)
+            cv2.ellipse(bm, (cx, (top+bottom)//2),
+                        ((right-left)//2, (bottom-top)//2),
+                        0, 0, 360, 1.0, -1)
+            bm = cv2.GaussianBlur(bm, (41, 41), 0)
+            body_mask_roi = bm[top:top+th, left:left+tw]
+
+        if body_mask_roi.shape == (th, tw):
             alpha = alpha * body_mask_roi
 
-        # ── Edge shadow — subtle depth cue ────────────────────────────────────
-        edge_w = max(1, int(tw * 0.06))
-        edge_shadow = np.ones_like(alpha)
-        edge_shadow[:, :edge_w]  *= np.linspace(0.5, 1.0, edge_w)
-        edge_shadow[:, -edge_w:] *= np.linspace(1.0, 0.5, edge_w)
-        shirt = np.clip(shirt.astype(np.float32) * edge_shadow[:, :, np.newaxis],
+        # ── Edge shadow — depth cue ───────────────────────────────────────────
+        edge_w = max(1, int(tw * 0.07))
+        eshadow = np.ones_like(alpha)
+        eshadow[:, :edge_w]  *= np.linspace(0.45, 1.0, edge_w)
+        eshadow[:, -edge_w:] *= np.linspace(1.0, 0.45, edge_w)
+        shirt = np.clip(shirt.astype(np.float32) * eshadow[:, :, np.newaxis],
                         0, 255).astype(np.uint8)
 
-        alpha = alpha[:, :, np.newaxis]
+        alpha3 = alpha[:, :, np.newaxis]
 
-        # Blend shirt onto torso
+        # ── Blend onto frame ──────────────────────────────────────────────────
         result = frame.copy()
         roi    = result[top:top+th, left:left+tw]
         if roi.shape[:2] == (th, tw):
             result[top:top+th, left:left+tw] = (
-                shirt.astype(np.float32) * alpha
-                + roi.astype(np.float32) * (1.0 - alpha)
+                shirt.astype(np.float32) * alpha3
+                + roi.astype(np.float32) * (1.0 - alpha3)
             ).astype(np.uint8)
 
         # Face always 100% original
