@@ -154,12 +154,17 @@ def _haar_detect(img_bgr: np.ndarray):
 
 
 def _detect(img_bgr: np.ndarray):
-    """Detect faces — InsightFace first, Haar fallback."""
+    """Detect faces — returns (face_obj, kps, bbox, is_real) 4-tuple for live caching."""
     faces = _face_app.get(img_bgr)
     if faces:
-        return _largest_face(faces), "insightface"
+        f = _largest_face(faces)
+        return f, getattr(f, 'kps', None), f.bbox, True
     haar = _haar_detect(img_bgr)
-    return haar, "haar"
+    if haar is not None:
+        x, y, w, h = haar
+        bbox = np.array([x, y, x + w, y + h], dtype=np.float32)
+        return haar, None, bbox, False
+    return None, None, None, False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,19 +271,32 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
 
     # Warp result back to original image space
     M_inv = cv2.invertAffineTransform(M)
-    swapped = tgt_img.copy()
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
                                 flags=cv2.INTER_LINEAR)
-    # Build a tight elliptical blend mask centred on the face
+
+    # Oval shifted up 8% to include forehead/hairline — not just cheek-to-chin
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
-    blend_mask = np.zeros(tgt_img.shape[:2], np.uint8)
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    rx, ry = max(1, (x2 - x1) // 2), max(1, (y2 - y1) // 2)
-    cv2.ellipse(blend_mask, (cx, cy), (rx, ry), 0, 0, 360, 255, -1)
-    blend_mask = cv2.GaussianBlur(blend_mask, (31, 31), 0)
-    alpha = blend_mask[:, :, np.newaxis].astype(np.float32) / 255.0
-    swapped = (patch_back.astype(np.float32) * alpha +
-               swapped.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+    fw, fh   = x2 - x1, y2 - y1
+    cx       = (x1 + x2) // 2
+    oval_cy  = max(1, (y1 + y2) // 2 - int(fh * 0.08))
+    oval_rx  = max(1, int(fw * 0.54))
+    oval_ry  = max(1, int(fh * 0.62))
+    ih, iw   = tgt_img.shape[:2]
+    oval_cy  = int(np.clip(oval_cy, oval_ry + 1, ih - oval_ry - 1))
+    cx       = int(np.clip(cx,      oval_rx + 1, iw - oval_rx - 1))
+
+    blend_mask = np.zeros((ih, iw), np.uint8)
+    cv2.ellipse(blend_mask, (cx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
+
+    # Poisson (seamless) clone — eliminates hard seam lines at face boundary
+    try:
+        swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
+                                    (cx, oval_cy), cv2.NORMAL_CLONE)
+    except cv2.error:
+        bm = cv2.GaussianBlur(blend_mask, (31, 31), 0)
+        alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
+        swapped = (patch_back.astype(np.float32) * alpha +
+                   tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
     return swapped
 
 
@@ -442,21 +460,23 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
             tgt_face.kps.astype(np.float32),
         )
         if M_aff is not None:
-            src_warp = cv2.warpAffine(src_img,M_aff,(w,h),
+            src_warp = cv2.warpAffine(src_img, M_aff, (w, h),
                                       flags=cv2.INTER_LINEAR,
                                       borderMode=cv2.BORDER_REPLICATE)
-            hair_top  = max(0, ty1 - int(fh*1.8))
-            ov_cy     = max(1,(hair_top+ty1)//2)
-            ov_ry     = max(1,(ty1-hair_top)//2)
-            ov_rx     = max(1,int(fw*0.70))
-            hair_mask = np.zeros((h,w),np.uint8)
-            cv2.ellipse(hair_mask,(cx,ov_cy),(ov_rx,ov_ry),0,0,360,255,-1)
-            hair_mask[ty1:] = 0
-            if hair_mask.sum()>500:
-                alpha = cv2.GaussianBlur(hair_mask,(31,31),0).astype(np.float32)/255.0
-                a3 = alpha[:,:,np.newaxis]
-                result = (src_warp.astype(np.float32)*a3 +
-                          result.astype(np.float32)*(1-a3)).astype(np.uint8)
+            # Extend hair coverage higher (2.5x face height) and wider (0.85x face width)
+            hair_top = max(0, ty1 - int(fh * 2.5))
+            ov_cy    = max(1, (hair_top + ty1) // 2)
+            ov_ry    = max(1, (ty1 - hair_top) // 2)
+            ov_rx    = max(1, int(fw * 0.85))
+            hair_mask = np.zeros((h, w), np.uint8)
+            cv2.ellipse(hair_mask, (cx, ov_cy), (ov_rx, ov_ry), 0, 0, 360, 255, -1)
+            hair_mask[ty1:] = 0  # don't blend below face top
+            if hair_mask.sum() > 500:
+                # Softer 41px blur for gradual transition
+                alpha = cv2.GaussianBlur(hair_mask, (41, 41), 0).astype(np.float32) / 255.0
+                a3 = alpha[:, :, np.newaxis]
+                result = (src_warp.astype(np.float32) * a3 +
+                          result.astype(np.float32) * (1 - a3)).astype(np.uint8)
         return result
 
     # Cartoon source
@@ -774,8 +794,8 @@ async def ws_live_swap(ws: WebSocket):
 
                 # Cache source face detection once — never re-run per frame
                 src_detection = await loop.run_in_executor(None, _detect, src_img)
-                _, kps, _, _  = src_detection
-                if kps is None:
+                _, kps, bbox, is_real = src_detection
+                if kps is None and not is_real:
                     await send({"type":"error","message":"No face detected in source image"})
                     src_img = src_detection = None
                 else:

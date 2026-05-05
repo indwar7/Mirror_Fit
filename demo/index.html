@@ -288,6 +288,7 @@ header {
   animation: pulse 1s infinite;
 }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes spin   { to { transform: rotate(360deg) } }
 
 /* ── Main canvas area ── */
 .main {
@@ -517,13 +518,23 @@ header {
             <div class="overlay-badge">📷 Your Camera</div>
           </div>
         </div>
-        <div class="canvas-wrap" style="max-width:100%">
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
           <canvas id="tryonCanvas"></canvas>
           <div class="canvas-overlay">
             <div class="overlay-badge">
               <div class="dot" id="toDot2"></div>
               <span>Live Result</span>
             </div>
+          </div>
+          <!-- Processing spinner — visible while CatVTON is running -->
+          <div id="toSpinner" style="display:none;position:absolute;inset:0;
+               background:rgba(0,0,0,0.45);border-radius:12px;
+               display:none;align-items:center;justify-content:center;
+               flex-direction:column;gap:10px;pointer-events:none">
+            <div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.2);
+                 border-top-color:#a78bfa;border-radius:50%;
+                 animation:spin 0.8s linear infinite"></div>
+            <span style="color:#e2e8f0;font-size:12px;font-weight:500" id="toSpinnerMs"></span>
           </div>
         </div>
       </div>
@@ -841,10 +852,15 @@ async function startTryOnCamera() {
   } catch(e) { alert('Camera error: '+e.message); }
 }
 function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
+let toProcessing=false, toFrameSentAt=0;
+function _toSpinner(on){
+  const el=document.getElementById('toSpinner');
+  el.style.display=on?'flex':'none';
+}
 function startTryOn() {
   if(!toStream) { setStatus('tryonStatus','error','Start camera first'); return; }
   if(!toGarment) { setStatus('tryonStatus','error','Upload garment first'); return; }
-  toLatestResult=null;
+  toLatestResult=null; toProcessing=false;
   toWs=new WebSocket(TRYON_WS);
   toWs.onopen=()=>{
     setDot('to',true);
@@ -861,17 +877,22 @@ function startTryOn() {
       setStatus('tryonStatus','success','Try-on active');
       _startToRender(); _startToTimer(); sendToFrame();
     } else if(msg.type==='result'){
+      const ms=Date.now()-toFrameSentAt;
+      document.getElementById('toSpinnerMs').textContent=ms+'ms';
+      toProcessing=false; _toSpinner(false);
       const img=new Image();
       img.onload=()=>{ toLatestResult=img; };
       img.src='data:image/jpeg;base64,'+msg.image;
       sendToFrame();
     } else if(msg.type==='dropped') {
+      toProcessing=false; _toSpinner(false);
       sendToFrame();
     } else if(msg.type==='error') {
+      toProcessing=false; _toSpinner(false);
       setStatus('tryonStatus','error',msg.message);
     }
   };
-  toWs.onclose=()=>{ setDot('to',false); _stopToTimer(); _stopToRender(); toRunning=false; };
+  toWs.onclose=()=>{ setDot('to',false); _stopToTimer(); _stopToRender(); toRunning=false; _toSpinner(false); };
   toWs.onerror=()=>{ setStatus('tryonStatus','error','Connection error'); stopTryOn(); };
 }
 function stopTryOn() {
@@ -904,6 +925,9 @@ function sendToFrame(){
   const sz=Math.min(vw,vh);
   if(_toCvs.width!==sz){_toCvs.width=sz;_toCvs.height=sz;}
   _toCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  toProcessing=true; toFrameSentAt=Date.now();
+  // Only show spinner if no result yet (first frame) to avoid flash on fast GPU
+  if(!toLatestResult) _toSpinner(true);
   toWs.send(JSON.stringify({type:'frame',image:_toCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
 }
 
