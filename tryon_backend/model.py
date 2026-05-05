@@ -604,15 +604,18 @@ class TryOnModel:
         # Crop center of garment (removes extended sleeves from product shot)
         g_arr = np.array(garment)
         gH, gW = g_arr.shape[:2]
-        cl = int(gW * 0.18); cr = int(gW * 0.82)  # 64% center strip
+        cl = int(gW * 0.15); cr = int(gW * 0.85)
         g_crop = garment.crop((cl, 0, cr, gH))
 
         shirt = np.array(g_crop.resize((tw, th), Image.LANCZOS))
 
         # Alpha: use real PNG alpha channel if available
         if self._garment_alpha is not None:
-            alpha = cv2.resize(self._garment_alpha, (tw, th),
-                               interpolation=cv2.INTER_LINEAR)
+            # Crop alpha the same way as the garment image
+            alpha_pil = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
+            aw, ah = alpha_pil.size
+            alpha_crop = alpha_pil.crop((int(aw*0.15), 0, int(aw*0.85), ah))
+            alpha = np.array(alpha_crop.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
         else:
             g_gray = cv2.cvtColor(shirt, cv2.COLOR_RGB2GRAY)
             _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
@@ -620,28 +623,37 @@ class TryOnModel:
 
         alpha = cv2.GaussianBlur(alpha, (11, 11), 0)
 
-        # MediaPipe body segmentation — clip jacket to actual body silhouette
+        # ── Ambient light harmonization ───────────────────────────────────────
+        # Sample the torso region from original frame and match jacket lighting
+        roi_orig = frame[top:top+th, left:left+tw].astype(np.float32)
+        if roi_orig.size > 0:
+            orig_mean = roi_orig.mean(axis=(0, 1))          # [R, G, B] scene brightness
+            shirt_f   = shirt.astype(np.float32)
+            shirt_mean = shirt_f.mean(axis=(0, 1)) + 1e-6
+            # Soft blend: 40% toward scene light, 60% keep garment color
+            ratio = np.clip((orig_mean / shirt_mean) * 0.4 + 0.6, 0.4, 1.8)
+            shirt = np.clip(shirt_f * ratio, 0, 255).astype(np.uint8)
+
+        # ── MediaPipe body segmentation — clip to person silhouette ──────────
         body_mask_roi = None
         if self._mp_seg is not None:
             try:
-                rgb_frame = frame  # already RGB
-                seg_result = self._mp_seg.process(rgb_frame)
+                seg_result = self._mp_seg.process(frame)
                 if seg_result.segmentation_mask is not None:
-                    body_mask = (seg_result.segmentation_mask > 0.5).astype(np.float32)
+                    body_mask = (seg_result.segmentation_mask > 0.4).astype(np.float32)
                     body_mask = cv2.GaussianBlur(body_mask, (21, 21), 0)
                     body_mask_roi = body_mask[top:top+th, left:left+tw]
             except Exception:
                 pass
 
-        # Multiply jacket alpha by body mask so jacket never appears outside silhouette
         if body_mask_roi is not None and body_mask_roi.shape == (th, tw):
             alpha = alpha * body_mask_roi
 
-        # Darken left/right edges — subtle depth cue
+        # ── Edge shadow — subtle depth cue ────────────────────────────────────
         edge_w = max(1, int(tw * 0.06))
         edge_shadow = np.ones_like(alpha)
-        edge_shadow[:, :edge_w]  *= np.linspace(0.55, 1.0, edge_w)
-        edge_shadow[:, -edge_w:] *= np.linspace(1.0, 0.55, edge_w)
+        edge_shadow[:, :edge_w]  *= np.linspace(0.5, 1.0, edge_w)
+        edge_shadow[:, -edge_w:] *= np.linspace(1.0, 0.5, edge_w)
         shirt = np.clip(shirt.astype(np.float32) * edge_shadow[:, :, np.newaxis],
                         0, 255).astype(np.uint8)
 
