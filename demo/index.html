@@ -380,8 +380,7 @@ header {
     LUCY AI
   </div>
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('faceswap')">Face Swap</button>
-    <button class="tab" onclick="switchTab('liveswap')">Live Face Swap</button>
+    <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
   </div>
   <div style="width:120px"></div>
@@ -392,32 +391,8 @@ header {
   <!-- ══════════════ SIDEBAR ══════════════ -->
   <div class="sidebar">
 
-    <!-- STATIC FACE SWAP -->
-    <div class="panel active" id="panel-faceswap">
-      <div class="card">
-        <div class="card-label">Source Face</div>
-        <div class="upload-zone">
-          <input type="file" accept="image/*" onchange="previewFile(this,'sp','sph');_srcFile=this.files[0]">
-          <img id="sp" style="display:none">
-          <span class="upload-icon" id="sph">📷</span>
-          <span class="upload-hint" id="sph2">Upload source face</span>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-label">Target Photo</div>
-        <div class="upload-zone">
-          <input type="file" accept="image/*" onchange="previewFile(this,'tp','tph');_tgtFile=this.files[0]">
-          <img id="tp" style="display:none">
-          <span class="upload-icon" id="tph">🖼️</span>
-          <span class="upload-hint" id="tph2">Upload target photo</span>
-        </div>
-      </div>
-      <button class="btn btn-primary" onclick="doSwap()">Swap Face</button>
-      <div id="swapStatus" class="status-msg"></div>
-    </div>
-
     <!-- LIVE FACE SWAP -->
-    <div class="panel" id="panel-liveswap">
+    <div class="panel active" id="panel-liveswap">
       <div class="card">
         <div class="card-label">Choose Avatar</div>
         <div class="cat-pills">
@@ -492,12 +467,6 @@ header {
   <!-- ══════════════ MAIN DISPLAY ══════════════ -->
   <div class="main">
 
-    <!-- Static face swap result -->
-    <div class="canvas-wrap" id="swapResultWrap" style="display:none;aspect-ratio:auto;min-height:320px">
-      <img id="swapResult" style="width:100%;height:100%;object-fit:contain;display:none">
-      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:14px" id="swapPh">Result will appear here</div>
-    </div>
-
     <!-- Live face swap canvas -->
     <div class="canvas-wrap" id="liveWrap" style="display:none">
       <canvas id="liveCanvas"></canvas>
@@ -563,15 +532,14 @@ const SWAP_WS  = 'ws://13.203.75.149:7860/ws/live-swap';
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['faceswap','liveswap','tryon'].forEach((id,i) => {
+  ['liveswap','tryon'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
-  document.getElementById('swapResultWrap').style.display = t==='faceswap' ? 'block' : 'none';
-  document.getElementById('liveWrap').style.display       = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('tryonWrap').style.display      = t==='tryon'    ? 'grid'  : 'none';
-  document.getElementById('liveCamStrip').style.display   = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('placeholder').style.display    = 'none';
+  document.getElementById('liveWrap').style.display     = t==='liveswap' ? 'block' : 'none';
+  document.getElementById('tryonWrap').style.display    = t==='tryon'    ? 'grid'  : 'none';
+  document.getElementById('liveCamStrip').style.display = t==='liveswap' ? 'block' : 'none';
+  document.getElementById('placeholder').style.display  = 'none';
 }
 
 function previewFile(inp, imgId, phId) {
@@ -609,27 +577,6 @@ const _lsCvs = document.createElement('canvas');
 const _lsCtx = _lsCvs.getContext('2d');
 const _toCvs = document.createElement('canvas');
 const _toCtx = _toCvs.getContext('2d');
-
-// ── Static Face Swap ───────────────────────────────────────────────────────────
-let _srcFile = null, _tgtFile = null;
-async function doSwap() {
-  if (!_srcFile || !_tgtFile) { setStatus('swapStatus','error','Upload both images first'); return; }
-  setStatus('swapStatus','loading','Processing on GPU…');
-  const fd = new FormData();
-  fd.append('source', _srcFile); fd.append('target', _tgtFile);
-  try {
-    const res  = await fetch(`${FACE_API}/face-swap`, { method:'POST', body:fd });
-    if (!res.ok) throw new Error((await res.json()).detail);
-    const blob = await res.blob();
-    const img  = document.getElementById('swapResult');
-    img.src    = URL.createObjectURL(blob);
-    img.style.display = 'block';
-    document.getElementById('swapPh').style.display = 'none';
-    document.getElementById('swapResultWrap').style.display = 'block';
-    document.getElementById('placeholder').style.display = 'none';
-    setStatus('swapStatus','success','Done!');
-  } catch(e) { setStatus('swapStatus','error',e.message); }
-}
 
 // ── Avatar Picker ──────────────────────────────────────────────────────────────
 let _allAvatars = [], _selectedAvatar = null;
@@ -942,10 +889,7 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
-// Show placeholder initially
-switchTab('faceswap');
-document.getElementById('swapResultWrap').style.display='block';
-document.getElementById('placeholder').style.display='none';
+switchTab('liveswap');
 </script>
 </body>
 </html>
