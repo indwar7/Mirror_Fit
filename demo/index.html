@@ -15,16 +15,17 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        #FAFAFA;        /* off-white interior */
-  --surface:   #FFFFFF;        /* card white */
-  --ink:       #0A0A0A;        /* near-black text */
-  --muted:     #8A8A8A;        /* secondary gray */
-  --border:    #E5E5E5;
-  --accent:    #DC1F1F;        /* iconic ME red */
-  --accent-hot:#FF2D2D;
-  --gold:      #FFB800;        /* rare warning accent */
-  --green:     #00A651;
-  --shadow-cut: clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  --bg:        #F4E9D8;        /* warm parchment cream */
+  --surface:   #FFFAF0;        /* lighter card cream */
+  --ink:       #3D2817;        /* deep espresso brown */
+  --ink-soft:  #5C3D24;        /* secondary brown */
+  --muted:     #A89074;        /* warm tan */
+  --border:    #D4B896;        /* aged beige */
+  --accent:    #E5A823;        /* mustard / golden yellow */
+  --accent-hot:#F5B82E;        /* brighter on hover */
+  --accent-deep:#B8860B;       /* dark gold for shadows */
+  --green:     #6B8E23;        /* olive (warm green) */
+  --red:       #B5491A;        /* burnt sienna */
 }
 
 ::selection { background: var(--accent); color: #fff; }
@@ -40,7 +41,7 @@ body {
   font-feature-settings: "ss01","cv11";
 }
 
-/* Diagonal red runner stripe across the page edge — pure ME flavour */
+/* Vertical golden runner stripe down the left edge */
 body::before {
   content: '';
   position: fixed;
@@ -59,7 +60,7 @@ header {
   padding: 0 32px;
   height: 56px;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   position: relative;
   z-index: 10;
   flex-shrink: 0;
@@ -94,7 +95,7 @@ header {
   height: 56px;
   border: none;
   background: transparent;
-  color: rgba(255,255,255,0.5);
+  color: rgba(244,233,216,0.55);
   font-family: 'Bebas Neue', sans-serif;
   font-size: 16px;
   letter-spacing: 3px;
@@ -103,9 +104,9 @@ header {
   border-radius: 0;
   position: relative;
 }
-.tab:hover { color: #fff; }
+.tab:hover { color: var(--bg); }
 .tab.active {
-  color: #fff;
+  color: var(--ink);
   background: var(--accent);
   box-shadow: none;
 }
@@ -147,7 +148,7 @@ header {
 .sticky-action {
   position: sticky;
   bottom: -24px;
-  background: #fff;
+  background: var(--surface);
   margin: 0 -20px -24px;
   padding: 14px 20px 24px;
   border-top: 2px solid var(--ink);
@@ -197,9 +198,9 @@ header {
   justify-content: center;
   flex-direction: column;
   gap: 6px;
-  background: #fff;
+  background: var(--surface);
 }
-.upload-zone:hover { border-color: var(--accent); background: #FFF5F5; }
+.upload-zone:hover { border-color: var(--accent); background: #FFF6E0; }
 .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
 .upload-zone img { max-width: 100%; max-height: 110px; object-fit: cover; }
 .upload-hint {
@@ -229,24 +230,24 @@ header {
 }
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--ink);
   box-shadow: none;
 }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hot); }
 .btn-primary:disabled {
-  background: #DADADA; color: #FFF; cursor: not-allowed;
+  background: #C9B98D; color: var(--surface); cursor: not-allowed;
   clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
 }
-.btn-stop  { background: var(--ink); color: #fff; }
-.btn-stop:hover { background: var(--accent); }
-.btn-active { background: var(--ink); color: #fff; }
+.btn-stop  { background: var(--ink); color: var(--bg); }
+.btn-stop:hover { background: var(--red); }
+.btn-active { background: var(--ink); color: var(--bg); }
 .btn-ghost {
-  background: #fff;
+  background: var(--surface);
   color: var(--ink);
   border: 2px solid var(--ink);
   clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
 }
-.btn-ghost:hover { background: var(--ink); color: #fff; }
+.btn-ghost:hover { background: var(--ink); color: var(--accent); }
 
 /* ══════ Status row ══════ */
 .status-row {
@@ -275,9 +276,9 @@ header {
   font-weight: 500;
   letter-spacing: 0.5px;
 }
-.status-msg.info    { border-color: var(--ink);   background: #F1F1F1; color: var(--ink);   display: block; }
-.status-msg.success { border-color: var(--green); background: #E6F8EE; color: #00703A;     display: block; }
-.status-msg.error   { border-color: var(--accent);background: #FFE8E8; color: #B11515;     display: block; }
+.status-msg.info    { border-color: var(--ink);    background: #EDE0CB; color: var(--ink);   display: block; }
+.status-msg.success { border-color: var(--green);  background: #E6EBC9; color: #4D6614;     display: block; }
+.status-msg.error   { border-color: var(--red);    background: #F8DCC4; color: #8C2F0F;     display: block; }
 
 /* ══════ Avatar grid ══════ */
 .cat-pills { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -288,13 +289,13 @@ header {
   font-size: 13px;
   letter-spacing: 2px;
   border: 1px solid var(--ink);
-  background: #fff;
+  background: var(--surface);
   color: var(--ink);
   cursor: pointer;
   transition: all 0.12s;
 }
-.pill.active { background: var(--ink); color: #fff; }
-.pill:hover:not(.active) { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pill.active { background: var(--ink); color: var(--accent); }
+.pill:hover:not(.active) { background: var(--accent); border-color: var(--ink); color: var(--ink); }
 
 .avatar-grid {
   display: grid;
@@ -309,11 +310,11 @@ header {
   transition: all 0.12s;
   aspect-ratio: 1;
   position: relative;
-  background: #fff;
+  background: var(--surface);
 }
 .av-card:hover { border-color: var(--accent); transform: translate(-2px, -2px); box-shadow: 4px 4px 0 var(--ink); }
 .av-card.selected {
-  border-color: var(--accent);
+  border-color: var(--ink);
   box-shadow: 4px 4px 0 var(--accent);
   transform: translate(-2px, -2px);
 }
@@ -322,7 +323,7 @@ header {
   position: absolute; bottom: 0; left: 0; right: 0;
   background: var(--ink);
   font-size: 9px; text-align: center; padding: 4px;
-  color: #fff;
+  color: var(--accent);
   font-family: 'Bebas Neue', sans-serif;
   letter-spacing: 1.5px;
 }
@@ -332,17 +333,17 @@ header {
   background: var(--accent);
   display: none;
   align-items: center; justify-content: center;
-  font-size: 10px; color: #fff;
+  font-size: 10px; color: var(--ink);
   transform: rotate(45deg);
 }
 .av-card.selected .av-check { display: flex; }
-.av-check span { transform: rotate(-45deg); display: block; }
+.av-check span { transform: rotate(-45deg); display: block; font-weight: 700; }
 
 /* ══════ Voice card ══════ */
 .voice-card {
   display: none;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   border-radius: 0;
   padding: 18px;
   clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
@@ -352,16 +353,16 @@ header {
   font-size: 14px;
   letter-spacing: 3px;
   margin-bottom: 12px;
-  color: rgba(255,255,255,0.7);
+  color: rgba(244,233,216,0.7);
 }
 .voice-avatar strong { color: var(--accent); font-weight: 400; }
 .voice-btn {
   width: 100%;
   padding: 13px;
   border-radius: 0;
-  border: 2px solid #fff;
+  border: 2px solid var(--accent);
   background: transparent;
-  color: #fff;
+  color: var(--accent);
   font-family: 'Bebas Neue', sans-serif;
   font-size: 16px;
   letter-spacing: 4px;
@@ -373,8 +374,8 @@ header {
   transition: all 0.12s;
   text-transform: uppercase;
 }
-.voice-btn:hover { background: #fff; color: var(--ink); }
-.voice-btn.active { background: var(--accent); border-color: var(--accent); }
+.voice-btn:hover { background: var(--accent); color: var(--ink); }
+.voice-btn.active { background: var(--accent); border-color: var(--accent); color: var(--ink); }
 .rec-pulse {
   width: 10px; height: 10px;
   background: var(--accent);
@@ -410,7 +411,7 @@ header {
   overflow: hidden;
   background: var(--ink);
   border: 3px solid var(--ink);
-  box-shadow: 8px 8px 0 var(--accent);
+  box-shadow: 10px 10px 0 var(--accent);
   aspect-ratio: 1;
   clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
 }
@@ -435,7 +436,7 @@ header {
   font-family: 'Bebas Neue', sans-serif;
   font-size: 13px;
   letter-spacing: 2.5px;
-  color: #fff;
+  color: var(--accent);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -462,10 +463,9 @@ header {
   top: 8px; left: 10px;
   font-family: 'Bebas Neue', sans-serif;
   font-size: 12px;
-  color: var(--ink);
   letter-spacing: 2px;
   background: var(--accent);
-  color: #fff;
+  color: var(--ink);
   padding: 2px 8px;
 }
 
