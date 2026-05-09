@@ -482,13 +482,23 @@ header {
   <!-- ══════════════ MAIN DISPLAY ══════════════ -->
   <div class="main">
 
-    <!-- Live face swap canvas -->
-    <div class="canvas-wrap" id="liveWrap" style="display:none">
-      <canvas id="liveCanvas"></canvas>
-      <div class="canvas-overlay">
-        <div class="overlay-badge">
-          <div class="dot" id="lsDot2"></div>
-          <span id="lsLabel">Live Face Swap</span>
+    <!-- Live face swap: camera + result side by side -->
+    <div id="liveWrap" style="display:none;width:100%">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" style="max-width:100%">
+          <video id="liveVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">📷 Your Camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <canvas id="liveCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="lsDot2"></div>
+              <span id="lsLabel">Face Swapped</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -524,12 +534,6 @@ header {
       </div>
     </div>
 
-    <!-- Camera preview strip (face swap only) -->
-    <div class="cam-strip" id="liveCamStrip" style="display:none">
-      <video id="liveVideo" autoplay muted playsinline></video>
-      <span class="cam-strip-label">Your Camera</span>
-    </div>
-
     <!-- Placeholder -->
     <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px;color:var(--muted)">
       <div style="font-size:60px;opacity:0.3">✨</div>
@@ -551,10 +555,9 @@ function switchTab(t) {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
-  document.getElementById('liveWrap').style.display     = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('tryonWrap').style.display    = t==='tryon'    ? 'grid'  : 'none';
-  document.getElementById('liveCamStrip').style.display = t==='liveswap' ? 'block' : 'none';
-  document.getElementById('placeholder').style.display  = 'none';
+  document.getElementById('liveWrap').style.display    = t==='liveswap' ? 'grid' : 'none';
+  document.getElementById('tryonWrap').style.display   = t==='tryon'    ? 'grid' : 'none';
+  document.getElementById('placeholder').style.display = 'none';
 }
 
 function previewFile(inp, imgId, phId) {
