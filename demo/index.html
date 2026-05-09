@@ -114,6 +114,16 @@ header {
 
 .panel { display: none; flex-direction: column; gap: 12px; }
 .panel.active { display: flex; }
+.sticky-action {
+  position: sticky;
+  bottom: -20px;
+  background: rgba(8,8,16,0.95);
+  backdrop-filter: blur(10px);
+  margin: 0 -16px -20px;
+  padding: 12px 16px 20px;
+  border-top: 1px solid var(--border);
+  z-index: 5;
+}
 
 /* ── Cards ── */
 .card {
@@ -393,8 +403,15 @@ header {
 
     <!-- LIVE FACE SWAP -->
     <div class="panel active" id="panel-liveswap">
+      <!-- Step 1: Camera (always visible at top) -->
       <div class="card">
-        <div class="card-label">Choose Avatar</div>
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="liveCamBtn" onclick="startLiveCamera()">📷 Start Camera</button>
+      </div>
+
+      <!-- Step 2: Avatar -->
+      <div class="card">
+        <div class="card-label">Step 2 · Choose Avatar</div>
         <div class="cat-pills">
           <button class="pill active" onclick="filterAvatars('all',this)">All</button>
           <button class="pill" onclick="filterAvatars('Celebrity',this)">Celebrity</button>
@@ -402,7 +419,7 @@ header {
           <button class="pill" onclick="filterAvatars('Anime',this)">Anime</button>
           <button class="pill" onclick="filterAvatars('Fantasy',this)">Fantasy</button>
         </div>
-        <div class="avatar-grid" id="avatarGrid"></div>
+        <div class="avatar-grid" id="avatarGrid" style="max-height:230px;overflow-y:auto"></div>
         <div class="divider" style="margin-top:12px"></div>
         <div style="margin-top:10px;font-size:11px;color:var(--muted);margin-bottom:8px">Or upload your own</div>
         <div class="upload-zone" style="min-height:56px">
@@ -422,19 +439,17 @@ header {
         <div id="voiceStatus" class="status-msg"></div>
       </div>
 
-      <div class="card">
-        <div class="card-label">Camera</div>
-        <button class="btn btn-ghost" id="liveCamBtn" onclick="startLiveCamera()">📷 Start Camera</button>
-      </div>
-
-      <div style="display:flex;gap:8px">
-        <div class="status-row" style="flex:1">
-          <div class="dot" id="lsDot"></div>
-          <span id="lsStatusText" style="font-size:12px">Not connected</span>
+      <!-- Step 3: Start (sticky to bottom of sidebar so always reachable) -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="lsDot"></div>
+            <span id="lsStatusText" style="font-size:12px">Not connected</span>
+          </div>
         </div>
+        <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
+        <div id="liveStatus" class="status-msg"></div>
       </div>
-      <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
-      <div id="liveStatus" class="status-msg"></div>
     </div>
 
     <!-- LIVE TRY-ON -->
