@@ -138,7 +138,8 @@ class TryOnModel:
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._fixed_mask_cache = None
-        self._garment_alpha    = None   # alpha mask from original RGBA garment PNG
+        self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
+        self._garment_color_name  = None   # dominant garment color, injected into prompt
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -303,12 +304,12 @@ class TryOnModel:
         self.pipeline.fuse_lora()
 
         # IP-Adapter: garment image as visual reference for inpainting.
-        # Scale 2.0 locks color/texture much tighter to the reference photo —
-        # prevents SD from hallucinating a different-coloured jacket.
+        # Scale 2.5 + colour-injected prompt locks the garment colour/texture
+        # tightly to the reference photo so SD can't drift the colour.
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(2.0)
+        self.pipeline.set_ip_adapter_scale(2.5)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -494,6 +495,35 @@ class TryOnModel:
 
     # ── Garment ───────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _dominant_color_name(img_arr: np.ndarray) -> str:
+        """Pick the dominant non-white/black colour in the garment and map it
+        to a short English name. Used to anchor the diffusion prompt so the
+        model doesn't drift to a different colour."""
+        # Skip white/transparent edges by sampling the centre 60% only
+        h, w = img_arr.shape[:2]
+        cx0, cx1 = int(w * 0.20), int(w * 0.80)
+        cy0, cy1 = int(h * 0.20), int(h * 0.80)
+        center = img_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+        # Drop near-white and near-black pixels
+        mask = (center.max(axis=1) < 240) & (center.min(axis=1) > 20)
+        sel  = center[mask] if mask.any() else center
+        r, g, b = sel.mean(axis=0)
+        # Coarse name lookup
+        hsv = cv2.cvtColor(np.uint8([[[r, g, b]]]), cv2.COLOR_RGB2HSV)[0, 0]
+        h_, s_, v_ = int(hsv[0]), int(hsv[1]), int(hsv[2])
+        if s_ < 30 and v_ > 200: return "white"
+        if s_ < 30 and v_ < 60:  return "black"
+        if s_ < 30:              return "grey"
+        if h_ < 10 or h_ > 170:  return "red"
+        if h_ < 20:              return "orange"
+        if h_ < 35:              return "yellow"
+        if h_ < 85:              return "green"
+        if h_ < 100:             return "teal"
+        if h_ < 130:             return "blue"
+        if h_ < 150:             return "purple"
+        return "pink"
+
     def set_garment(self, garment_image: Image.Image):
         if garment_image.mode == 'RGBA':
             bg = Image.new('RGB', garment_image.size, (255, 255, 255))
@@ -517,6 +547,11 @@ class TryOnModel:
             self._garment_alpha = np.array(alpha_sq).astype(np.float32) / 255.0
         else:
             self._garment_alpha = None
+
+        # Extract dominant non-background color name from garment for the prompt.
+        # This dramatically helps the diffusion model lock the actual colour.
+        self._garment_color_name = self._dominant_color_name(np.array(garment_sq))
+        log.info(f"Garment dominant color: {self._garment_color_name}")
 
         # Pre-compute IP-Adapter CLIP embeddings once — reused every frame instead of per-frame encoding
         if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
@@ -911,13 +946,24 @@ class TryOnModel:
             ip_kw = ({"ip_adapter_image_embeds": self._ip_embeds}
                      if self._ip_embeds is not None
                      else {"ip_adapter_image": garment})
+            color = self._garment_color_name or "matching"
+            prompt = (
+                f"person wearing a {color} full-sleeve jacket, "
+                f"{color} sleeves on arms, exact same color and pattern, "
+                f"photorealistic, sharp, well-fitted"
+            )
+            neg = (
+                "wrong color, faded color, bare arms, t-shirt visible, "
+                "different jacket, naked, no clothes, deformed, blurry, "
+                "extra limbs, low quality"
+            )
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="person wearing the exact same full-sleeve jacket, matching color pattern texture, sleeves on arms, photorealistic",
-                    negative_prompt="different color, wrong color, bare arms, t-shirt, naked, no clothes, deformed, blurry, extra limbs",
+                    prompt=prompt,
+                    negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=5,  # LCM converges in 4-6 steps; was 8 (~38% speedup)
+                    num_inference_steps=5,
                     guidance_scale=1.0,
                     generator=generator,
                     **ip_kw,

@@ -83,8 +83,10 @@ _AVATAR_MAP = {a["id"]: a for a in _AVATARS}
 #  Voice FX map (Tone.js fallback when OpenVoice not loaded)
 # ─────────────────────────────────────────────────────────────────────────────
 _VOICE_FX: dict[str, dict] = {
-    "gen_f": {"semitones":  2, "effect": None},
-    "gen_m": {"semitones": -2, "effect": None},
+    # Bigger pitch deltas so the avatar voice is clearly different from yours
+    # but still natural — librosa pitch_shift handles ±6 semitones cleanly.
+    "gen_f": {"semitones":  4, "effect": None},
+    "gen_m": {"semitones": -4, "effect": None},
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -281,10 +283,16 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     result_patch = result_patch.transpose(1, 2, 0)[:, :, ::-1]  # RGB→BGR
     result_patch = (np.clip(result_patch, 0, 1) * 255).astype(np.uint8)
 
-    # Warp result back to original image space
+    # Unsharp mask before upscale — inswapper output is 128×128 and soft.
+    # Boost edge contrast so when we cubic-upscale it back to full res it
+    # stays crisp instead of looking blurry against the target's resolution.
+    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.2)
+    result_patch = cv2.addWeighted(result_patch, 1.5, gauss, -0.5, 0)
+
+    # Cubic interpolation for the upscale — much sharper than LINEAR
     M_inv = cv2.invertAffineTransform(M)
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
-                                flags=cv2.INTER_LINEAR)
+                                flags=cv2.INTER_CUBIC)
 
     # Oval shifted up 8% to include forehead/hairline — not just cheek-to-chin
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
@@ -427,20 +435,35 @@ def _swap(src_img: np.ndarray, tgt_img: np.ndarray) -> np.ndarray:
 
 
 def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.ndarray:
-    """Match brightness/color of swapped face region to target face region."""
-    x1,y1,x2,y2 = [int(v) for v in bbox]
-    x1,y1 = max(0,x1),max(0,y1)
-    x2,y2 = min(swapped.shape[1],x2),min(swapped.shape[0],y2)
-    if x2<=x1 or y2<=y1: return swapped
-    sw_patch  = swapped[y1:y2,x1:x2].astype(np.float32)
-    tgt_patch = target[y1:y2,x1:x2].astype(np.float32)
-    if sw_patch.size==0 or tgt_patch.size==0: return swapped
-    # Match mean brightness per channel
+    """Reinhard-style LAB-space color transfer: match swapped face's mean/std
+    (per channel) to the target face region. Much better skin tone match
+    than simple per-channel brightness scaling — preserves saturation
+    relationships and handles cross-ethnicity swaps cleanly."""
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(swapped.shape[1], x2), min(swapped.shape[0], y2)
+    if x2 <= x1 or y2 <= y1:
+        return swapped
+    sw_patch  = swapped[y1:y2, x1:x2]
+    tgt_patch = target[y1:y2, x1:x2]
+    if sw_patch.size == 0 or tgt_patch.size == 0:
+        return swapped
+
+    sw_lab  = cv2.cvtColor(sw_patch,  cv2.COLOR_BGR2LAB).astype(np.float32)
+    tgt_lab = cv2.cvtColor(tgt_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
+    out = sw_lab.copy()
+    # 70% transfer (full transfer can over-tint); preserves some swap colour
+    blend = 0.7
     for c in range(3):
-        sm,tm = sw_patch[:,:,c].mean()+1e-6, tgt_patch[:,:,c].mean()+1e-6
-        sw_patch[:,:,c] = np.clip(sw_patch[:,:,c]*(tm/sm)*0.5 + sw_patch[:,:,c]*0.5,0,255)
+        sm, ss = sw_lab[:, :, c].mean(),  sw_lab[:, :, c].std() + 1e-6
+        tm, ts = tgt_lab[:, :, c].mean(), tgt_lab[:, :, c].std() + 1e-6
+        adjusted = (sw_lab[:, :, c] - sm) * (ts / ss) + tm
+        out[:, :, c] = blend * adjusted + (1 - blend) * sw_lab[:, :, c]
+    out = np.clip(out, 0, 255).astype(np.uint8)
+    out_bgr = cv2.cvtColor(out, cv2.COLOR_LAB2BGR)
+
     result = swapped.copy()
-    result[y1:y2,x1:x2] = sw_patch.astype(np.uint8)
+    result[y1:y2, x1:x2] = out_bgr
     return result
 
 
