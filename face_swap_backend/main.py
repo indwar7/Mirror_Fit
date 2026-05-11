@@ -90,14 +90,15 @@ _VOICE_FX: dict[str, dict] = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  Global model references
 # ─────────────────────────────────────────────────────────────────────────────
-_face_app:   Optional[FaceAnalysis] = None
-_inswapper                          = None
-_haar_cascade                       = None
+_face_app:    Optional[FaceAnalysis] = None
+_inswapper                           = None
+_inswap_emap: Optional[np.ndarray]   = None   # 512x512 embedding map baked into the inswapper ONNX
+_haar_cascade                        = None
 
 
 def _load_models() -> None:
-    """Load InsightFace FaceAnalysis, inswapper, and Haar cascade."""
-    global _face_app, _inswapper, _haar_cascade
+    """Load InsightFace FaceAnalysis, inswapper (+ emap), and Haar cascade."""
+    global _face_app, _inswapper, _inswap_emap, _haar_cascade
 
     # FaceAnalysis — buffalo_l with lower detection threshold for dark/angled faces
     _face_app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
@@ -112,6 +113,15 @@ def _load_models() -> None:
         sess_options=sess_opts,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
+
+    # CRITICAL: inswapper_128 needs the source embedding mapped through an "emap"
+    # (512x512 matrix baked into the ONNX as the last initializer) before passing
+    # it as the source latent. Without this step the swap produces garbage / no-op.
+    import onnx
+    from onnx.numpy_helper import to_array
+    _model_proto = onnx.load(_INSWAPPER_PATH)
+    _inswap_emap = to_array(_model_proto.graph.initializer[-1]).astype(np.float32)
+    print(f"[LUCY] inswapper emap loaded: shape={_inswap_emap.shape}")
 
     # Haar cascade (fallback detector)
     _haar_cascade = cv2.CascadeClassifier(_CASCADE_PATH)
@@ -247,8 +257,13 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     in_names  = [i.name for i in _inswapper.get_inputs()]
     out_names = [o.name for o in _inswapper.get_outputs()]
 
-    # Source identity embedding (the avatar) — NOT target's
-    blob = src_face.normed_embedding.reshape(1, -1).astype(np.float32)
+    # Source latent: embedding @ emap, then L2-normalize. This is the official
+    # InsightFace inswapper recipe — without the emap projection the model
+    # outputs ~the original face (effectively a no-op swap).
+    src_embed = src_face.normed_embedding.reshape(1, -1).astype(np.float32)
+    latent    = src_embed @ _inswap_emap
+    latent    = latent / (np.linalg.norm(latent) + 1e-9)
+    blob      = latent.astype(np.float32)
 
     # Warp target face patch to 128×128 ArcFace template
     kps = tgt_face.kps
