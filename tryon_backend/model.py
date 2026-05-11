@@ -894,17 +894,18 @@ class TryOnModel:
 
         generator = torch.Generator(device=self.device).manual_seed(42)
 
-        # ── Build torso mask — slightly tighter, no skin subtraction ─────────
-        # (Previous HSV skin subtraction was misclassifying brown shirts as
-        #  skin and wiping out the mask. Reverted to a simple tight rectangle.)
+        # ── Build wide torso+arms mask ────────────────────────────────────────
+        # Wider horizontal range (3-97%) so the jacket actually paints onto
+        # the arms / full-sleeve regions too. Vertical 38-94% covers from
+        # below the chin down to almost the bottom of the frame.
         if self._fixed_mask_cache is None:
             m = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
-            m[int(LIVE_SIZE*0.40):int(LIVE_SIZE*0.92),
-              int(LIVE_SIZE*0.10):int(LIVE_SIZE*0.90)] = 1.0
-            self._fixed_mask_cache = cv2.GaussianBlur(m, (31, 31), 0)
+            m[int(LIVE_SIZE*0.38):int(LIVE_SIZE*0.94),
+              int(LIVE_SIZE*0.03):int(LIVE_SIZE*0.97)] = 1.0
+            self._fixed_mask_cache = cv2.GaussianBlur(m, (41, 41), 0)
         torso_mask = self._fixed_mask_cache
 
-        # ── Inpainting path — mask ensures ONLY torso is modified ────────────
+        # ── Inpainting path — mask covers torso AND arms ─────────────────────
         if self._catvton:
             mask_pil = Image.fromarray((torso_mask * 255).astype(np.uint8))
             ip_kw = ({"ip_adapter_image_embeds": self._ip_embeds}
@@ -912,11 +913,11 @@ class TryOnModel:
                      else {"ip_adapter_image": garment})
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="person wearing the exact same jacket, matching color and pattern, photorealistic",
-                    negative_prompt="different color, wrong color, naked, bare chest, no clothes, deformed, blurry",
+                    prompt="person wearing the exact same full-sleeve jacket, matching color pattern texture, sleeves on arms, photorealistic",
+                    negative_prompt="different color, wrong color, bare arms, t-shirt, naked, no clothes, deformed, blurry, extra limbs",
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=max(self._steps, 8),
+                    num_inference_steps=5,  # LCM converges in 4-6 steps; was 8 (~38% speedup)
                     guidance_scale=1.0,
                     generator=generator,
                     **ip_kw,
