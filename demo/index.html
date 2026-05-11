@@ -837,7 +837,6 @@ async function startLiveCamera() {
     const btn = document.getElementById('liveCamBtn');
     btn.textContent='✅ Camera On'; btn.className='btn btn-active';
     checkLiveReady();
-    document.getElementById('liveCamStrip').style.display='block';
   } catch(e) { alert('Camera error: '+e.message); }
 }
 function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
