@@ -238,7 +238,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                           horizontal: 16, vertical: 8),
                       decoration: BoxDecoration(
                         color: active
-                            ? const Color(0xFF7C3AED)
+                            ? Colors.white
                             : const Color(0xFF2C2C2E),
                         borderRadius: BorderRadius.circular(20),
                         border: active
@@ -252,7 +252,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                                   ? FontWeight.w700
                                   : FontWeight.w500,
                               color: active
-                                  ? Colors.white
+                                  ? Colors.black
                                   : const Color(0xFFAEAEB2))),
                     ),
                   );
@@ -265,7 +265,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
               child: _avatarsLoading
                   ? const Center(
                       child: CircularProgressIndicator(
-                          color: Color(0xFF7C3AED), strokeWidth: 2))
+                          color: Colors.white, strokeWidth: 2))
                   : _avatars.isEmpty
                       ? Center(
                           child: Text('Start the local backend to see avatars',
@@ -302,7 +302,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                                   borderRadius: BorderRadius.circular(14),
                                   border: Border.all(
                                     color: selected
-                                        ? const Color(0xFFD946EF)
+                                        ? Colors.white
                                         : Colors.transparent,
                                     width: 2.5,
                                   ),
@@ -355,11 +355,11 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                                           child: Container(
                                             padding: const EdgeInsets.all(3),
                                             decoration: const BoxDecoration(
-                                              color: Color(0xFFD946EF),
+                                              color: Colors.white,
                                               shape: BoxShape.circle,
                                             ),
                                             child: const Icon(Icons.check,
-                                                color: Colors.white,
+                                                color: Colors.black,
                                                 size: 12),
                                           ),
                                         ),
@@ -388,9 +388,9 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0F),
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0D0D0F),
+        backgroundColor: Colors.black,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new,
@@ -421,14 +421,12 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                   opacity: _canSwap ? 1.0 : 0.5,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [Color(0xFF7C3AED), Color(0xFFD946EF)]),
+                      color: Colors.white,
                       borderRadius: BorderRadius.circular(AppRadius.lg),
                       boxShadow: _canSwap
                           ? [
                               BoxShadow(
-                                  color: const Color(0xFFD946EF)
-                                      .withValues(alpha: 0.4),
+                                  color: Colors.white.withValues(alpha: 0.25),
                                   blurRadius: 22,
                                   offset: const Offset(0, 8))
                             ]
@@ -447,9 +445,9 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
-                                  color: Colors.white, strokeWidth: 2.4))
+                                  color: Colors.black, strokeWidth: 2.4))
                           : const Icon(Icons.face_retouching_natural,
-                              color: Colors.white, size: 22),
+                              color: Colors.black, size: 22),
                       label: Text(
                         _isSwapping
                             ? (_status.isEmpty ? 'Swapping…' : _status)
@@ -457,7 +455,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                                 ? 'Swap into ${_selectedAvatar!.name}'
                                 : 'Swap Faces'),
                         style: const TextStyle(
-                            color: Colors.white,
+                            color: Colors.black,
                             fontSize: 16,
                             fontWeight: FontWeight.w700),
                         overflow: TextOverflow.ellipsis,
@@ -489,7 +487,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                       '${_sourceBytes != null}-$_hasTarget-${_resultBytes != null}'),
                   style: TextStyle(
                       color: _canSwap
-                          ? const Color(0xFFD946EF).withValues(alpha: 0.85)
+                          ? Colors.white
                           : const Color(0xFF8E8E93),
                       fontSize: 12,
                       fontWeight:
@@ -517,7 +515,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                             label: 'Your Face',
                             subtitle: 'Face to apply',
                             icon: Icons.face_rounded,
-                            accentColor: AppColors.primary,
+                            accentColor: Colors.white,
                             bytes: _sourceBytes,
                             onTap: _showSourceSheet,
                           ),
@@ -537,7 +535,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                                   label: 'Target',
                                   subtitle: 'Avatar or photo',
                                   icon: Icons.auto_awesome_rounded,
-                                  accentColor: const Color(0xFFD946EF),
+                                  accentColor: const Color(0xFFE5E5EA),
                                   bytes: _targetBytes,
                                   onTap: _showTargetSheet,
                                 ),
@@ -568,7 +566,7 @@ class _AvatarSlot extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-              color: const Color(0xFFD946EF).withValues(alpha: 0.5), width: 1.5),
+              color: Colors.white.withValues(alpha: 0.6), width: 1.5),
         ),
         clipBehavior: Clip.antiAlias,
         child: Stack(fit: StackFit.expand, children: [
@@ -607,12 +605,12 @@ class _AvatarSlot extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFD946EF).withValues(alpha: 0.8),
+                      color: Colors.white.withValues(alpha: 0.9),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(avatar.category,
                         style: const TextStyle(
-                            color: Colors.white,
+                            color: Colors.black,
                             fontSize: 10,
                             fontWeight: FontWeight.w600)),
                   ),
@@ -803,15 +801,15 @@ class _ResultView extends StatelessWidget {
             padding:
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: const Color(0xFFD946EF).withValues(alpha: 0.85),
+              color: Colors.white.withValues(alpha: 0.95),
               borderRadius: BorderRadius.circular(20),
             ),
             child: const Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.check_circle_rounded, color: Colors.white, size: 14),
+              Icon(Icons.check_circle_rounded, color: Colors.black, size: 14),
               SizedBox(width: 5),
               Text('Swapped!',
                   style: TextStyle(
-                      color: Colors.white,
+                      color: Colors.black,
                       fontSize: 12,
                       fontWeight: FontWeight.w700)),
             ]),
