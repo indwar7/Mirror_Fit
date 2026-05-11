@@ -557,8 +557,15 @@ header {
 
     <!-- LIVE TRY-ON -->
     <div class="panel" id="panel-tryon">
+      <!-- Step 1: Camera -->
       <div class="card">
-        <div class="card-label">Garment / Clothing</div>
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="tryonCamBtn" onclick="startTryOnCamera()">📷 Start Camera</button>
+      </div>
+
+      <!-- Step 2: Garment -->
+      <div class="card">
+        <div class="card-label">Step 2 · Garment</div>
         <div class="upload-zone">
           <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph');setGarment(this)">
           <img id="gp" style="display:none;max-height:100px">
@@ -566,18 +573,18 @@ header {
           <span class="upload-hint" id="gph2">Upload shirt, jacket, dress</span>
         </div>
       </div>
-      <div class="card">
-        <div class="card-label">Camera</div>
-        <button class="btn btn-ghost" id="tryonCamBtn" onclick="startTryOnCamera()">📷 Start Camera</button>
-      </div>
-      <div style="display:flex;gap:8px">
-        <div class="status-row" style="flex:1">
-          <div class="dot" id="toDot"></div>
-          <span id="toStatusText" style="font-size:12px">Not connected</span>
+
+      <!-- Step 3: Start (sticky) -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="toDot"></div>
+            <span id="toStatusText" style="font-size:12px">Not connected</span>
+          </div>
         </div>
+        <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
+        <div id="tryonStatus" class="status-msg"></div>
       </div>
-      <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
-      <div id="tryonStatus" class="status-msg"></div>
     </div>
 
   </div>
@@ -907,17 +914,23 @@ function sendLiveFrame() {
 let toStream=null,toWs=null,toGarment=null,toRunning=false;
 let toLatestResult=null,toRafId=null,toSendTimer=null;
 
+function _checkTryOnReady(){
+  // Enable Start button only when BOTH garment uploaded AND camera on.
+  const ready = !!(toGarment && toStream);
+  document.getElementById('tryonBtn').disabled = !ready;
+}
 function setGarment(inp) {
-  toGarment=inp.files[0];
-  if(toGarment) document.getElementById('tryonBtn').disabled=false;
+  toGarment = inp.files[0];
+  _checkTryOnReady();
 }
 async function startTryOnCamera() {
   try {
-    toStream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'},audio:false});
-    document.getElementById('tryonVideo').srcObject=toStream;
-    const btn=document.getElementById('tryonCamBtn');
-    btn.textContent='✅ Camera On'; btn.className='btn btn-active';
-  } catch(e) { alert('Camera error: '+e.message); }
+    toStream = await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'},audio:false});
+    document.getElementById('tryonVideo').srcObject = toStream;
+    const btn = document.getElementById('tryonCamBtn');
+    btn.textContent = '✅ Camera On'; btn.className = 'btn btn-active';
+    _checkTryOnReady();
+  } catch(e) { alert('Camera error: ' + e.message); }
 }
 function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
 let toProcessing=false, toFrameSentAt=0;
