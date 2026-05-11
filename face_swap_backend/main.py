@@ -549,36 +549,28 @@ def _apply_echo(y: np.ndarray, sr: int) -> np.ndarray:
 def _transform_voice(audio_bytes: bytes, avatar_id: str) -> bytes:
     """
     Load audio → pitch shift → optional effect → encode WAV → return bytes.
-    Matches avatar_id prefix to _VOICE_FX table.
+
+    Audio is expected to be a WAV blob (browser pre-encodes via WebAudio).
+    Falls back to librosa-direct (handles raw PCM, ogg, etc.) if soundfile
+    can't open it.
     """
-    # Determine FX params — match longest prefix first
+    # FX prefix lookup (longest first)
     fx_params = {"semitones": 0, "effect": None}
     for prefix in sorted(_VOICE_FX.keys(), key=len, reverse=True):
         if avatar_id.startswith(prefix):
             fx_params = _VOICE_FX[prefix]
             break
 
-    # Browser MediaRecorder sends webm/ogg — convert to wav via ffmpeg first
-    import subprocess, tempfile
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_in:
-        tmp_in.write(audio_bytes)
-        tmp_in_path = tmp_in.name
-    tmp_out_path = tmp_in_path.replace(".webm", ".wav")
+    # Try soundfile first (handles WAV natively, no external deps)
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_in_path, "-ar", "44100", "-ac", "1", tmp_out_path],
-            capture_output=True, check=True
-        )
-        y, sr = librosa.load(tmp_out_path, sr=None, mono=True)
+        buf = io.BytesIO(audio_bytes)
+        y, sr = sf.read(buf, dtype="float32")
+        if y.ndim > 1:
+            y = y.mean(axis=1)
     except Exception:
-        # ffmpeg not available — try librosa directly (may fail on webm)
+        # Last resort — librosa via audioread (may need ffmpeg for webm/ogg)
         buf = io.BytesIO(audio_bytes)
         y, sr = librosa.load(buf, sr=None, mono=True)
-    finally:
-        import os
-        for p in [tmp_in_path, tmp_out_path]:
-            try: os.unlink(p)
-            except: pass
 
     # Pitch shift
     semitones = fx_params["semitones"]

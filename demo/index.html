@@ -719,9 +719,11 @@ async function loadAvatars() {
 }
 
 function renderAvatars(list) {
+  // Cache-bust avatar thumbnails so stale randomuser.me images don't show
+  const v = Date.now();
   document.getElementById('avatarGrid').innerHTML = list.map(a => `
     <div class="av-card${_selectedAvatar===a.id?' selected':''}" id="av_${a.id}" onclick="selectAvatar('${a.id}')">
-      <img src="${FACE_API}${a.image_url}" loading="lazy" onerror="this.src=''">
+      <img src="${FACE_API}${a.image_url}?v=${v}" loading="lazy" onerror="this.src=''">
       <div class="av-name">${a.name}</div>
       <div class="av-check"><span>✓</span></div>
     </div>`).join('');
@@ -816,17 +818,54 @@ function _stopAndTransformVoice() {
     document.getElementById('voiceBtn').classList.remove('active');
   }
 }
+// Browser-side WAV encoder — avoids needing ffmpeg on the server.
+function _audioBufferToWav(buffer) {
+  const numCh   = 1;                              // mono
+  const sr      = buffer.sampleRate;
+  const samples = buffer.getChannelData(0);
+  const buf     = new ArrayBuffer(44 + samples.length * 2);
+  const view    = new DataView(buf);
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); view.setUint32(4, 36+samples.length*2, true);
+  w(8,'WAVE'); w(12,'fmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);              // PCM
+  view.setUint16(22, numCh, true);
+  view.setUint32(24, sr, true);
+  view.setUint32(28, sr * numCh * 2, true); // byte rate
+  view.setUint16(32, numCh * 2, true);      // block align
+  view.setUint16(34, 16, true);             // bits per sample
+  w(36,'data'); view.setUint32(40, samples.length*2, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([view], { type: 'audio/wav' });
+}
+
 async function _sendVoiceForTransform(blob) {
   try {
+    // Decode webm → AudioBuffer → encode as WAV in-browser
+    const arrayBuf = await blob.arrayBuffer();
+    const AC       = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AC();
+    const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
+    const wavBlob  = _audioBufferToWav(audioBuf);
+    audioCtx.close();
+
     const fd = new FormData();
-    fd.append('audio', blob, 'speech.webm');
+    fd.append('audio', wavBlob, 'speech.wav');
     fd.append('avatar_id', _selectedAvatar);
     setStatus('voiceStatus','info','Transforming on GPU…');
     const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-    const wavBlob = await res.blob();
-    const url     = URL.createObjectURL(wavBlob);
-    const audio   = new Audio(url);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const outWav = await res.blob();
+    const url    = URL.createObjectURL(outWav);
+    const audio  = new Audio(url);
     audio.onended = () => URL.revokeObjectURL(url);
     audio.play();
     const av = _allAvatars.find(a => a.id === _selectedAvatar);
@@ -996,7 +1035,7 @@ function stopTryOn() {
   document.getElementById('tryonBtn').textContent='Start Live Try-On';
   document.getElementById('tryonBtn').className='btn btn-primary';
 }
-function _startToTimer(){if(toSendTimer)clearInterval(toSendTimer);toSendTimer=setInterval(sendToFrame,1500);}
+function _startToTimer(){if(toSendTimer)clearInterval(toSendTimer);toSendTimer=setInterval(sendToFrame,800);}
 function _stopToTimer(){if(toSendTimer){clearInterval(toSendTimer);toSendTimer=null;}}
 function _startToRender(){
   if(toRafId) cancelAnimationFrame(toRafId);
