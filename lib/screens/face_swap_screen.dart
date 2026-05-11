@@ -408,7 +408,98 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Column(children: [
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
+
+            // ── Swap button (now on top) ─────────────────────────────
+            FadeInDown(
+              duration: const Duration(milliseconds: 450),
+              child: SizedBox(
+                width: double.infinity,
+                height: 58,
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
+                  opacity: _canSwap ? 1.0 : 0.5,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFF7C3AED), Color(0xFFD946EF)]),
+                      borderRadius: BorderRadius.circular(AppRadius.lg),
+                      boxShadow: _canSwap
+                          ? [
+                              BoxShadow(
+                                  color: const Color(0xFFD946EF)
+                                      .withValues(alpha: 0.4),
+                                  blurRadius: 22,
+                                  offset: const Offset(0, 8))
+                            ]
+                          : [],
+                    ),
+                    child: ElevatedButton.icon(
+                      onPressed: _canSwap ? _swap : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.transparent,
+                        shadowColor: Colors.transparent,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.lg)),
+                      ),
+                      icon: _isSwapping
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2.4))
+                          : const Icon(Icons.face_retouching_natural,
+                              color: Colors.white, size: 22),
+                      label: Text(
+                        _isSwapping
+                            ? (_status.isEmpty ? 'Swapping…' : _status)
+                            : (_selectedAvatar != null
+                                ? 'Swap into ${_selectedAvatar!.name}'
+                                : 'Swap Faces'),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            // ── Helper hint (under button) ───────────────────────────
+            SizedBox(
+              height: 18,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: Text(
+                  _resultBytes != null
+                      ? 'Tap Redo to start over'
+                      : (_sourceBytes == null && !_hasTarget
+                          ? 'Pick your face, then choose an avatar or photo'
+                          : _sourceBytes == null
+                              ? 'Pick your face photo'
+                              : !_hasTarget
+                                  ? 'Choose an avatar or upload a target photo'
+                                  : 'Ready — tap Swap Faces above'),
+                  key: ValueKey(
+                      '${_sourceBytes != null}-$_hasTarget-${_resultBytes != null}'),
+                  style: TextStyle(
+                      color: _canSwap
+                          ? const Color(0xFFD946EF).withValues(alpha: 0.85)
+                          : const Color(0xFF8E8E93),
+                      fontSize: 12,
+                      fontWeight:
+                          _canSwap ? FontWeight.w600 : FontWeight.w400),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 14),
 
             // ── Photo slots ──────────────────────────────────────────
             Expanded(
@@ -455,93 +546,7 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                     ]),
             ),
 
-            const SizedBox(height: 16),
-
-            // ── Status ───────────────────────────────────────────────
-            if (_isSwapping) ...[
-              FadeIn(
-                child: Column(children: [
-                  const SizedBox(
-                      width: 28,
-                      height: 28,
-                      child: CircularProgressIndicator(
-                          color: Color(0xFFD946EF), strokeWidth: 2.5)),
-                  const SizedBox(height: 10),
-                  Text(_status.isEmpty ? 'Processing…' : _status,
-                      style: const TextStyle(
-                          color: Color(0xFFAEAEB2), fontSize: 13)),
-                ]),
-              ),
-              const SizedBox(height: 16),
-            ],
-
-            // ── Swap button ──────────────────────────────────────────
-            FadeInUp(
-              duration: const Duration(milliseconds: 500),
-              child: SizedBox(
-                width: double.infinity,
-                height: 56,
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 200),
-                  opacity: _canSwap ? 1.0 : 0.45,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                          colors: [Color(0xFF7C3AED), Color(0xFFD946EF)]),
-                      borderRadius: BorderRadius.circular(AppRadius.lg),
-                      boxShadow: _canSwap
-                          ? [
-                              BoxShadow(
-                                  color: const Color(0xFFD946EF)
-                                      .withValues(alpha: 0.35),
-                                  blurRadius: 18,
-                                  offset: const Offset(0, 6))
-                            ]
-                          : [],
-                    ),
-                    child: ElevatedButton.icon(
-                      onPressed: _canSwap ? _swap : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.transparent,
-                        shadowColor: Colors.transparent,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppRadius.lg)),
-                      ),
-                      icon: const Icon(Icons.face_retouching_natural,
-                          color: Colors.white, size: 22),
-                      label: Text(
-                        _selectedAvatar != null
-                            ? 'Swap into ${_selectedAvatar!.name}'
-                            : 'Swap Faces',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
             const SizedBox(height: 12),
-
-            if (!_hasTarget || _sourceBytes == null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  _sourceBytes == null && !_hasTarget
-                      ? 'Pick your face, then choose an avatar or photo'
-                      : _sourceBytes == null
-                          ? 'Pick your face photo'
-                          : 'Choose an avatar or upload a target photo',
-                  style: const TextStyle(
-                      color: Color(0xFF636366), fontSize: 12),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-
-            const SizedBox(height: 8),
           ]),
         ),
       ),
