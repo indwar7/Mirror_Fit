@@ -302,11 +302,13 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference for inpainting
+        # IP-Adapter: garment image as visual reference for inpainting.
+        # Scale 2.0 locks color/texture much tighter to the reference photo —
+        # prevents SD from hallucinating a different-coloured jacket.
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(1.5)
+        self.pipeline.set_ip_adapter_scale(2.0)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -892,25 +894,36 @@ class TryOnModel:
 
         generator = torch.Generator(device=self.device).manual_seed(42)
 
-        # ── Build torso mask ──────────────────────────────────────────────────
-        if self._fixed_mask_cache is None:
-            m = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
-            m[int(LIVE_SIZE*0.40):int(LIVE_SIZE*0.93),
-              int(LIVE_SIZE*0.03):int(LIVE_SIZE*0.97)] = 1.0
-            self._fixed_mask_cache = cv2.GaussianBlur(m, (31, 31), 0)[:, :, np.newaxis]
+        # ── Build torso mask — tighter, dynamic, skin-aware ──────────────────
+        # Base mask: tight torso rectangle (narrower than before to leave room
+        # for arms to fall outside without being painted over)
+        base_mask = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
+        base_mask[int(LIVE_SIZE*0.42):int(LIVE_SIZE*0.88),
+                  int(LIVE_SIZE*0.18):int(LIVE_SIZE*0.82)] = 1.0
+        base_mask = cv2.GaussianBlur(base_mask, (31, 31), 0)
+
+        # Subtract skin regions — when a hand/arm crosses the torso area,
+        # we don't want the diffusion model to paint jacket over the skin.
+        hsv = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2HSV)
+        skin_lo = np.array([0, 30, 60], dtype=np.uint8)
+        skin_hi = np.array([35, 170, 255], dtype=np.uint8)
+        skin    = cv2.inRange(hsv, skin_lo, skin_hi)
+        skin    = cv2.morphologyEx(skin, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
+        skin    = cv2.dilate(skin, np.ones((5,5), np.uint8), iterations=2)
+        skin_f  = cv2.GaussianBlur(skin.astype(np.float32) / 255.0, (15, 15), 0)
+        dyn_mask = np.clip(base_mask - skin_f, 0.0, 1.0)
+        dyn_mask_3 = dyn_mask[:, :, np.newaxis]
 
         # ── Inpainting path — mask ensures ONLY torso is modified ────────────
         if self._catvton:
-            mask_pil = Image.fromarray(
-                (self._fixed_mask_cache[:, :, 0] * 255).astype(np.uint8)
-            )
+            mask_pil = Image.fromarray((dyn_mask * 255).astype(np.uint8))
             ip_kw = ({"ip_adapter_image_embeds": self._ip_embeds}
                      if self._ip_embeds is not None
                      else {"ip_adapter_image": garment})
             with torch.inference_mode():
                 result = self.pipeline(
-                    prompt="person wearing jacket over body, clothes on torso, photorealistic",
-                    negative_prompt="naked, bare chest, no clothes, deformed, blurry",
+                    prompt="person wearing the exact same jacket, matching color and pattern, photorealistic",
+                    negative_prompt="different color, wrong color, naked, bare chest, no clothes, deformed, blurry",
                     image=person,
                     mask_image=mask_pil,
                     num_inference_steps=max(self._steps, 8),
