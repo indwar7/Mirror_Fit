@@ -537,7 +537,7 @@ header {
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
         <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
           <span class="rec-pulse" id="recDot"></span>
-          <span id="voiceBtnLabel">🎤 Start Live Voice</span>
+          <span id="voiceBtnLabel">🎤 Hold to Speak</span>
         </button>
         <div id="voiceStatus" class="status-msg"></div>
       </div>
@@ -767,60 +767,75 @@ function setLiveSourceFile(inp) {
 loadAvatars();
 
 // ── Real-time Voice ────────────────────────────────────────────────────────────
-let _voiceMic=null, _voicePitch=null, _voiceActive=false;
-const _VOICE_SEMITONES = {
-  'cel_f':2,'cel_m':-2,'ai_':0,'ani_f':8,'ani_m':5,'fan_f':3,'fan_m':-5
-};
-function _getSemitones(id) {
-  for (const [k,v] of Object.entries(_VOICE_SEMITONES)) {
-    if (id&&id.startsWith(k)) return v;
-  }
-  return 0;
-}
+// ── Voice: record → transform → playback ──────────────────────────────────
+// User speaks → we record → on stop, send to /voice/transform → play result
+let _voiceRec = null, _voiceChunks = [], _voiceRecording = false;
 function _resetVoiceUI() {
-  stopRealtimeVoice();
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
+  if (_voiceRec && _voiceRecording) { try { _voiceRec.stop(); } catch(_){} }
+  _voiceRec = null; _voiceChunks = []; _voiceRecording = false;
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Hold to Speak';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
   if (st) { st.className='status-msg'; st.textContent=''; }
 }
 async function toggleRealtimeVoice() {
-  _voiceActive ? stopRealtimeVoice() : await startRealtimeVoice();
+  // Single tap toggles: tap to start recording, tap again to stop+play
+  if (_voiceRecording) { _stopAndTransformVoice(); }
+  else                 { await _startVoiceRecord(); }
 }
-async function startRealtimeVoice() {
+async function _startVoiceRecord() {
   if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
-  if (typeof Tone==='undefined') { setStatus('voiceStatus','error','Audio engine loading…'); return; }
   try {
-    await Tone.start();
-    const semitones = _getSemitones(_selectedAvatar);
-    _voiceMic   = new Tone.UserMedia();
-    _voicePitch = new Tone.PitchShift({ pitch:semitones, windowSize:0.1 });
-    if (_selectedAvatar.startsWith('ai_')) {
-      const tremolo = new Tone.Tremolo({frequency:10,depth:0.6}).start();
-      _voiceMic.connect(_voicePitch); _voicePitch.connect(tremolo); tremolo.toDestination();
-    } else if (_selectedAvatar.startsWith('fan_f')) {
-      const reverb = new Tone.Reverb({decay:2.5,wet:0.4});
-      _voiceMic.connect(_voicePitch); _voicePitch.connect(reverb); reverb.toDestination();
-    } else {
-      _voiceMic.connect(_voicePitch); _voicePitch.toDestination();
-    }
-    await _voiceMic.open();
-    _voiceActive = true;
-    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Voice';
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _voiceRec    = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    _voiceChunks = [];
+    _voiceRec.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
+    _voiceRec.onstop = async () => {
+      // Stop mic tracks so the OS mic indicator goes off
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
+      await _sendVoiceForTransform(blob);
+    };
+    _voiceRec.start();
+    _voiceRecording = true;
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Transform';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
-    const av = _allAvatars.find(a=>a.id===_selectedAvatar);
-    setStatus('voiceStatus','success',`Live: ${av?.name||''} (${semitones>0?'+':''}${semitones} semitones)`);
-  } catch(e) { setStatus('voiceStatus','error','Mic error: '+e.message); }
+    setStatus('voiceStatus','info','Recording… speak now, then tap stop.');
+  } catch(e) {
+    setStatus('voiceStatus','error','Mic error: ' + e.message);
+  }
 }
-function stopRealtimeVoice() {
-  if (_voiceMic)   { try{_voiceMic.close();_voiceMic.disconnect();}catch(_){} _voiceMic=null; }
-  if (_voicePitch) { try{_voicePitch.disconnect();}catch(_){} _voicePitch=null; }
-  _voiceActive=false;
-  document.getElementById('voiceBtnLabel').textContent='🎤 Start Live Voice';
-  document.getElementById('recDot').style.display='none';
-  document.getElementById('voiceBtn').classList.remove('active');
+function _stopAndTransformVoice() {
+  if (_voiceRec && _voiceRecording) {
+    _voiceRec.stop();
+    _voiceRecording = false;
+    document.getElementById('voiceBtnLabel').textContent = '⏳ Transforming…';
+    document.getElementById('recDot').style.display = 'none';
+    document.getElementById('voiceBtn').classList.remove('active');
+  }
+}
+async function _sendVoiceForTransform(blob) {
+  try {
+    const fd = new FormData();
+    fd.append('audio', blob, 'speech.webm');
+    fd.append('avatar_id', _selectedAvatar);
+    setStatus('voiceStatus','info','Transforming on GPU…');
+    const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const wavBlob = await res.blob();
+    const url     = URL.createObjectURL(wavBlob);
+    const audio   = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    audio.play();
+    const av = _allAvatars.find(a => a.id === _selectedAvatar);
+    setStatus('voiceStatus','success',`Playing as ${av?.name || 'avatar'}`);
+  } catch(e) {
+    setStatus('voiceStatus','error','Transform failed: ' + e.message);
+  } finally {
+    document.getElementById('voiceBtnLabel').textContent = '🎤 Hold to Speak';
+  }
 }
 
 // ── Live Face Swap ─────────────────────────────────────────────────────────────

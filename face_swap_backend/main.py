@@ -235,22 +235,32 @@ def _color_transfer(src: np.ndarray, tgt: np.ndarray) -> np.ndarray:
 #  Swap implementations
 # ─────────────────────────────────────────────────────────────────────────────
 def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
-    """Single inswapper pass — returns the modified target image."""
-    # Build input dict from inswapper ONNX input names
-    inp = _inswapper.get_inputs()
-    # Standard inswapper_128 interface
-    blob = tgt_face.normed_embedding.reshape(1, -1).astype(np.float32)
-    # Warp target face patch to 128×128
-    kps  = tgt_face.kps
-    M    = cv2.estimateAffinePartial2D(kps, _get_arcface_template(128))[0]
+    """Single inswapper pass — returns the modified target image.
+
+    Inswapper_128 ONNX interface:
+      • input 'target': warped target face patch (1, 3, 128, 128) in RGB [0,1]
+      • input 'source': source identity embedding (1, 512) — normed
+      • output:         modified target face (1, 3, 128, 128) in RGB [0,1]
+    We feed the SOURCE face's normed_embedding so the target patch
+    inherits the source identity.
+    """
+    in_names  = [i.name for i in _inswapper.get_inputs()]
+    out_names = [o.name for o in _inswapper.get_outputs()]
+
+    # Source identity embedding (the avatar) — NOT target's
+    blob = src_face.normed_embedding.reshape(1, -1).astype(np.float32)
+
+    # Warp target face patch to 128×128 ArcFace template
+    kps = tgt_face.kps
+    M = cv2.estimateAffinePartial2D(kps, _get_arcface_template(128))[0]
     face_patch = cv2.warpAffine(tgt_img, M, (128, 128), flags=cv2.INTER_LINEAR)
     face_patch_f = (face_patch.astype(np.float32) / 255.0)
     face_patch_f = face_patch_f[:, :, ::-1]  # BGR→RGB
     face_patch_f = face_patch_f.transpose(2, 0, 1)[np.newaxis]
 
     result_patch = _inswapper.run(
-        [inp[0].name],
-        {inp[0].name: face_patch_f, inp[1].name: blob},
+        out_names,
+        {in_names[0]: face_patch_f, in_names[1]: blob},
     )[0][0]
 
     result_patch = result_patch.transpose(1, 2, 0)[:, :, ::-1]  # RGB→BGR
