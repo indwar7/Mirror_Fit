@@ -100,6 +100,8 @@ _haar_cascade                         = None
 _gfpgan                               = None   # GFPGANer for face enhancement (optional)
 _wav2lip                              = None   # Wav2LipONNX for audio-driven lip-sync (optional)
 _WAV2LIP_PATH                          = str(_HERE / "models" / "models" / "wav2lip_gan.onnx")
+_face_parser                          = None   # BiSeNet face-parser ONNX for hair swap (optional)
+_FACE_PARSER_PATH                      = str(_HERE / "models" / "models" / "face_parser.onnx")
 
 
 def _load_models() -> None:
@@ -158,6 +160,19 @@ def _load_models() -> None:
     except Exception as e:
         _wav2lip = None
         print(f"[LUCY] Wav2Lip load failed ({type(e).__name__}: {e}) — lip sync DISABLED")
+
+    # BiSeNet face parser — for proper hair swap. Optional.
+    global _face_parser
+    try:
+        from face_parser import FaceParserONNX
+        if pathlib.Path(_FACE_PARSER_PATH).exists():
+            _face_parser = FaceParserONNX(_FACE_PARSER_PATH)
+            print(f"[LUCY] BiSeNet face parser loaded — HAIR SWAP enabled")
+        else:
+            print(f"[LUCY] face_parser.onnx not found at {_FACE_PARSER_PATH} — hair swap DISABLED.")
+    except Exception as e:
+        _face_parser = None
+        print(f"[LUCY] face parser load failed ({type(e).__name__}: {e}) — hair swap DISABLED")
 
     # GFPGAN v1.4 — face restoration on the swap output (sharpens identity,
     # fixes the inherent softness of inswapper_128). ~333MB, auto-downloads
@@ -970,6 +985,7 @@ async def ws_live_swap(ws: WebSocket):
 
     src_img       = None
     src_detection = None   # cached once — saves ~100ms/frame
+    src_hair_mask = None   # BiSeNet hair mask of source (cached per session)
     processing    = False
     loop          = asyncio.get_event_loop()
 
@@ -1002,8 +1018,16 @@ async def ws_live_swap(ws: WebSocket):
                 _, kps, bbox, is_real = src_detection
                 if kps is None and not is_real:
                     await send({"type":"error","message":"No face detected in source image"})
-                    src_img = src_detection = None
+                    src_img = src_detection = src_hair_mask = None
                 else:
+                    # Pre-compute source hair mask once if BiSeNet is loaded
+                    if _face_parser is not None:
+                        try:
+                            src_hair_mask = await loop.run_in_executor(
+                                None, _face_parser.hair_mask, src_img
+                            )
+                        except Exception:
+                            src_hair_mask = None
                     await send({"type":"ready"})
 
             elif msg["type"] == "frame":
@@ -1018,9 +1042,30 @@ async def ws_live_swap(ws: WebSocket):
                 try:
                     frame_bytes = base64.b64decode(msg["image"])
                     frame  = await loop.run_in_executor(None, _decode_image, frame_bytes)
-                    result = await loop.run_in_executor(
-                        None, _swap_live, src_img, src_detection, frame
-                    )
+
+                    def _pipeline():
+                        out = _swap_live(src_img, src_detection, frame)
+                        if out is None:
+                            return None
+                        # Hair transfer (BiSeNet) — only if both src + tgt parses exist
+                        if _face_parser is not None and src_hair_mask is not None:
+                            try:
+                                tgt_hair = _face_parser.hair_mask(frame)
+                                if int(tgt_hair.sum()) > 500:
+                                    src_face = src_detection[0]
+                                    tgt_faces = _face_app_fast.get(frame)
+                                    tgt_face  = _largest_face(tgt_faces)
+                                    if tgt_face is not None and getattr(src_face, "kps", None) is not None:
+                                        from face_parser import transfer_hair
+                                        out = transfer_hair(
+                                            src_img, src_hair_mask, src_face.kps,
+                                            out, tgt_hair, tgt_face.kps,
+                                        )
+                            except Exception:
+                                pass
+                        return out
+
+                    result = await loop.run_in_executor(None, _pipeline)
                     if result is None:
                         await send({"type":"no_face"})
                     else:
