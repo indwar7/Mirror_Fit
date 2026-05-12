@@ -326,26 +326,51 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
                                 flags=cv2.INTER_CUBIC)
 
-    # Oval shifted up 8% to include forehead/hairline — not just cheek-to-chin
+    ih, iw = tgt_img.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
-    fw, fh   = x2 - x1, y2 - y1
-    cx       = (x1 + x2) // 2
-    oval_cy  = max(1, (y1 + y2) // 2 - int(fh * 0.08))
-    oval_rx  = max(1, int(fw * 0.54))
-    oval_ry  = max(1, int(fh * 0.62))
-    ih, iw   = tgt_img.shape[:2]
-    oval_cy  = int(np.clip(oval_cy, oval_ry + 1, ih - oval_ry - 1))
-    cx       = int(np.clip(cx,      oval_rx + 1, iw - oval_rx - 1))
+    fw, fh = x2 - x1, y2 - y1
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
+    # Precise face mask from the 106 facial landmarks InsightFace already
+    # detected — convex hull = natural face outline (jaw → cheek → temple).
+    # Eliminates the obvious 'cut and paste' look an ellipse causes around
+    # the chin and jawline. Falls back to the old ellipse only if landmarks
+    # aren't available.
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
     blend_mask = np.zeros((ih, iw), np.uint8)
-    cv2.ellipse(blend_mask, (cx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
+    if lmk is not None and len(lmk) > 10:
+        pts = lmk.astype(np.int32)
+        # Extend each landmark slightly outward from the face centroid so the
+        # hull covers a tiny bit of background — Poisson softens the rest.
+        center = np.array([cx, cy], dtype=np.float32)
+        expanded = (pts.astype(np.float32) - center) * 1.06 + center
+        hull = cv2.convexHull(expanded.astype(np.int32))
+        cv2.fillPoly(blend_mask, [hull], 255)
+        # Tiny smoothing pass on the edges
+        blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
+        _, blend_mask = cv2.threshold(blend_mask, 100, 255, cv2.THRESH_BINARY)
+        # Centre of mass for Poisson
+        M_m = cv2.moments(blend_mask)
+        if M_m["m00"] > 0:
+            poisson_cx = int(M_m["m10"] / M_m["m00"])
+            poisson_cy = int(M_m["m01"] / M_m["m00"])
+        else:
+            poisson_cx, poisson_cy = cx, cy
+    else:
+        # Fallback ellipse (forehead-extended) if landmarks missing
+        oval_cy = max(1, cy - int(fh * 0.08))
+        oval_rx = max(1, int(fw * 0.54))
+        oval_ry = max(1, int(fh * 0.62))
+        oval_cy = int(np.clip(oval_cy, oval_ry + 1, ih - oval_ry - 1))
+        ecx     = int(np.clip(cx,      oval_rx + 1, iw - oval_rx - 1))
+        cv2.ellipse(blend_mask, (ecx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
+        poisson_cx, poisson_cy = ecx, oval_cy
 
-    # Poisson seamless clone — back on for accuracy. No visible seam at the
-    # face boundary, much cleaner blend than alpha. ~30 ms / frame but worth
-    # it now that we prioritise accuracy over fps.
+    # Poisson seamless clone — gradients match at the mask boundary so the
+    # face flows into the surrounding skin with no visible seam.
     try:
         swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
-                                    (cx, oval_cy), cv2.NORMAL_CLONE)
+                                    (poisson_cx, poisson_cy), cv2.NORMAL_CLONE)
     except cv2.error:
         bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
         alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
