@@ -98,6 +98,8 @@ _inswapper                            = None
 _inswap_emap:  Optional[np.ndarray]   = None   # 512x512 embedding map baked into the inswapper ONNX
 _haar_cascade                         = None
 _gfpgan                               = None   # GFPGANer for face enhancement (optional)
+_wav2lip                              = None   # Wav2LipONNX for audio-driven lip-sync (optional)
+_WAV2LIP_PATH                          = str(_HERE / "models" / "models" / "wav2lip_gan.onnx")
 
 
 def _load_models() -> None:
@@ -140,6 +142,22 @@ def _load_models() -> None:
 
     # Haar cascade (fallback detector)
     _haar_cascade = cv2.CascadeClassifier(_CASCADE_PATH)
+
+    # Wav2Lip — audio-driven lip sync. Generates a video of an avatar face
+    # speaking with mouth movements matching the input audio. Optional;
+    # only loads if the model file is present.
+    global _wav2lip
+    try:
+        from wav2lip import Wav2LipONNX
+        if pathlib.Path(_WAV2LIP_PATH).exists():
+            _wav2lip = Wav2LipONNX(_WAV2LIP_PATH)
+            print(f"[LUCY] Wav2Lip ONNX loaded — audio-driven lip sync ENABLED")
+        else:
+            print(f"[LUCY] Wav2Lip model not found at {_WAV2LIP_PATH} — lip sync DISABLED. "
+                  f"Download wav2lip_gan.onnx and place it in models/models/")
+    except Exception as e:
+        _wav2lip = None
+        print(f"[LUCY] Wav2Lip load failed ({type(e).__name__}: {e}) — lip sync DISABLED")
 
     # GFPGAN v1.4 — face restoration on the swap output (sharpens identity,
     # fixes the inherent softness of inswapper_128). ~333MB, auto-downloads
@@ -831,6 +849,116 @@ async def voice_transform(
         raise HTTPException(status_code=500, detail=f"Voice transform failed: {e}")
 
     return Response(content=wav_bytes, media_type="audio/wav")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Wav2Lip — audio-driven lip-sync video generation
+# ─────────────────────────────────────────────────────────────────────────────
+def _lipsync_generate(wav_bytes: bytes, avatar_id: str) -> bytes:
+    """
+    Build a lip-synced MP4 of the avatar speaking the transformed audio.
+    Returns raw MP4 bytes.
+    """
+    if _wav2lip is None:
+        raise RuntimeError("Wav2Lip not loaded — drop wav2lip_gan.onnx into models/models/")
+
+    import io
+    # Decode WAV → mono float32 @ 16 kHz
+    y, sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+    if sr != 16000:
+        y = librosa.resample(y, orig_sr=sr, target_sr=16000)
+        sr = 16000
+
+    # Load avatar + detect face
+    avatar_path = _AVATAR_CACHE / f"{avatar_id}.jpg"
+    if not avatar_path.exists():
+        raise RuntimeError(f"Avatar image missing for {avatar_id}")
+    avatar_img = _decode_image(avatar_path.read_bytes())
+    src_faces  = _face_app.get(avatar_img)
+    src_face   = _largest_face(src_faces)
+    if src_face is None:
+        raise RuntimeError("No face detected in avatar image")
+
+    frames = _wav2lip.generate(
+        avatar_img, y, audio_sr=sr,
+        face_bbox=tuple(int(v) for v in src_face.bbox),
+    )
+
+    # Encode frames + audio to MP4 using imageio-ffmpeg (bundled binary).
+    # ffmpeg.exe isn't required on the host; imageio-ffmpeg ships its own.
+    import tempfile, subprocess, os, shutil
+    tmpdir = tempfile.mkdtemp(prefix="lucy_lip_")
+    try:
+        # Save audio WAV
+        wav_out = os.path.join(tmpdir, "audio.wav")
+        sf.write(wav_out, y, sr, format="WAV", subtype="PCM_16")
+
+        # Save frames as PNGs
+        for i, f in enumerate(frames):
+            cv2.imwrite(os.path.join(tmpdir, f"frame_{i:05d}.png"), f)
+
+        # Use imageio_ffmpeg's bundled binary
+        try:
+            import imageio_ffmpeg
+            ff = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ff = "ffmpeg"
+
+        out_path = os.path.join(tmpdir, "out.mp4")
+        cmd = [
+            ff, "-y",
+            "-framerate", "25",
+            "-i", os.path.join(tmpdir, "frame_%05d.png"),
+            "-i", wav_out,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest", out_path,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        with open(out_path, "rb") as fh:
+            return fh.read()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@app.post("/lipsync/generate")
+async def lipsync_generate(
+    audio:     UploadFile = File(...),
+    avatar_id: str        = Form(...),
+):
+    """
+    Receive raw audio (WAV preferred), pitch-shift per the avatar's voice
+    profile, then run Wav2Lip to generate a video of the avatar lip-syncing
+    that transformed audio. Returns MP4 bytes.
+    """
+    if avatar_id not in _AVATAR_MAP:
+        raise HTTPException(status_code=404, detail=f"Unknown avatar_id: {avatar_id}")
+    if _wav2lip is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Wav2Lip not loaded. Download wav2lip_gan.onnx into models/models/",
+        )
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload")
+
+    loop = asyncio.get_event_loop()
+    try:
+        # First pitch-shift the audio per the avatar's _VOICE_FX
+        wav_bytes = await loop.run_in_executor(
+            None, _transform_voice, audio_bytes, avatar_id
+        )
+        # Then generate the lip-synced video
+        mp4_bytes = await loop.run_in_executor(
+            None, _lipsync_generate, wav_bytes, avatar_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lip sync failed: {e}")
+
+    return Response(content=mp4_bytes, media_type="video/mp4")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

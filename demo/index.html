@@ -520,11 +520,13 @@ header {
       <!-- Voice card -->
       <div class="voice-card" id="voiceCard">
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
-        <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
+        <button class="voice-btn" id="voiceBtn" onclick="toggleLipSyncRecord()">
           <span class="rec-pulse" id="recDot"></span>
-          <span id="voiceBtnLabel">🎤 Record Clip</span>
+          <span id="voiceBtnLabel">🎤 Record &amp; Lip-Sync</span>
         </button>
         <div id="voiceStatus" class="status-msg"></div>
+        <video id="lipsyncPlayer" controls playsinline
+               style="display:none;width:100%;margin-top:10px;border-radius:8px"></video>
       </div>
 
       <!-- Step 3: Start (sticky to bottom of sidebar so always reachable) -->
@@ -754,36 +756,37 @@ function setLiveSourceFile(inp) {
 loadAvatars();
 
 // ── Real-time Voice ────────────────────────────────────────────────────────────
-// ── Sync recording: record audio + face-swapped frames, replay together ──
-// Tap to record. We capture mic audio AND every face-swapped frame as they
-// arrive from the WebSocket. Tap stop → transform audio, then play it back
-// while rendering the recorded swapped frames in the canvas at the correct
-// timestamps. Audio length == video length (pitch_shift preserves duration)
-// so the lip motion in the swap stays in sync with the avatar's voice.
+// ── Wav2Lip recording: record audio → server generates lip-synced MP4 ─────
+// Tap record → captures mic audio. Tap stop → audio goes to /lipsync/generate
+// where the server: (1) pitch-shifts to the avatar's voice profile, then
+// (2) runs Wav2Lip ONNX on the avatar image driven by that audio. Returns
+// an MP4 of the avatar speaking with correct lip movement. We play the MP4
+// in a video element directly below the voice button.
 let _recAudio       = null;     // MediaRecorder
 let _recAudioChunks = [];
 let _recAudioStream = null;
 let _recStart       = 0;
-let _recFrames      = [];       // [{ts: ms, img: HTMLImageElement}]
+let _recFrames      = [];       // kept for legacy code paths; unused for lipsync
 let _recActive      = false;
 let _replaying      = false;
 
 function _resetVoiceUI() {
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Record Clip';
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Record & Lip-Sync';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
   if (st) { st.className='status-msg'; st.textContent=''; }
 }
-async function toggleRealtimeVoice() {
+async function toggleLipSyncRecord() {
   if (_replaying) return;
   if (_recActive) _stopRecording();
   else            await _startRecording();
 }
+// Back-compat alias if older inline handlers exist somewhere
+async function toggleRealtimeVoice() { return toggleLipSyncRecord(); }
 
 async function _startRecording() {
   if (!_selectedAvatar)  { setStatus('voiceStatus','error','Select an avatar first'); return; }
-  if (!liveRunning)      { setStatus('voiceStatus','error','Start face swap first'); return; }
   try {
     _recAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     _recAudio       = new MediaRecorder(_recAudioStream, { mimeType: 'audio/webm' });
@@ -799,10 +802,11 @@ async function _startRecording() {
       await _processAndReplay(blob);
     };
     _recAudio.start();
-    setStatus('voiceStatus','info','Recording… speak now, tap stop when done.');
-    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Replay';
+    setStatus('voiceStatus','info','Recording… speak now, then tap stop.');
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Generate';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
+    document.getElementById('lipsyncPlayer').style.display = 'none';
   } catch(e) {
     setStatus('voiceStatus','error','Mic error: ' + e.message);
   }
@@ -820,12 +824,13 @@ function _stopRecording() {
 
 async function _processAndReplay(audioBlob) {
   try {
-    // Convert webm → WAV in-browser (server has no ffmpeg)
+    setStatus('voiceStatus','info','Encoding audio…');
+    // Convert webm → WAV in-browser (server reads WAV with soundfile)
     let toSend = audioBlob, filename = 'speech.webm';
     try {
       const arrayBuf = await audioBlob.arrayBuffer();
       const AC       = window.AudioContext || window.webkitAudioContext;
-      const audioCtx = new AC({ sampleRate: 44100 });
+      const audioCtx = new AC({ sampleRate: 16000 });   // Wav2Lip wants 16 kHz
       const audioBuf = await audioCtx.decodeAudioData(arrayBuf.slice(0));
       toSend = _audioBufferToWav(audioBuf);
       filename = 'speech.wav';
@@ -835,56 +840,35 @@ async function _processAndReplay(audioBlob) {
     const fd = new FormData();
     fd.append('audio', toSend, filename);
     fd.append('avatar_id', _selectedAvatar);
-    const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
+
+    setStatus('voiceStatus','info','Generating lip-synced video on GPU… (5-10 s)');
+    document.getElementById('voiceBtnLabel').textContent = '⏳ Generating…';
+    const res = await fetch(`${FACE_API}/lipsync/generate`, { method: 'POST', body: fd });
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail; } catch(_) {}
       throw new Error(detail);
     }
-    const outWav = await res.blob();
-    const url    = URL.createObjectURL(outWav);
-    const audio  = new Audio(url);
-    audio.onended = () => {
-      URL.revokeObjectURL(url);
+    const mp4 = await res.blob();
+    const url = URL.createObjectURL(mp4);
+    const player = document.getElementById('lipsyncPlayer');
+    player.src = url;
+    player.style.display = 'block';
+    player.onended = () => {
       _replaying = false;
       _resetVoiceUI();
-      setStatus('voiceStatus','success','Done. Tap record again to make a new clip.');
+      setStatus('voiceStatus','success','Done. Tap record to generate another.');
     };
     _replaying = true;
-    setStatus('voiceStatus','success','Playing synced clip…');
-    document.getElementById('voiceBtnLabel').textContent = '▶ Replaying…';
-    audio.play();
-    _renderSyncedPlayback(audio);
+    setStatus('voiceStatus','success','Playing lip-synced clip…');
+    document.getElementById('voiceBtnLabel').textContent = '▶ Playing…';
+    player.play().catch(err => console.warn('autoplay blocked:', err));
   } catch(e) {
     console.error(e);
-    setStatus('voiceStatus','error','Transform failed: ' + e.message);
+    setStatus('voiceStatus','error','Lip sync failed: ' + e.message);
     _replaying = false;
     _resetVoiceUI();
   }
-}
-
-function _renderSyncedPlayback(audio) {
-  // While `audio` plays, draw the recorded swapped frame whose timestamp is
-  // closest to audio.currentTime. liveCanvas is the same one used for live
-  // swap, so the user sees their recorded clip with the avatar's face.
-  const canvas = document.getElementById('liveCanvas');
-  const ctx    = canvas.getContext('2d');
-  if (_recFrames.length === 0) return;   // no frames captured — audio plays alone
-
-  let idx = 0;
-  function step() {
-    if (audio.ended || audio.paused) return;
-    const t = audio.currentTime * 1000;
-    // Advance idx to the latest frame at-or-before t
-    while (idx + 1 < _recFrames.length && _recFrames[idx + 1].ts <= t) idx++;
-    const fr = _recFrames[idx].img;
-    if (fr && fr.complete) {
-      const sz = Math.min(canvas.width, canvas.height);
-      ctx.drawImage(fr, 0, 0, sz, sz);
-    }
-    requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
 }
 // Browser-side WAV encoder — avoids needing ffmpeg on the server.
 function _audioBufferToWav(buffer) {
@@ -995,12 +979,6 @@ function startLiveSwap() {
       const img=new Image();
       img.onload=()=>{ liveLatestResult=img; };
       img.src='data:image/jpeg;base64,'+msg.image;
-      // While recording a synced clip, also push this frame onto _recFrames
-      // with its timestamp relative to the recording start. The playback step
-      // will pick the closest frame to audio.currentTime.
-      if (_recActive) {
-        _recFrames.push({ ts: Date.now() - _recStart, img });
-      }
       sendLiveFrame();
     } else if (msg.type==='no_face'||msg.type==='dropped') {
       sendLiveFrame();
