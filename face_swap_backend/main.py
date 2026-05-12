@@ -103,9 +103,11 @@ def _load_models() -> None:
     """Load InsightFace FaceAnalysis, inswapper (+ emap), and Haar cascade."""
     global _face_app, _inswapper, _inswap_emap, _haar_cascade
 
-    # FaceAnalysis — buffalo_l with lower detection threshold for dark/angled faces
+    # FaceAnalysis — buffalo_l with 320x320 detection (4x faster than 640x640
+    # and accuracy is still fine for selfies / centered faces). This is the
+    # single biggest latency driver in the live pipeline.
     _face_app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    _face_app.prepare(ctx_id=0, det_thresh=0.3, det_size=(640, 640))
+    _face_app.prepare(ctx_id=0, det_thresh=0.3, det_size=(320, 320))
 
     # inswapper_128 ONNX
     import onnxruntime as ort
@@ -305,16 +307,14 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     result_patch = result_patch.transpose(1, 2, 0)[:, :, ::-1]  # RGB→BGR
     result_patch = (np.clip(result_patch, 0, 1) * 255).astype(np.uint8)
 
-    # Unsharp mask before upscale — inswapper output is 128×128 and soft.
-    # Boost edge contrast so when we cubic-upscale it back to full res it
-    # stays crisp instead of looking blurry against the target's resolution.
-    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.2)
-    result_patch = cv2.addWeighted(result_patch, 1.5, gauss, -0.5, 0)
+    # Light unsharp mask — counters inswapper's soft 128px output without
+    # the cost of cubic upscaling.
+    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.0)
+    result_patch = cv2.addWeighted(result_patch, 1.4, gauss, -0.4, 0)
 
-    # Cubic interpolation for the upscale — much sharper than LINEAR
     M_inv = cv2.invertAffineTransform(M)
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
-                                flags=cv2.INTER_CUBIC)
+                                flags=cv2.INTER_LINEAR)
 
     # Oval shifted up 8% to include forehead/hairline — not just cheek-to-chin
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
@@ -330,15 +330,13 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     blend_mask = np.zeros((ih, iw), np.uint8)
     cv2.ellipse(blend_mask, (cx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
 
-    # Poisson (seamless) clone — eliminates hard seam lines at face boundary
-    try:
-        swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
-                                    (cx, oval_cy), cv2.NORMAL_CLONE)
-    except cv2.error:
-        bm = cv2.GaussianBlur(blend_mask, (31, 31), 0)
-        alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
-        swapped = (patch_back.astype(np.float32) * alpha +
-                   tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+    # Gaussian alpha blend — ~50x faster than seamlessClone and looks fine
+    # at live FPS. The unsharp + LAB color correction below cover most of
+    # the seam issues that Poisson would have fixed.
+    bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
+    alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
+    swapped = (patch_back.astype(np.float32) * alpha +
+               tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
 
     # ── GFPGAN face enhancement (if loaded) ──────────────────────────────────
     # Restores fine detail lost by inswapper_128's low-resolution output.
