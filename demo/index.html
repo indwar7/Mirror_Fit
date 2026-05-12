@@ -830,16 +830,26 @@ function _audioBufferToWav(buffer) {
 
 async function _sendVoiceForTransform(blob) {
   try {
-    // Decode webm → AudioBuffer → encode as WAV in-browser
-    const arrayBuf = await blob.arrayBuffer();
-    const AC       = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AC();
-    const audioBuf = await audioCtx.decodeAudioData(arrayBuf);
-    const wavBlob  = _audioBufferToWav(audioBuf);
-    audioCtx.close();
+    setStatus('voiceStatus','info','Converting audio…');
+    // Decode webm/opus → AudioBuffer → re-encode as WAV.
+    // If decodeAudioData fails (rare browser bug), send raw blob and let
+    // the server try.
+    let toSend = blob;
+    let filename = 'speech.webm';
+    try {
+      const arrayBuf = await blob.arrayBuffer();
+      const AC       = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AC({ sampleRate: 44100 });
+      const audioBuf = await audioCtx.decodeAudioData(arrayBuf.slice(0));
+      toSend   = _audioBufferToWav(audioBuf);
+      filename = 'speech.wav';
+      audioCtx.close();
+    } catch(decodeErr) {
+      console.warn('WebAudio decode failed, sending raw webm:', decodeErr);
+    }
 
     const fd = new FormData();
-    fd.append('audio', wavBlob, 'speech.wav');
+    fd.append('audio', toSend, filename);
     fd.append('avatar_id', _selectedAvatar);
     setStatus('voiceStatus','info','Transforming on GPU…');
     const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
@@ -852,10 +862,11 @@ async function _sendVoiceForTransform(blob) {
     const url    = URL.createObjectURL(outWav);
     const audio  = new Audio(url);
     audio.onended = () => URL.revokeObjectURL(url);
-    audio.play();
+    await audio.play();
     const av = _allAvatars.find(a => a.id === _selectedAvatar);
     setStatus('voiceStatus','success',`Playing as ${av?.name || 'avatar'}`);
   } catch(e) {
+    console.error('Voice transform error:', e);
     setStatus('voiceStatus','error','Transform failed: ' + e.message);
   } finally {
     document.getElementById('voiceBtnLabel').textContent = '🎤 Hold to Speak';
