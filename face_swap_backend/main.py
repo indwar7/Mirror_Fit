@@ -96,6 +96,7 @@ _face_app:    Optional[FaceAnalysis] = None
 _inswapper                           = None
 _inswap_emap: Optional[np.ndarray]   = None   # 512x512 embedding map baked into the inswapper ONNX
 _haar_cascade                        = None
+_gfpgan                              = None   # GFPGANer for face enhancement (optional)
 
 
 def _load_models() -> None:
@@ -128,7 +129,28 @@ def _load_models() -> None:
     # Haar cascade (fallback detector)
     _haar_cascade = cv2.CascadeClassifier(_CASCADE_PATH)
 
-    print("[LUCY] Models loaded: FaceAnalysis buffalo_l + inswapper_128 + Haar cascade")
+    # GFPGAN v1.4 — face restoration on the swap output (sharpens identity,
+    # fixes the inherent softness of inswapper_128). ~333MB, auto-downloads
+    # to ~/.gfpgan/weights/. Adds ~80-120ms per frame on A10G.
+    global _gfpgan
+    try:
+        from gfpgan import GFPGANer
+        gfpgan_model_path = "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth"
+        _gfpgan = GFPGANer(
+            model_path=gfpgan_model_path,
+            upscale=1,
+            arch="clean",
+            channel_multiplier=2,
+            bg_upsampler=None,
+        )
+        print("[LUCY] GFPGAN v1.4 loaded — face enhancement ENABLED")
+    except Exception as e:
+        _gfpgan = None
+        print(f"[LUCY] GFPGAN not loaded ({type(e).__name__}: {e}) — running WITHOUT face enhancement. "
+              f"Install with: pip install gfpgan")
+
+    print("[LUCY] Models loaded: FaceAnalysis buffalo_l + inswapper_128 + Haar cascade"
+          f"{' + GFPGAN' if _gfpgan else ''}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,6 +339,26 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
         swapped = (patch_back.astype(np.float32) * alpha +
                    tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+
+    # ── GFPGAN face enhancement (if loaded) ──────────────────────────────────
+    # Restores fine detail lost by inswapper_128's low-resolution output.
+    # weight=0.5 blends 50% restored / 50% original — pure restoration can
+    # erase identity (over-smooth). Catches errors so a single bad frame
+    # doesn't break the whole pipeline.
+    if _gfpgan is not None:
+        try:
+            _, _, restored = _gfpgan.enhance(
+                swapped,
+                has_aligned=False,
+                only_center_face=True,
+                paste_back=True,
+                weight=0.5,
+            )
+            if restored is not None:
+                swapped = restored
+        except Exception:
+            pass
+
     return swapped
 
 

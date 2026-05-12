@@ -9,3 +9,7 @@ mediapipe>=0.10.0
 httpx>=0.27.0
 librosa>=0.10.0
 soundfile>=0.12.1
+# Face enhancement on top of inswapper output (~333 MB model, ~100 ms / frame on A10G)
+gfpgan>=1.3.8
+basicsr>=1.4.2
+realesrgan>=0.3.0
