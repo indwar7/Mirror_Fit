@@ -520,13 +520,11 @@ header {
       <!-- Voice card -->
       <div class="voice-card" id="voiceCard">
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
-        <button class="voice-btn" id="voiceBtn" onclick="toggleLipSyncRecord()">
+        <button class="voice-btn" id="voiceBtn" onclick="toggleStreamingVoice()">
           <span class="rec-pulse" id="recDot"></span>
-          <span id="voiceBtnLabel">🎤 Record &amp; Lip-Sync</span>
+          <span id="voiceBtnLabel">🎤 Start Live Voice</span>
         </button>
         <div id="voiceStatus" class="status-msg"></div>
-        <video id="lipsyncPlayer" controls playsinline
-               style="display:none;width:100%;margin-top:10px;border-radius:8px"></video>
       </div>
 
       <!-- Step 3: Start (sticky to bottom of sidebar so always reachable) -->
@@ -756,119 +754,120 @@ function setLiveSourceFile(inp) {
 loadAvatars();
 
 // ── Real-time Voice ────────────────────────────────────────────────────────────
-// ── Wav2Lip recording: record audio → server generates lip-synced MP4 ─────
-// Tap record → captures mic audio. Tap stop → audio goes to /lipsync/generate
-// where the server: (1) pitch-shifts to the avatar's voice profile, then
-// (2) runs Wav2Lip ONNX on the avatar image driven by that audio. Returns
-// an MP4 of the avatar speaking with correct lip movement. We play the MP4
-// in a video element directly below the voice button.
-let _recAudio       = null;     // MediaRecorder
-let _recAudioChunks = [];
-let _recAudioStream = null;
-let _recStart       = 0;
-let _recFrames      = [];       // kept for legacy code paths; unused for lipsync
-let _recActive      = false;
-let _replaying      = false;
+// ── Streaming voice: mic PCM → WebSocket → pitch-shift → speakers ─────────
+// Continuous full-duplex: while you speak, server pitch-shifts your audio
+// in ~500 ms chunks and streams it back. Browser schedules contiguous
+// playback in a single AudioContext so it sounds like one continuous voice.
+const VOICE_WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+                     '13.203.75.149:7860/ws/voice-stream';
+const STREAM_SR    = 16000;
+const STREAM_CHUNK = 4096;   // ScriptProcessor buffer ≈ 256 ms @ 16 kHz
+
+let _vsCtx        = null;    // capture AudioContext
+let _vsPlayCtx    = null;    // playback AudioContext (separate so capture echo is avoided)
+let _vsStream     = null;    // mic MediaStream
+let _vsProcessor  = null;    // ScriptProcessorNode
+let _vsWs         = null;    // WebSocket
+let _vsActive     = false;
+let _vsPlayTime   = 0;       // next scheduled playback start (sec)
 
 function _resetVoiceUI() {
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Record & Lip-Sync';
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
   if (st) { st.className='status-msg'; st.textContent=''; }
 }
-async function toggleLipSyncRecord() {
-  if (_replaying) return;
-  if (_recActive) _stopRecording();
-  else            await _startRecording();
+async function toggleStreamingVoice() {
+  if (_vsActive) _stopStreamingVoice();
+  else           await _startStreamingVoice();
 }
-// Back-compat alias if older inline handlers exist somewhere
-async function toggleRealtimeVoice() { return toggleLipSyncRecord(); }
+// Back-compat aliases — older buttons may still call these names
+async function toggleRealtimeVoice() { return toggleStreamingVoice(); }
+async function toggleLipSyncRecord() { return toggleStreamingVoice(); }
 
-async function _startRecording() {
-  if (!_selectedAvatar)  { setStatus('voiceStatus','error','Select an avatar first'); return; }
+async function _startStreamingVoice() {
+  if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
   try {
-    _recAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    _recAudio       = new MediaRecorder(_recAudioStream, { mimeType: 'audio/webm' });
-    _recAudioChunks = [];
-    _recFrames      = [];
-    _recStart       = Date.now();
-    _recActive      = true;
-    _recAudio.ondataavailable = e => { if (e.data.size > 0) _recAudioChunks.push(e.data); };
-    _recAudio.onstop          = async () => {
-      _recAudioStream.getTracks().forEach(t => t.stop());
-      _recAudioStream = null;
-      const blob = new Blob(_recAudioChunks, { type: 'audio/webm' });
-      await _processAndReplay(blob);
+    _vsStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: STREAM_SR, channelCount: 1,
+               echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    const AC = window.AudioContext || window.webkitAudioContext;
+    _vsCtx     = new AC({ sampleRate: STREAM_SR });
+    _vsPlayCtx = new AC({ sampleRate: STREAM_SR });
+    _vsPlayTime = _vsPlayCtx.currentTime + 0.1;   // small lead buffer
+
+    _vsWs = new WebSocket(VOICE_WS_URL);
+    _vsWs.binaryType = 'arraybuffer';
+    _vsWs.onopen  = () => {
+      _vsWs.send(JSON.stringify({ type: 'init', avatar_id: _selectedAvatar }));
     };
-    _recAudio.start();
-    setStatus('voiceStatus','info','Recording… speak now, then tap stop.');
-    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Generate';
+    _vsWs.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) {
+        // Schedule transformed PCM for seamless playback
+        const pcm = new Float32Array(e.data);
+        if (pcm.length === 0) return;
+        const buf = _vsPlayCtx.createBuffer(1, pcm.length, STREAM_SR);
+        buf.copyToChannel(pcm, 0);
+        const src = _vsPlayCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(_vsPlayCtx.destination);
+        const now   = _vsPlayCtx.currentTime;
+        const start = Math.max(now + 0.02, _vsPlayTime);
+        src.start(start);
+        _vsPlayTime = start + buf.duration;
+      } else {
+        try {
+          const m = JSON.parse(e.data);
+          if (m.type === 'ready') {
+            const av = _allAvatars.find(a => a.id === _selectedAvatar);
+            setStatus('voiceStatus','success',
+                      `Live: ${av?.name||'avatar'} (${m.semitones>0?'+':''}${m.semitones} semitones)`);
+          } else if (m.type === 'error') {
+            setStatus('voiceStatus','error', m.message || 'stream error');
+          }
+        } catch(_) {}
+      }
+    };
+    _vsWs.onerror = () => setStatus('voiceStatus','error','Voice stream error');
+    _vsWs.onclose = () => { if (_vsActive) _stopStreamingVoice(); };
+
+    // Capture mic via ScriptProcessor (deprecated but universally supported)
+    const source     = _vsCtx.createMediaStreamSource(_vsStream);
+    _vsProcessor     = _vsCtx.createScriptProcessor(STREAM_CHUNK, 1, 1);
+    source.connect(_vsProcessor);
+    _vsProcessor.connect(_vsCtx.destination);  // required to fire onaudioprocess
+    _vsProcessor.onaudioprocess = (ev) => {
+      if (!_vsWs || _vsWs.readyState !== WebSocket.OPEN) return;
+      const inp = ev.inputBuffer.getChannelData(0);
+      // Copy out (the same buffer gets reused by the API)
+      const out = new Float32Array(inp.length);
+      out.set(inp);
+      _vsWs.send(out.buffer);
+    };
+
+    _vsActive = true;
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Live Voice';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
-    document.getElementById('lipsyncPlayer').style.display = 'none';
+    setStatus('voiceStatus','info','Connecting…');
   } catch(e) {
+    console.error('voice stream start failed', e);
     setStatus('voiceStatus','error','Mic error: ' + e.message);
+    _stopStreamingVoice();
   }
 }
 
-function _stopRecording() {
-  if (!_recActive) return;
-  _recActive = false;
-  try { _recAudio.stop(); } catch(_) {}
-  setStatus('voiceStatus','info','Transforming voice on GPU…');
-  document.getElementById('voiceBtnLabel').textContent = '⏳ Processing…';
-  document.getElementById('recDot').style.display = 'none';
-  document.getElementById('voiceBtn').classList.remove('active');
-}
-
-async function _processAndReplay(audioBlob) {
-  try {
-    setStatus('voiceStatus','info','Encoding audio…');
-    // Convert webm → WAV in-browser (server reads WAV with soundfile)
-    let toSend = audioBlob, filename = 'speech.webm';
-    try {
-      const arrayBuf = await audioBlob.arrayBuffer();
-      const AC       = window.AudioContext || window.webkitAudioContext;
-      const audioCtx = new AC({ sampleRate: 16000 });   // Wav2Lip wants 16 kHz
-      const audioBuf = await audioCtx.decodeAudioData(arrayBuf.slice(0));
-      toSend = _audioBufferToWav(audioBuf);
-      filename = 'speech.wav';
-      audioCtx.close();
-    } catch(decodeErr) { console.warn('decode fallback:', decodeErr); }
-
-    const fd = new FormData();
-    fd.append('audio', toSend, filename);
-    fd.append('avatar_id', _selectedAvatar);
-
-    setStatus('voiceStatus','info','Generating lip-synced video on GPU… (5-10 s)');
-    document.getElementById('voiceBtnLabel').textContent = '⏳ Generating…';
-    const res = await fetch(`${FACE_API}/lipsync/generate`, { method: 'POST', body: fd });
-    if (!res.ok) {
-      let detail = res.statusText;
-      try { detail = (await res.json()).detail; } catch(_) {}
-      throw new Error(detail);
-    }
-    const mp4 = await res.blob();
-    const url = URL.createObjectURL(mp4);
-    const player = document.getElementById('lipsyncPlayer');
-    player.src = url;
-    player.style.display = 'block';
-    player.onended = () => {
-      _replaying = false;
-      _resetVoiceUI();
-      setStatus('voiceStatus','success','Done. Tap record to generate another.');
-    };
-    _replaying = true;
-    setStatus('voiceStatus','success','Playing lip-synced clip…');
-    document.getElementById('voiceBtnLabel').textContent = '▶ Playing…';
-    player.play().catch(err => console.warn('autoplay blocked:', err));
-  } catch(e) {
-    console.error(e);
-    setStatus('voiceStatus','error','Lip sync failed: ' + e.message);
-    _replaying = false;
-    _resetVoiceUI();
-  }
+function _stopStreamingVoice() {
+  _vsActive = false;
+  try { if (_vsWs)        _vsWs.close();          } catch(_) {}
+  try { if (_vsProcessor) _vsProcessor.disconnect(); } catch(_) {}
+  try { if (_vsStream)    _vsStream.getTracks().forEach(t => t.stop()); } catch(_) {}
+  try { if (_vsCtx)       _vsCtx.close();         } catch(_) {}
+  try { if (_vsPlayCtx)   _vsPlayCtx.close();     } catch(_) {}
+  _vsWs = _vsProcessor = _vsStream = _vsCtx = _vsPlayCtx = null;
+  _resetVoiceUI();
 }
 // Browser-side WAV encoder — avoids needing ffmpeg on the server.
 function _audioBufferToWav(buffer) {

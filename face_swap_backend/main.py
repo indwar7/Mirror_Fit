@@ -1037,6 +1037,86 @@ async def ws_live_swap(ws: WebSocket):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Streaming voice — low-latency pitch shift over WebSocket
+# ─────────────────────────────────────────────────────────────────────────────
+@app.websocket("/ws/voice-stream")
+async def ws_voice_stream(ws: WebSocket):
+    """
+    Real-time voice transform.
+
+    Client → server (text init):
+        {"type":"init", "avatar_id":"gen_f_01"}
+    Client → server (binary):
+        Float32 PCM @ 16 kHz mono, ~500 ms chunks
+
+    Server → client:
+        Float32 PCM @ 16 kHz mono — same chunk pitch-shifted to the avatar
+        voice profile. Client should schedule contiguous playback.
+    """
+    await ws.accept()
+    avatar_id   = None
+    semitones   = 0
+    sr_in       = 16000   # client sends 16 kHz; if not, we resample
+    loop        = asyncio.get_event_loop()
+
+    async def _shift(pcm: np.ndarray) -> np.ndarray:
+        if semitones == 0 or pcm.size == 0:
+            return pcm
+        # librosa pitch_shift preserves duration; just changes the pitch
+        return librosa.effects.pitch_shift(pcm.astype(np.float32),
+                                           sr=sr_in, n_steps=semitones)
+
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            text = msg.get("text")
+            data = msg.get("bytes")
+
+            if text is not None:
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    await ws.send_text(json.dumps({"type":"error","message":"bad json"}))
+                    continue
+                if payload.get("type") == "init":
+                    avatar_id = payload.get("avatar_id")
+                    if avatar_id and avatar_id in _AVATAR_MAP:
+                        # Match longest voice-fx prefix
+                        for prefix in sorted(_VOICE_FX.keys(), key=len, reverse=True):
+                            if avatar_id.startswith(prefix):
+                                semitones = _VOICE_FX[prefix]["semitones"]
+                                break
+                    await ws.send_text(json.dumps({
+                        "type": "ready",
+                        "semitones": semitones,
+                        "sample_rate": sr_in,
+                    }))
+                continue
+
+            if data is None:
+                continue
+            # Binary PCM Float32 mono @ 16 kHz
+            pcm = np.frombuffer(data, dtype=np.float32)
+            if pcm.size == 0:
+                continue
+            try:
+                shifted = await loop.run_in_executor(None, lambda: _shift(pcm))
+            except Exception as e:
+                with contextlib.suppress(Exception):
+                    await ws.send_text(json.dumps({"type":"error","message":str(e)}))
+                continue
+            await ws.send_bytes(shifted.astype(np.float32).tobytes())
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        # Don't crash the server on per-session errors
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Entrypoint
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
