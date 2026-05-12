@@ -1042,30 +1042,13 @@ async def ws_live_swap(ws: WebSocket):
                 try:
                     frame_bytes = base64.b64decode(msg["image"])
                     frame  = await loop.run_in_executor(None, _decode_image, frame_bytes)
-
-                    def _pipeline():
-                        out = _swap_live(src_img, src_detection, frame)
-                        if out is None:
-                            return None
-                        # Hair transfer (BiSeNet) — only if both src + tgt parses exist
-                        if _face_parser is not None and src_hair_mask is not None:
-                            try:
-                                tgt_hair = _face_parser.hair_mask(frame)
-                                if int(tgt_hair.sum()) > 500:
-                                    src_face = src_detection[0]
-                                    tgt_faces = _face_app_fast.get(frame)
-                                    tgt_face  = _largest_face(tgt_faces)
-                                    if tgt_face is not None and getattr(src_face, "kps", None) is not None:
-                                        from face_parser import transfer_hair
-                                        out = transfer_hair(
-                                            src_img, src_hair_mask, src_face.kps,
-                                            out, tgt_hair, tgt_face.kps,
-                                        )
-                            except Exception:
-                                pass
-                        return out
-
-                    result = await loop.run_in_executor(None, _pipeline)
+                    # Hair transfer disabled in the live loop — the warped
+                    # avatar forehead was bleeding over the inswapper face
+                    # region. Will re-enable with proper face-exclusion masks
+                    # next session.
+                    result = await loop.run_in_executor(
+                        None, _swap_live, src_img, src_detection, frame
+                    )
                     if result is None:
                         await send({"type":"no_face"})
                     else:

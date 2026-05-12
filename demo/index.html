@@ -788,24 +788,32 @@ async function toggleLipSyncRecord() { return toggleStreamingVoice(); }
 
 async function _startStreamingVoice() {
   if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
+  console.log('[voice] starting…');
   try {
     _vsStream = await navigator.mediaDevices.getUserMedia({
       audio: { sampleRate: STREAM_SR, channelCount: 1,
                echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
+    console.log('[voice] mic ok');
     const AC = window.AudioContext || window.webkitAudioContext;
     _vsCtx     = new AC({ sampleRate: STREAM_SR });
     _vsPlayCtx = new AC({ sampleRate: STREAM_SR });
-    _vsPlayTime = _vsPlayCtx.currentTime + 0.1;   // small lead buffer
+    // AudioContexts start SUSPENDED in modern browsers — must resume() with a
+    // user gesture or audio will silently never play. The button click is the
+    // user gesture; call resume now.
+    if (_vsCtx.state     === 'suspended') await _vsCtx.resume();
+    if (_vsPlayCtx.state === 'suspended') await _vsPlayCtx.resume();
+    console.log('[voice] audioCtx state:', _vsCtx.state, _vsPlayCtx.state);
+    _vsPlayTime = _vsPlayCtx.currentTime + 0.1;
 
     _vsWs = new WebSocket(VOICE_WS_URL);
     _vsWs.binaryType = 'arraybuffer';
     _vsWs.onopen  = () => {
+      console.log('[voice] ws open');
       _vsWs.send(JSON.stringify({ type: 'init', avatar_id: _selectedAvatar }));
     };
     _vsWs.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
-        // Schedule transformed PCM for seamless playback
         const pcm = new Float32Array(e.data);
         if (pcm.length === 0) return;
         const buf = _vsPlayCtx.createBuffer(1, pcm.length, STREAM_SR);
@@ -820,6 +828,7 @@ async function _startStreamingVoice() {
       } else {
         try {
           const m = JSON.parse(e.data);
+          console.log('[voice] ws msg:', m);
           if (m.type === 'ready') {
             const av = _allAvatars.find(a => a.id === _selectedAvatar);
             setStatus('voiceStatus','success',
@@ -830,18 +839,29 @@ async function _startStreamingVoice() {
         } catch(_) {}
       }
     };
-    _vsWs.onerror = () => setStatus('voiceStatus','error','Voice stream error');
-    _vsWs.onclose = () => { if (_vsActive) _stopStreamingVoice(); };
+    _vsWs.onerror = (err) => {
+      console.error('[voice] ws error', err);
+      setStatus('voiceStatus','error','Voice stream WS error — check console');
+    };
+    _vsWs.onclose = (ev) => {
+      console.log('[voice] ws close', ev.code, ev.reason);
+      if (_vsActive) _stopStreamingVoice();
+    };
 
-    // Capture mic via ScriptProcessor (deprecated but universally supported)
     const source     = _vsCtx.createMediaStreamSource(_vsStream);
     _vsProcessor     = _vsCtx.createScriptProcessor(STREAM_CHUNK, 1, 1);
     source.connect(_vsProcessor);
-    _vsProcessor.connect(_vsCtx.destination);  // required to fire onaudioprocess
+    _vsProcessor.connect(_vsCtx.destination);
+    let _firstAudioLogged = false;
     _vsProcessor.onaudioprocess = (ev) => {
       if (!_vsWs || _vsWs.readyState !== WebSocket.OPEN) return;
       const inp = ev.inputBuffer.getChannelData(0);
-      // Copy out (the same buffer gets reused by the API)
+      // Simple level check so we can confirm mic is actually receiving sound
+      if (!_firstAudioLogged) {
+        let s = 0; for (let i = 0; i < inp.length; i++) s += Math.abs(inp[i]);
+        console.log('[voice] first audio chunk len=', inp.length, 'sumAbs=', s.toFixed(3));
+        _firstAudioLogged = true;
+      }
       const out = new Float32Array(inp.length);
       out.set(inp);
       _vsWs.send(out.buffer);
@@ -851,10 +871,10 @@ async function _startStreamingVoice() {
     document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Live Voice';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
-    setStatus('voiceStatus','info','Connecting…');
+    setStatus('voiceStatus','info','Connecting… speak when you see "Live:" status.');
   } catch(e) {
-    console.error('voice stream start failed', e);
-    setStatus('voiceStatus','error','Mic error: ' + e.message);
+    console.error('[voice] start failed', e);
+    setStatus('voiceStatus','error','Mic/Audio error: ' + e.message);
     _stopStreamingVoice();
   }
 }
