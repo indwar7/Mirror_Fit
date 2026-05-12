@@ -566,13 +566,16 @@ def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.nda
     sw_lab  = cv2.cvtColor(sw_patch,  cv2.COLOR_BGR2LAB).astype(np.float32)
     tgt_lab = cv2.cvtColor(tgt_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
     out = sw_lab.copy()
-    # 70% transfer (full transfer can over-tint); preserves some swap colour
-    blend = 0.7
+    # Per-channel blend. Luminance (L) and chromaticity (a, b) are weighted
+    # differently — a strong 'a'/'b' transfer locks skin tone (cross-ethnicity
+    # swaps no longer look fair-on-dark); a softer 'L' transfer preserves
+    # the avatar's facial detail/shading.
+    blends = (0.65, 0.95, 0.95)
     for c in range(3):
         sm, ss = sw_lab[:, :, c].mean(),  sw_lab[:, :, c].std() + 1e-6
         tm, ts = tgt_lab[:, :, c].mean(), tgt_lab[:, :, c].std() + 1e-6
         adjusted = (sw_lab[:, :, c] - sm) * (ts / ss) + tm
-        out[:, :, c] = blend * adjusted + (1 - blend) * sw_lab[:, :, c]
+        out[:, :, c] = blends[c] * adjusted + (1 - blends[c]) * sw_lab[:, :, c]
     out = np.clip(out, 0, 255).astype(np.uint8)
     out_bgr = cv2.cvtColor(out, cv2.COLOR_LAB2BGR)
 
