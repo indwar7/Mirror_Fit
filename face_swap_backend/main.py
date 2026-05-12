@@ -92,22 +92,32 @@ _VOICE_FX: dict[str, dict] = {
 # ─────────────────────────────────────────────────────────────────────────────
 #  Global model references
 # ─────────────────────────────────────────────────────────────────────────────
-_face_app:    Optional[FaceAnalysis] = None
-_inswapper                           = None
-_inswap_emap: Optional[np.ndarray]   = None   # 512x512 embedding map baked into the inswapper ONNX
-_haar_cascade                        = None
-_gfpgan                              = None   # GFPGANer for face enhancement (optional)
+_face_app:     Optional[FaceAnalysis] = None   # full pipeline — used ONCE per session on the source avatar
+_face_app_fast:Optional[FaceAnalysis] = None   # detection + landmarks only — per-frame target detection
+_inswapper                            = None
+_inswap_emap:  Optional[np.ndarray]   = None   # 512x512 embedding map baked into the inswapper ONNX
+_haar_cascade                         = None
+_gfpgan                               = None   # GFPGANer for face enhancement (optional)
 
 
 def _load_models() -> None:
     """Load InsightFace FaceAnalysis, inswapper (+ emap), and Haar cascade."""
-    global _face_app, _inswapper, _inswap_emap, _haar_cascade
+    global _face_app, _face_app_fast, _inswapper, _inswap_emap, _haar_cascade
 
-    # FaceAnalysis — buffalo_l with 320x320 detection (4x faster than 640x640
-    # and accuracy is still fine for selfies / centered faces). This is the
-    # single biggest latency driver in the live pipeline.
+    # Full pipeline (detection + landmarks + ArcFace + gender/age) — used ONCE
+    # per session when the source avatar is loaded so we can extract its
+    # 512-d normed_embedding for the inswapper source latent.
     _face_app = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    _face_app.prepare(ctx_id=0, det_thresh=0.3, det_size=(320, 320))
+    _face_app.prepare(ctx_id=0, det_thresh=0.3, det_size=(640, 640))
+
+    # Per-frame target detection — also high res for accurate keypoints
+    # (which determine warp quality). Recognition/genderage stripped because
+    # they're truly unused for target frames.
+    _face_app_fast = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    _face_app_fast.prepare(ctx_id=0, det_thresh=0.3, det_size=(480, 480))
+    for mod in ("recognition", "genderage"):
+        if mod in _face_app_fast.models:
+            del _face_app_fast.models[mod]
 
     # inswapper_128 ONNX
     import onnxruntime as ort
@@ -307,14 +317,14 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     result_patch = result_patch.transpose(1, 2, 0)[:, :, ::-1]  # RGB→BGR
     result_patch = (np.clip(result_patch, 0, 1) * 255).astype(np.uint8)
 
-    # Light unsharp mask — counters inswapper's soft 128px output without
-    # the cost of cubic upscaling.
-    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.0)
-    result_patch = cv2.addWeighted(result_patch, 1.4, gauss, -0.4, 0)
+    # Unsharp + cubic upscale — back to quality settings. Counters
+    # inswapper's soft 128px output for sharper face details.
+    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.2)
+    result_patch = cv2.addWeighted(result_patch, 1.5, gauss, -0.5, 0)
 
     M_inv = cv2.invertAffineTransform(M)
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
-                                flags=cv2.INTER_LINEAR)
+                                flags=cv2.INTER_CUBIC)
 
     # Oval shifted up 8% to include forehead/hairline — not just cheek-to-chin
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
@@ -330,13 +340,17 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     blend_mask = np.zeros((ih, iw), np.uint8)
     cv2.ellipse(blend_mask, (cx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
 
-    # Gaussian alpha blend — ~50x faster than seamlessClone and looks fine
-    # at live FPS. The unsharp + LAB color correction below cover most of
-    # the seam issues that Poisson would have fixed.
-    bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
-    alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
-    swapped = (patch_back.astype(np.float32) * alpha +
-               tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+    # Poisson seamless clone — back on for accuracy. No visible seam at the
+    # face boundary, much cleaner blend than alpha. ~30 ms / frame but worth
+    # it now that we prioritise accuracy over fps.
+    try:
+        swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
+                                    (cx, oval_cy), cv2.NORMAL_CLONE)
+    except cv2.error:
+        bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
+        alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
+        swapped = (patch_back.astype(np.float32) * alpha +
+                   tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
 
     # ── GFPGAN face enhancement (if loaded) ──────────────────────────────────
     # Restores fine detail lost by inswapper_128's low-resolution output.
@@ -514,18 +528,17 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
     Cartoon:    geometric warp.
     """
     src_face, src_kps, src_bbox, src_real = src_detection
-    tgt_faces = _face_app.get(target_img)
+    # Use the stripped-down detector for per-frame target — ~3x faster
+    tgt_faces = _face_app_fast.get(target_img)
     tgt_face  = _largest_face(tgt_faces)
     if src_face is None or tgt_face is None:
-        # Fallback: try Haar
         return None
 
     if src_real and tgt_face is not None:
-        # Inswapper handles identity transfer; user keeps their own hair.
-        # (Affine-warped hair from a face-keypoint-only transform produces
-        # garbage smears because hair extends far from the face keypoints —
-        # disabled until we wire in proper hair segmentation.)
+        # Identity transfer (avatar face on user's head/body)
         result = _run_inswapper(src_face, tgt_face, target_img)
+        # LAB skin-tone match — back on. ~10 ms / frame but materially
+        # improves how the swapped face blends into the user's neck/body.
         result = _color_correct_face(result, target_img, tgt_face.bbox)
         return result
 

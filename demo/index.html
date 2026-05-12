@@ -994,7 +994,10 @@ function stopLiveSwap() {
 }
 function _startLsTimer() {
   if (liveSendTimer) clearInterval(liveSendTimer);
-  liveSendTimer=setInterval(sendLiveFrame,70);
+  // 300 ms = ~3 fps. Each frame is high-quality and the server has time
+  // to do full LAB color + Poisson clone for accurate, stable output.
+  // (Was 70 ms which made the result strobe between frame-drops.)
+  liveSendTimer=setInterval(sendLiveFrame,300);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
@@ -1016,12 +1019,12 @@ function sendLiveFrame() {
   if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
   const video=document.getElementById('liveVideo');
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
-  // 256x256 + JPEG quality 0.70 cuts upload size ~40% and decode time ~30%.
-  // Face detection scales further at 320x320 on the server (4x faster).
-  const sz=Math.min(vw,vh,256);
+  // 384px + JPEG quality 0.85 — larger, sharper frame for accurate detection
+  // and a result that doesn't look pixelated when stretched to the canvas.
+  const sz=Math.min(vw,vh,384);
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
   _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
-  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.70).split(',')[1]}));
+  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────
