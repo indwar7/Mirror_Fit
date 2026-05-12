@@ -200,73 +200,6 @@ def _detect(img_bgr: np.ndarray):
     return None, None, None, False
 
 
-def _extract_hair_rgba(src_img: np.ndarray, src_face) -> Optional[np.ndarray]:
-    """Extract the avatar's hair as an RGBA strip:
-       - Crop region above the face (eyebrows up).
-       - Build an alpha mask by dropping studio-background pixels using HSV
-         (low-saturation extreme-brightness areas).
-       - Returns (H, W, 4) BGRA strip, or None if extraction failed.
-    """
-    h_img, w_img = src_img.shape[:2]
-    x1, y1, x2, y2 = (int(v) for v in src_face.bbox)
-    fw, fh = x2 - x1, y2 - y1
-    # Hair region: 1.6x face width centered on face, from 1.4*fh above face top
-    # down to (face_top + 0.15*fh) so we capture forehead hairline.
-    pad_x  = int(fw * 0.30)
-    hair_x1 = max(0, x1 - pad_x)
-    hair_x2 = min(w_img, x2 + pad_x)
-    hair_y1 = max(0, y1 - int(fh * 1.40))
-    hair_y2 = min(h_img, y1 + int(fh * 0.15))
-    if hair_x2 - hair_x1 < 20 or hair_y2 - hair_y1 < 20:
-        return None
-    strip = src_img[hair_y1:hair_y2, hair_x1:hair_x2].copy()
-
-    # Alpha: HSV background filter (low saturation + extreme value = bg)
-    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
-    S, V = hsv[:, :, 1], hsv[:, :, 2]
-    is_bg = ((S < 25) & ((V < 60) | (V > 220))).astype(np.uint8) * 255
-    # Largest connected non-bg region = the hair/head
-    fg = 255 - is_bg
-    # Clean up
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  np.ones((3, 3), np.uint8))
-    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    # Smooth edges for blending
-    fg = cv2.GaussianBlur(fg, (21, 21), 0)
-
-    rgba = np.dstack([strip, fg])
-    return rgba
-
-
-def _paste_hair(result_bgr: np.ndarray, hair_rgba: np.ndarray, tgt_face) -> np.ndarray:
-    """Scale the cached avatar hair strip to the target face dimensions and
-    composite it above the target's face (no affine warp — purely box scale
-    + translate, which avoids the perspective smears we saw before)."""
-    if hair_rgba is None:
-        return result_bgr
-    H, W = result_bgr.shape[:2]
-    x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
-    fw, fh = x2 - x1, y2 - y1
-
-    # Target hair box mirrors the proportions used when we extracted it
-    pad_x   = int(fw * 0.30)
-    hair_x1 = max(0, x1 - pad_x)
-    hair_x2 = min(W, x2 + pad_x)
-    hair_y1 = max(0, y1 - int(fh * 1.40))
-    hair_y2 = min(H, y1 + int(fh * 0.15))
-    th = hair_y2 - hair_y1
-    tw = hair_x2 - hair_x1
-    if th < 10 or tw < 10:
-        return result_bgr
-
-    scaled = cv2.resize(hair_rgba, (tw, th), interpolation=cv2.INTER_LINEAR)
-    rgb   = scaled[:, :, :3].astype(np.float32)
-    alpha = (scaled[:, :, 3:4].astype(np.float32) / 255.0) * 0.92  # slight transparency
-    roi   = result_bgr[hair_y1:hair_y2, hair_x1:hair_x2].astype(np.float32)
-    if roi.shape[:2] != (th, tw):
-        return result_bgr
-    blended = (rgb * alpha + roi * (1 - alpha)).astype(np.uint8)
-    result_bgr[hair_y1:hair_y2, hair_x1:hair_x2] = blended
-    return result_bgr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -909,7 +842,6 @@ async def ws_live_swap(ws: WebSocket):
 
     src_img       = None
     src_detection = None   # cached once — saves ~100ms/frame
-    src_hair      = None   # cached avatar hair RGBA strip, applied each frame
     processing    = False
     loop          = asyncio.get_event_loop()
 
@@ -939,19 +871,11 @@ async def ws_live_swap(ws: WebSocket):
 
                 # Cache source face detection once — never re-run per frame
                 src_detection = await loop.run_in_executor(None, _detect, src_img)
-                src_face, kps, bbox, is_real = src_detection
+                _, kps, bbox, is_real = src_detection
                 if kps is None and not is_real:
                     await send({"type":"error","message":"No face detected in source image"})
-                    src_img = src_detection = src_hair = None
+                    src_img = src_detection = None
                 else:
-                    # Pre-extract avatar's hair strip once — re-used per frame
-                    if is_real and src_face is not None:
-                        try:
-                            src_hair = await loop.run_in_executor(
-                                None, _extract_hair_rgba, src_img, src_face
-                            )
-                        except Exception:
-                            src_hair = None
                     await send({"type":"ready"})
 
             elif msg["type"] == "frame":
@@ -966,18 +890,9 @@ async def ws_live_swap(ws: WebSocket):
                 try:
                     frame_bytes = base64.b64decode(msg["image"])
                     frame  = await loop.run_in_executor(None, _decode_image, frame_bytes)
-                    # Run swap. Also detect target face on this thread so we
-                    # can layer the cached avatar hair onto the swapped frame
-                    # before encoding. (face_app_fast.get() is cheap.)
-                    def _do():
-                        out = _swap_live(src_img, src_detection, frame)
-                        if out is not None and src_hair is not None:
-                            tgt_faces = _face_app_fast.get(frame)
-                            tgt_face  = _largest_face(tgt_faces)
-                            if tgt_face is not None:
-                                out = _paste_hair(out, src_hair, tgt_face)
-                        return out
-                    result = await loop.run_in_executor(None, _do)
+                    result = await loop.run_in_executor(
+                        None, _swap_live, src_img, src_detection, frame
+                    )
                     if result is None:
                         await send({"type":"no_face"})
                     else:
