@@ -522,7 +522,7 @@ header {
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
         <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
           <span class="rec-pulse" id="recDot"></span>
-          <span id="voiceBtnLabel">🎤 Hold to Speak</span>
+          <span id="voiceBtnLabel">🎤 Start Voice</span>
         </button>
         <div id="voiceStatus" class="status-msg"></div>
       </div>
@@ -754,54 +754,118 @@ function setLiveSourceFile(inp) {
 loadAvatars();
 
 // ── Real-time Voice ────────────────────────────────────────────────────────────
-// ── Voice: record → transform → playback ──────────────────────────────────
-// User speaks → we record → on stop, send to /voice/transform → play result
-let _voiceRec = null, _voiceChunks = [], _voiceRecording = false;
+// ── Voice: continuous listen → VAD chunks → transform → playback ──────────
+// Tap once to start listening. Speak naturally. When you pause (~700 ms of
+// silence after speech), we cut the chunk, send to /voice/transform, and
+// auto-play the transformed audio. Then keep listening for the next phrase.
+let _voiceStream   = null;
+let _voiceCtx      = null;
+let _voiceAnalyser = null;
+let _voiceMonitor  = null;
+let _voiceRec      = null;
+let _voiceChunks   = [];
+let _voiceActive   = false;
+let _voiceSpoke    = false;     // user has produced sound in current chunk
+let _voiceQuietAt  = 0;          // timestamp when silence started after speech
+
+const VAD_RMS_THRESHOLD = 0.035;  // mic activity threshold (tune if needed)
+const VAD_SILENCE_MS    = 700;    // ms of silence to consider phrase ended
+const VAD_MIN_CHUNK_MS  = 350;    // ignore micro-blips
+
 function _resetVoiceUI() {
-  if (_voiceRec && _voiceRecording) { try { _voiceRec.stop(); } catch(_){} }
-  _voiceRec = null; _voiceChunks = []; _voiceRecording = false;
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Hold to Speak';
+  _stopVoiceStream();
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Voice';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
   if (st) { st.className='status-msg'; st.textContent=''; }
 }
 async function toggleRealtimeVoice() {
-  // Single tap toggles: tap to start recording, tap again to stop+play
-  if (_voiceRecording) { _stopAndTransformVoice(); }
-  else                 { await _startVoiceRecord(); }
+  if (_voiceActive) { _stopVoiceStream(); }
+  else              { await _startVoiceStream(); }
 }
-async function _startVoiceRecord() {
+
+async function _startVoiceStream() {
   if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    _voiceRec    = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-    _voiceChunks = [];
-    _voiceRec.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
-    _voiceRec.onstop = async () => {
-      // Stop mic tracks so the OS mic indicator goes off
-      stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
-      await _sendVoiceForTransform(blob);
-    };
-    _voiceRec.start();
-    _voiceRecording = true;
-    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Transform';
+    _voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const AC = window.AudioContext || window.webkitAudioContext;
+    _voiceCtx = new AC();
+    const source = _voiceCtx.createMediaStreamSource(_voiceStream);
+    _voiceAnalyser = _voiceCtx.createAnalyser();
+    _voiceAnalyser.fftSize = 512;
+    source.connect(_voiceAnalyser);
+
+    _voiceActive = true;
+    _voiceSpoke  = false;
+    _voiceQuietAt = 0;
+    _voiceChunkStart = Date.now();
+    _startRecorder();
+    _voiceMonitor = setInterval(_monitorAudio, 80);
+
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Listening';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
-    setStatus('voiceStatus','info','Recording… speak now, then tap stop.');
+    setStatus('voiceStatus','info','Listening… speak naturally, pause between phrases.');
   } catch(e) {
     setStatus('voiceStatus','error','Mic error: ' + e.message);
   }
 }
-function _stopAndTransformVoice() {
-  if (_voiceRec && _voiceRecording) {
-    _voiceRec.stop();
-    _voiceRecording = false;
-    document.getElementById('voiceBtnLabel').textContent = '⏳ Transforming…';
-    document.getElementById('recDot').style.display = 'none';
-    document.getElementById('voiceBtn').classList.remove('active');
+
+let _voiceChunkStart = 0;
+function _startRecorder() {
+  if (!_voiceStream || !_voiceActive) return;
+  _voiceRec    = new MediaRecorder(_voiceStream, { mimeType: 'audio/webm' });
+  _voiceChunks = [];
+  _voiceChunkStart = Date.now();
+  _voiceSpoke  = false;
+  _voiceQuietAt = 0;
+  _voiceRec.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
+  _voiceRec.onstop = async () => {
+    const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
+    const durMs = Date.now() - _voiceChunkStart;
+    // Only send if there was real speech in this chunk
+    if (_voiceSpoke && durMs > VAD_MIN_CHUNK_MS && blob.size > 4000) {
+      _sendVoiceForTransform(blob);  // fire-and-forget; new recorder starts immediately
+    }
+    if (_voiceActive) _startRecorder();   // resume listening
+  };
+  _voiceRec.start();
+}
+
+function _monitorAudio() {
+  if (!_voiceAnalyser || !_voiceActive || !_voiceRec) return;
+  const buf = new Uint8Array(_voiceAnalyser.frequencyBinCount);
+  _voiceAnalyser.getByteTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+  const rms = Math.sqrt(sum / buf.length);
+
+  if (rms > VAD_RMS_THRESHOLD) {
+    _voiceSpoke   = true;
+    _voiceQuietAt = 0;
+  } else if (_voiceSpoke) {
+    if (_voiceQuietAt === 0) _voiceQuietAt = Date.now();
+    if (Date.now() - _voiceQuietAt > VAD_SILENCE_MS) {
+      // End of phrase → close current chunk, recorder onstop will fire+restart
+      if (_voiceRec.state === 'recording') _voiceRec.stop();
+    }
   }
+}
+
+function _stopVoiceStream() {
+  if (_voiceMonitor) { clearInterval(_voiceMonitor); _voiceMonitor = null; }
+  if (_voiceRec && _voiceRec.state === 'recording') {
+    try { _voiceRec.stop(); } catch(_) {}
+  }
+  _voiceRec = null;
+  if (_voiceStream) { _voiceStream.getTracks().forEach(t => t.stop()); _voiceStream = null; }
+  if (_voiceCtx)    { try { _voiceCtx.close(); } catch(_) {} _voiceCtx = null; }
+  _voiceAnalyser = null;
+  _voiceActive   = false;
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Voice';
+  document.getElementById('recDot').style.display = 'none';
+  document.getElementById('voiceBtn').classList.remove('active');
 }
 // Browser-side WAV encoder — avoids needing ffmpeg on the server.
 function _audioBufferToWav(buffer) {
@@ -830,10 +894,8 @@ function _audioBufferToWav(buffer) {
 
 async function _sendVoiceForTransform(blob) {
   try {
-    setStatus('voiceStatus','info','Converting audio…');
     // Decode webm/opus → AudioBuffer → re-encode as WAV.
-    // If decodeAudioData fails (rare browser bug), send raw blob and let
-    // the server try.
+    // If decodeAudioData fails (rare), send raw blob and let server try.
     let toSend = blob;
     let filename = 'speech.webm';
     try {
@@ -851,7 +913,6 @@ async function _sendVoiceForTransform(blob) {
     const fd = new FormData();
     fd.append('audio', toSend, filename);
     fd.append('avatar_id', _selectedAvatar);
-    setStatus('voiceStatus','info','Transforming on GPU…');
     const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
     if (!res.ok) {
       let detail = res.statusText;
@@ -862,14 +923,16 @@ async function _sendVoiceForTransform(blob) {
     const url    = URL.createObjectURL(outWav);
     const audio  = new Audio(url);
     audio.onended = () => URL.revokeObjectURL(url);
-    await audio.play();
+    audio.play().catch(err => console.warn('autoplay blocked:', err));
     const av = _allAvatars.find(a => a.id === _selectedAvatar);
-    setStatus('voiceStatus','success',`Playing as ${av?.name || 'avatar'}`);
+    if (_voiceActive) {
+      setStatus('voiceStatus','success',`Playing as ${av?.name || 'avatar'} — keep speaking…`);
+    } else {
+      setStatus('voiceStatus','success',`Playing as ${av?.name || 'avatar'}`);
+    }
   } catch(e) {
     console.error('Voice transform error:', e);
     setStatus('voiceStatus','error','Transform failed: ' + e.message);
-  } finally {
-    document.getElementById('voiceBtnLabel').textContent = '🎤 Hold to Speak';
   }
 }
 
