@@ -155,18 +155,26 @@ def transfer_hair(
         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
 
-    # Combine: only where BOTH the warped avatar hair and the target's
-    # actual hair exist. This prevents the floating-rectangle problem.
-    combined = cv2.bitwise_and(mask_warp, tgt_hair_mask)
-    # Allow ~10 px outside the target hair silhouette so we capture the
-    # full hairline. Dilate the target mask before AND-ing.
-    tgt_dil = cv2.dilate(tgt_hair_mask, np.ones((9, 9), np.uint8), iterations=1)
-    combined = cv2.bitwise_and(mask_warp, tgt_dil)
+    # Combine: dilate target hair generously so longer avatar hair can show
+    # outside the user's current hairline (otherwise short user hair would
+    # always clip the avatar's longer hair invisibly).
+    tgt_dil = cv2.dilate(tgt_hair_mask, np.ones((15, 15), np.uint8), iterations=2)
+    # Use UNION of (warped avatar hair) and (user hair) so the avatar's
+    # full hair shape carries over, but only where ONE of them has hair —
+    # never extends into clear background.
+    combined = cv2.bitwise_or(mask_warp, tgt_hair_mask)
+    # Then intersect with the dilated user-hair region to avoid floating
+    # blocks far from the user's head.
+    combined = cv2.bitwise_and(combined, tgt_dil)
 
     if int(combined.sum()) < 500:
-        return tgt_bgr   # nothing meaningful to paste
+        return tgt_bgr
 
-    alpha = cv2.GaussianBlur(combined, (31, 31), 0).astype(np.float32) / 255.0
+    # Stronger alpha — keep the center fully opaque so the colour change
+    # is actually visible, only feather the last few pixels at the edge.
+    alpha = cv2.GaussianBlur(combined, (15, 15), 0).astype(np.float32) / 255.0
+    # Boost mid-range alpha (anywhere mask was >50%) toward 1.0
+    alpha = np.clip(alpha * 1.4, 0.0, 1.0)
     a3    = alpha[:, :, np.newaxis]
     out   = (src_warp.astype(np.float32) * a3 +
              tgt_bgr.astype(np.float32) * (1 - a3)).astype(np.uint8)
