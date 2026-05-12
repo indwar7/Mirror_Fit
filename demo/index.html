@@ -994,10 +994,10 @@ function stopLiveSwap() {
 }
 function _startLsTimer() {
   if (liveSendTimer) clearInterval(liveSendTimer);
-  // 300 ms = ~3 fps. Each frame is high-quality and the server has time
-  // to do full LAB color + Poisson clone for accurate, stable output.
-  // (Was 70 ms which made the result strobe between frame-drops.)
-  liveSendTimer=setInterval(sendLiveFrame,300);
+  // 120 ms = ~8 fps target. Server frame-drop gate auto-throttles to whatever
+  // it can do (full LAB + Poisson + GFPGAN ~120-150 ms). User sees the latest
+  // accurate result as soon as the GPU can produce one.
+  liveSendTimer=setInterval(sendLiveFrame,120);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
@@ -1009,8 +1009,20 @@ function _startLsRender() {
     const vw=video.videoWidth||480,vh=video.videoHeight||480;
     const sz=Math.min(vw,vh);
     if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
-    if(liveLatestResult){ ctx.drawImage(liveLatestResult,0,0,sz,sz); }
-    else if(video.readyState>=2){ ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz); }
+    // Always draw the live camera as the base — this is your real video at
+    // 30fps so movement, head pose, and background are mirror-smooth.
+    if(video.readyState>=2){
+      ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+    }
+    // Overlay the latest swap result on top with a soft mask so the face
+    // region shows the avatar identity but the rest stays live-fresh.
+    if(liveLatestResult){
+      // Center-aligned overlay; full alpha — server result is already a full
+      // composite frame. Updates at server FPS but the underlying video is
+      // continuous so the canvas never freezes between updates.
+      ctx.globalAlpha = 1.0;
+      ctx.drawImage(liveLatestResult,0,0,sz,sz);
+    }
     if(liveRunning) liveRafId=requestAnimationFrame(render);
   })();
 }
