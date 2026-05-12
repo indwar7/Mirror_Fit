@@ -523,51 +523,12 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         return None
 
     if src_real and tgt_face is not None:
-        # Inswapper
+        # Inswapper handles identity transfer; user keeps their own hair.
+        # (Affine-warped hair from a face-keypoint-only transform produces
+        # garbage smears because hair extends far from the face keypoints —
+        # disabled until we wire in proper hair segmentation.)
         result = _run_inswapper(src_face, tgt_face, target_img)
-        # Color correct — match skin tone of swapped face to target
         result = _color_correct_face(result, target_img, tgt_face.bbox)
-        # Hair oval above face (fast — no GrabCut)
-        tx1,ty1,tx2,ty2 = [int(v) for v in tgt_face.bbox]
-        fh = ty2-ty1; fw = tx2-tx1
-        cx = (tx1+tx2)//2
-        h,w = result.shape[:2]
-        M_aff,_ = cv2.estimateAffinePartial2D(
-            src_face.kps.astype(np.float32),
-            tgt_face.kps.astype(np.float32),
-        )
-        if M_aff is not None:
-            src_warp = cv2.warpAffine(src_img, M_aff, (w, h),
-                                      flags=cv2.INTER_CUBIC,
-                                      borderMode=cv2.BORDER_REPLICATE)
-
-            # Tight hair ellipse — JUST the dome of hair, no sides past ears,
-            # no extension that would catch the avatar's studio backdrop.
-            hair_top  = max(0, ty1 - int(fh * 1.6))
-            ov_cy     = max(1, (hair_top + ty1) // 2)
-            ov_ry     = max(1, (ty1 - hair_top) // 2)
-            ov_rx     = max(1, int(fw * 0.55))   # narrower than face width
-            hair_mask = np.zeros((h, w), np.uint8)
-            cv2.ellipse(hair_mask, (cx, ov_cy), (ov_rx, ov_ry), 0, 0, 360, 255, -1)
-            hair_mask[ty1:] = 0  # never blend into face region
-
-            # Foreground filter on the warped source — drop pixels that look
-            # like the avatar's plain studio background (low-saturation +
-            # similar uniform luminance). Keeps only hair/skin pixels.
-            hsv      = cv2.cvtColor(src_warp, cv2.COLOR_BGR2HSV)
-            S, V     = hsv[:, :, 1], hsv[:, :, 2]
-            # Background = low saturation + extreme brightness (very dark
-            # OR very bright studio backdrops); foreground = mid V or high S
-            is_bg    = ((S < 20) & ((V < 60) | (V > 220))).astype(np.uint8) * 255
-            is_bg    = cv2.dilate(is_bg, np.ones((3, 3), np.uint8), iterations=1)
-            fg_mask  = 255 - is_bg
-
-            combined = cv2.bitwise_and(hair_mask, fg_mask)
-            if combined.sum() > 500:
-                alpha = cv2.GaussianBlur(combined, (31, 31), 0).astype(np.float32) / 255.0
-                a3 = alpha[:, :, np.newaxis]
-                result = (src_warp.astype(np.float32) * a3 +
-                          result.astype(np.float32) * (1 - a3)).astype(np.uint8)
         return result
 
     # Cartoon source
