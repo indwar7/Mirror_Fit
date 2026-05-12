@@ -303,13 +303,15 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference for inpainting.
-        # Scale 2.5 + colour-injected prompt locks the garment colour/texture
-        # tightly to the reference photo so SD can't drift the colour.
+        # IP-Adapter: garment image as visual reference. Scale 1.5 is the
+        # sweet spot — high enough to anchor colour/texture, low enough that
+        # the model still generates real garment structure (collar, zipper,
+        # sleeves). Higher scales (2.0+) collapse the mask into a flat colour
+        # blob instead of a real jacket.
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(2.5)
+        self.pipeline.set_ip_adapter_scale(1.5)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -929,15 +931,17 @@ class TryOnModel:
 
         generator = torch.Generator(device=self.device).manual_seed(42)
 
-        # ── Build wide torso+arms mask ────────────────────────────────────────
-        # Wider horizontal range (3-97%) so the jacket actually paints onto
-        # the arms / full-sleeve regions too. Vertical 38-94% covers from
-        # below the chin down to almost the bottom of the frame.
+        # ── Build wide torso+arms mask with crisp edges ──────────────────────
+        # Crisp binary mask gives SD a strong signal of WHERE to paint. The
+        # previous 41px Gaussian was so soft that SD was barely modifying
+        # the masked region — that's why the result was just a colour-tinted
+        # tank top instead of a real jacket.
         if self._fixed_mask_cache is None:
             m = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
-            m[int(LIVE_SIZE*0.38):int(LIVE_SIZE*0.94),
-              int(LIVE_SIZE*0.03):int(LIVE_SIZE*0.97)] = 1.0
-            self._fixed_mask_cache = cv2.GaussianBlur(m, (41, 41), 0)
+            m[int(LIVE_SIZE*0.36):int(LIVE_SIZE*0.95),
+              int(LIVE_SIZE*0.02):int(LIVE_SIZE*0.98)] = 1.0
+            # Tiny blur for soft edges only, mask stays mostly binary
+            self._fixed_mask_cache = cv2.GaussianBlur(m, (11, 11), 0)
         torso_mask = self._fixed_mask_cache
 
         # ── Inpainting path — mask covers torso AND arms ─────────────────────
@@ -947,15 +951,19 @@ class TryOnModel:
                      if self._ip_embeds is not None
                      else {"ip_adapter_image": garment})
             color = self._garment_color_name or "matching"
+            # Very explicit garment-structure prompt so SD generates a real
+            # jacket with collar, zipper, sleeves — not just a tinted blob.
             prompt = (
-                f"person wearing a {color} full-sleeve jacket, "
-                f"{color} sleeves on arms, exact same color and pattern, "
-                f"photorealistic, sharp, well-fitted"
+                f"professional photograph of a person wearing a {color} jacket, "
+                f"the jacket has a visible collar, a zipper down the front, "
+                f"full-length sleeves covering both arms entirely, "
+                f"the jacket is fitted around the torso and shoulders, "
+                f"detailed fabric texture, sharp focus, photorealistic, studio lighting"
             )
             neg = (
-                "wrong color, faded color, bare arms, t-shirt visible, "
-                "different jacket, naked, no clothes, deformed, blurry, "
-                "extra limbs, low quality"
+                "wrong color, faded, washed out, bare arms, t-shirt, tank top, "
+                "sleeveless, naked, no collar, no zipper, flat shapeless garment, "
+                "blurry, deformed, extra limbs, low quality, painting, cartoon"
             )
             with torch.inference_mode():
                 result = self.pipeline(
@@ -963,8 +971,8 @@ class TryOnModel:
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=5,
-                    guidance_scale=1.0,
+                    num_inference_steps=8,   # back up from 5 — needs more denoising for jacket structure
+                    guidance_scale=1.5,      # mild CFG so the prompt actually matters
                     generator=generator,
                     **ip_kw,
                 ).images[0]

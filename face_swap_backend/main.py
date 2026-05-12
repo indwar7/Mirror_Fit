@@ -496,19 +496,25 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         )
         if M_aff is not None:
             src_warp = cv2.warpAffine(src_img, M_aff, (w, h),
-                                      flags=cv2.INTER_LINEAR,
+                                      flags=cv2.INTER_CUBIC,
                                       borderMode=cv2.BORDER_REPLICATE)
-            # Extend hair coverage higher (2.5x face height) and wider (0.85x face width)
-            hair_top = max(0, ty1 - int(fh * 2.5))
-            ov_cy    = max(1, (hair_top + ty1) // 2)
-            ov_ry    = max(1, (ty1 - hair_top) // 2)
-            ov_rx    = max(1, int(fw * 0.85))
-            hair_mask = np.zeros((h, w), np.uint8)
+            # Much bigger hair ellipse — extends 2.8x face height above and
+            # 1.1x face width sideways so we cover the full hair envelope
+            # (top, sides around ears, behind the head). Avatar's hair will
+            # blend over the user's haircut.
+            hair_top   = max(0, ty1 - int(fh * 2.8))
+            hair_bot   = ty1 + int(fh * 0.15)        # extend slightly below face top
+            ov_cy      = max(1, (hair_top + ty1) // 2)
+            ov_ry      = max(1, (ty1 - hair_top) // 2 + int(fh * 0.10))
+            ov_rx      = max(1, int(fw * 1.10))
+            hair_mask  = np.zeros((h, w), np.uint8)
             cv2.ellipse(hair_mask, (cx, ov_cy), (ov_rx, ov_ry), 0, 0, 360, 255, -1)
-            hair_mask[ty1:] = 0  # don't blend below face top
+            # Cut off below the eye line so we don't bleed into the face region
+            # (inswapper already handles the face)
+            eye_y = ty1 + int(fh * 0.40)
+            hair_mask[eye_y:] = 0
             if hair_mask.sum() > 500:
-                # Softer 41px blur for gradual transition
-                alpha = cv2.GaussianBlur(hair_mask, (41, 41), 0).astype(np.float32) / 255.0
+                alpha = cv2.GaussianBlur(hair_mask, (51, 51), 0).astype(np.float32) / 255.0
                 a3 = alpha[:, :, np.newaxis]
                 result = (src_warp.astype(np.float32) * a3 +
                           result.astype(np.float32) * (1 - a3)).astype(np.uint8)
