@@ -522,7 +522,7 @@ header {
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
         <button class="voice-btn" id="voiceBtn" onclick="toggleRealtimeVoice()">
           <span class="rec-pulse" id="recDot"></span>
-          <span id="voiceBtnLabel">🎤 Start Voice</span>
+          <span id="voiceBtnLabel">🎤 Record Clip</span>
         </button>
         <div id="voiceStatus" class="status-msg"></div>
       </div>
@@ -754,118 +754,137 @@ function setLiveSourceFile(inp) {
 loadAvatars();
 
 // ── Real-time Voice ────────────────────────────────────────────────────────────
-// ── Voice: continuous listen → VAD chunks → transform → playback ──────────
-// Tap once to start listening. Speak naturally. When you pause (~700 ms of
-// silence after speech), we cut the chunk, send to /voice/transform, and
-// auto-play the transformed audio. Then keep listening for the next phrase.
-let _voiceStream   = null;
-let _voiceCtx      = null;
-let _voiceAnalyser = null;
-let _voiceMonitor  = null;
-let _voiceRec      = null;
-let _voiceChunks   = [];
-let _voiceActive   = false;
-let _voiceSpoke    = false;     // user has produced sound in current chunk
-let _voiceQuietAt  = 0;          // timestamp when silence started after speech
-
-const VAD_RMS_THRESHOLD = 0.035;  // mic activity threshold (tune if needed)
-const VAD_SILENCE_MS    = 700;    // ms of silence to consider phrase ended
-const VAD_MIN_CHUNK_MS  = 350;    // ignore micro-blips
+// ── Sync recording: record audio + face-swapped frames, replay together ──
+// Tap to record. We capture mic audio AND every face-swapped frame as they
+// arrive from the WebSocket. Tap stop → transform audio, then play it back
+// while rendering the recorded swapped frames in the canvas at the correct
+// timestamps. Audio length == video length (pitch_shift preserves duration)
+// so the lip motion in the swap stays in sync with the avatar's voice.
+let _recAudio       = null;     // MediaRecorder
+let _recAudioChunks = [];
+let _recAudioStream = null;
+let _recStart       = 0;
+let _recFrames      = [];       // [{ts: ms, img: HTMLImageElement}]
+let _recActive      = false;
+let _replaying      = false;
 
 function _resetVoiceUI() {
-  _stopVoiceStream();
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Voice';
+  document.getElementById('voiceBtnLabel').textContent = '🎤 Record Clip';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
   const st = document.getElementById('voiceStatus');
   if (st) { st.className='status-msg'; st.textContent=''; }
 }
 async function toggleRealtimeVoice() {
-  if (_voiceActive) { _stopVoiceStream(); }
-  else              { await _startVoiceStream(); }
+  if (_replaying) return;
+  if (_recActive) _stopRecording();
+  else            await _startRecording();
 }
 
-async function _startVoiceStream() {
-  if (!_selectedAvatar) { setStatus('voiceStatus','error','Select an avatar first'); return; }
+async function _startRecording() {
+  if (!_selectedAvatar)  { setStatus('voiceStatus','error','Select an avatar first'); return; }
+  if (!liveRunning)      { setStatus('voiceStatus','error','Start face swap first'); return; }
   try {
-    _voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const AC = window.AudioContext || window.webkitAudioContext;
-    _voiceCtx = new AC();
-    const source = _voiceCtx.createMediaStreamSource(_voiceStream);
-    _voiceAnalyser = _voiceCtx.createAnalyser();
-    _voiceAnalyser.fftSize = 512;
-    source.connect(_voiceAnalyser);
-
-    _voiceActive = true;
-    _voiceSpoke  = false;
-    _voiceQuietAt = 0;
-    _voiceChunkStart = Date.now();
-    _startRecorder();
-    _voiceMonitor = setInterval(_monitorAudio, 80);
-
-    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop Listening';
+    _recAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _recAudio       = new MediaRecorder(_recAudioStream, { mimeType: 'audio/webm' });
+    _recAudioChunks = [];
+    _recFrames      = [];
+    _recStart       = Date.now();
+    _recActive      = true;
+    _recAudio.ondataavailable = e => { if (e.data.size > 0) _recAudioChunks.push(e.data); };
+    _recAudio.onstop          = async () => {
+      _recAudioStream.getTracks().forEach(t => t.stop());
+      _recAudioStream = null;
+      const blob = new Blob(_recAudioChunks, { type: 'audio/webm' });
+      await _processAndReplay(blob);
+    };
+    _recAudio.start();
+    setStatus('voiceStatus','info','Recording… speak now, tap stop when done.');
+    document.getElementById('voiceBtnLabel').textContent = '⏹ Stop & Replay';
     document.getElementById('recDot').style.display = 'inline-block';
     document.getElementById('voiceBtn').classList.add('active');
-    setStatus('voiceStatus','info','Listening… speak naturally, pause between phrases.');
   } catch(e) {
     setStatus('voiceStatus','error','Mic error: ' + e.message);
   }
 }
 
-let _voiceChunkStart = 0;
-function _startRecorder() {
-  if (!_voiceStream || !_voiceActive) return;
-  _voiceRec    = new MediaRecorder(_voiceStream, { mimeType: 'audio/webm' });
-  _voiceChunks = [];
-  _voiceChunkStart = Date.now();
-  _voiceSpoke  = false;
-  _voiceQuietAt = 0;
-  _voiceRec.ondataavailable = e => { if (e.data.size > 0) _voiceChunks.push(e.data); };
-  _voiceRec.onstop = async () => {
-    const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
-    const durMs = Date.now() - _voiceChunkStart;
-    // Only send if there was real speech in this chunk
-    if (_voiceSpoke && durMs > VAD_MIN_CHUNK_MS && blob.size > 4000) {
-      _sendVoiceForTransform(blob);  // fire-and-forget; new recorder starts immediately
-    }
-    if (_voiceActive) _startRecorder();   // resume listening
-  };
-  _voiceRec.start();
-}
-
-function _monitorAudio() {
-  if (!_voiceAnalyser || !_voiceActive || !_voiceRec) return;
-  const buf = new Uint8Array(_voiceAnalyser.frequencyBinCount);
-  _voiceAnalyser.getByteTimeDomainData(buf);
-  let sum = 0;
-  for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-  const rms = Math.sqrt(sum / buf.length);
-
-  if (rms > VAD_RMS_THRESHOLD) {
-    _voiceSpoke   = true;
-    _voiceQuietAt = 0;
-  } else if (_voiceSpoke) {
-    if (_voiceQuietAt === 0) _voiceQuietAt = Date.now();
-    if (Date.now() - _voiceQuietAt > VAD_SILENCE_MS) {
-      // End of phrase → close current chunk, recorder onstop will fire+restart
-      if (_voiceRec.state === 'recording') _voiceRec.stop();
-    }
-  }
-}
-
-function _stopVoiceStream() {
-  if (_voiceMonitor) { clearInterval(_voiceMonitor); _voiceMonitor = null; }
-  if (_voiceRec && _voiceRec.state === 'recording') {
-    try { _voiceRec.stop(); } catch(_) {}
-  }
-  _voiceRec = null;
-  if (_voiceStream) { _voiceStream.getTracks().forEach(t => t.stop()); _voiceStream = null; }
-  if (_voiceCtx)    { try { _voiceCtx.close(); } catch(_) {} _voiceCtx = null; }
-  _voiceAnalyser = null;
-  _voiceActive   = false;
-  document.getElementById('voiceBtnLabel').textContent = '🎤 Start Voice';
+function _stopRecording() {
+  if (!_recActive) return;
+  _recActive = false;
+  try { _recAudio.stop(); } catch(_) {}
+  setStatus('voiceStatus','info','Transforming voice on GPU…');
+  document.getElementById('voiceBtnLabel').textContent = '⏳ Processing…';
   document.getElementById('recDot').style.display = 'none';
   document.getElementById('voiceBtn').classList.remove('active');
+}
+
+async function _processAndReplay(audioBlob) {
+  try {
+    // Convert webm → WAV in-browser (server has no ffmpeg)
+    let toSend = audioBlob, filename = 'speech.webm';
+    try {
+      const arrayBuf = await audioBlob.arrayBuffer();
+      const AC       = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AC({ sampleRate: 44100 });
+      const audioBuf = await audioCtx.decodeAudioData(arrayBuf.slice(0));
+      toSend = _audioBufferToWav(audioBuf);
+      filename = 'speech.wav';
+      audioCtx.close();
+    } catch(decodeErr) { console.warn('decode fallback:', decodeErr); }
+
+    const fd = new FormData();
+    fd.append('audio', toSend, filename);
+    fd.append('avatar_id', _selectedAvatar);
+    const res = await fetch(`${FACE_API}/voice/transform`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const outWav = await res.blob();
+    const url    = URL.createObjectURL(outWav);
+    const audio  = new Audio(url);
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      _replaying = false;
+      _resetVoiceUI();
+      setStatus('voiceStatus','success','Done. Tap record again to make a new clip.');
+    };
+    _replaying = true;
+    setStatus('voiceStatus','success','Playing synced clip…');
+    document.getElementById('voiceBtnLabel').textContent = '▶ Replaying…';
+    audio.play();
+    _renderSyncedPlayback(audio);
+  } catch(e) {
+    console.error(e);
+    setStatus('voiceStatus','error','Transform failed: ' + e.message);
+    _replaying = false;
+    _resetVoiceUI();
+  }
+}
+
+function _renderSyncedPlayback(audio) {
+  // While `audio` plays, draw the recorded swapped frame whose timestamp is
+  // closest to audio.currentTime. liveCanvas is the same one used for live
+  // swap, so the user sees their recorded clip with the avatar's face.
+  const canvas = document.getElementById('liveCanvas');
+  const ctx    = canvas.getContext('2d');
+  if (_recFrames.length === 0) return;   // no frames captured — audio plays alone
+
+  let idx = 0;
+  function step() {
+    if (audio.ended || audio.paused) return;
+    const t = audio.currentTime * 1000;
+    // Advance idx to the latest frame at-or-before t
+    while (idx + 1 < _recFrames.length && _recFrames[idx + 1].ts <= t) idx++;
+    const fr = _recFrames[idx].img;
+    if (fr && fr.complete) {
+      const sz = Math.min(canvas.width, canvas.height);
+      ctx.drawImage(fr, 0, 0, sz, sz);
+    }
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 // Browser-side WAV encoder — avoids needing ffmpeg on the server.
 function _audioBufferToWav(buffer) {
@@ -976,6 +995,12 @@ function startLiveSwap() {
       const img=new Image();
       img.onload=()=>{ liveLatestResult=img; };
       img.src='data:image/jpeg;base64,'+msg.image;
+      // While recording a synced clip, also push this frame onto _recFrames
+      // with its timestamp relative to the recording start. The playback step
+      // will pick the closest frame to audio.currentTime.
+      if (_recActive) {
+        _recFrames.push({ ts: Date.now() - _recStart, img });
+      }
       sendLiveFrame();
     } else if (msg.type==='no_face'||msg.type==='dropped') {
       sendLiveFrame();
