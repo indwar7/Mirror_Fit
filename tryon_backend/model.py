@@ -1085,20 +1085,29 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band — restrict mask vertically. Jacket reaches from the
-        # chin neck-gap down to ~bottom-of-frame. The previous 0.92 cap was
-        # cutting the shirt off mid-belly, leaving a curved fade where the
-        # original t-shirt re-appeared. Now we go all the way to the frame
-        # edge so SD paints the full visible torso.
+        # 3. Torso band — a wide rectangle from the neck gap down to the
+        # frame bottom. We deliberately DON'T intersect with the body
+        # silhouette here, because MediaPipe's confidence drops below the
+        # chest and was leaving the lower torso unmasked → SD wouldn't
+        # paint a shirt there. The body silhouette is used later when
+        # compositing to keep paint inside the actual body.
+        band_l = max(0, w // 2 - int(w * 0.42))
+        band_r = min(w, w // 2 + int(w * 0.42))
         band = np.zeros((h, w), dtype=np.float32)
-        band[face_cutoff_y:h, :] = 1.0
-        band = cv2.GaussianBlur(band, (11, 11), 0)
+        band[face_cutoff_y:h, band_l:band_r] = 1.0
+        band = cv2.GaussianBlur(band, (9, 9), 0)
 
-        # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
-        torso_mask = (silhouette * band).clip(0, 1)
-        # Tighter feather so the SD inpaint has a crisp lower boundary and
-        # doesn't fade into a ghost outline at the chest line.
-        torso_mask = cv2.GaussianBlur(torso_mask, (7, 7), 0)
+        # 4. torso_mask = the band, softened so SD has a smooth boundary.
+        # Multiplied lightly with a dilated silhouette so completely-empty
+        # background pixels (which MediaPipe is sure about) don't get
+        # painted, but the lower-torso uncertainty area is preserved.
+        loose_silhouette = cv2.dilate(
+            silhouette,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
+            iterations=2,
+        ).clip(0, 1)
+        torso_mask = (band * np.maximum(loose_silhouette, 0.65)).clip(0, 1)
+        torso_mask = cv2.GaussianBlur(torso_mask, (5, 5), 0)
 
         return torso_mask, silhouette, face_cutoff_y
 
@@ -1252,6 +1261,18 @@ class TryOnModel:
             blend_mask = cv2.GaussianBlur(blend_mask, (3, 3), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
+
+            # ── Temporal stabilisation: blend with previous result so the
+            # shirt doesn't disappear/flicker when the body moves between
+            # the 3-second inference cycles. We only EMA the masked region
+            # (where the shirt lives) so the background stays crisp.
+            if self._prev_result is not None and self._prev_result.shape == composed.shape:
+                alpha_ema = 0.55  # weight of new frame; (1-alpha) on prev
+                ema = (
+                    composed.astype(np.float32) * alpha_ema
+                    + self._prev_result.astype(np.float32) * (1.0 - alpha_ema)
+                ).astype(np.uint8)
+                composed = np.where(a > 0.05, ema, composed)
             self._prev_result = composed.copy()
             return Image.fromarray(composed)
 
