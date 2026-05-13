@@ -1076,12 +1076,12 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff at chin + a real neck gap (~35% of face height) so
-                # the collar lands on the neck, not on the chin. This is the
-                # main "worn on" tweak — without the gap, the jacket sits
-                # like a sticker pressed against the face.
-                face_cutoff_y = int(np.clip(fy + fh + fh * 0.35,
-                                            h * 0.28, h * 0.55))
+                # Cutoff at chin + ~20% face-height so the collar still has
+                # room to land on the neck without eating into the jaw. The
+                # earlier 35% gap was pushing the cutoff so low that the
+                # collar got trimmed off by face protection.
+                face_cutoff_y = int(np.clip(fy + fh + fh * 0.20,
+                                            h * 0.26, h * 0.50))
         except Exception:
             pass
 
@@ -1262,17 +1262,26 @@ class TryOnModel:
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
-            # ── Temporal stabilisation: blend with previous result so the
-            # shirt doesn't disappear/flicker when the body moves between
-            # the 3-second inference cycles. We only EMA the masked region
-            # (where the shirt lives) so the background stays crisp.
+            # ── Temporal stabilisation: EMA against previous frame so the
+            # shirt doesn't flicker when the body moves between inference
+            # cycles. Critical detail: EMA is DISABLED in the collar zone
+            # (top ~15% of the torso mask). Otherwise the previous frame's
+            # neck pixels keep getting averaged in and the collar fades
+            # out over time.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                alpha_ema = 0.55  # weight of new frame; (1-alpha) on prev
+                alpha_ema = 0.6  # weight of new frame
                 ema = (
                     composed.astype(np.float32) * alpha_ema
                     + self._prev_result.astype(np.float32) * (1.0 - alpha_ema)
                 ).astype(np.uint8)
-                composed = np.where(a > 0.05, ema, composed)
+                # Collar protection zone: top 18% of the band below the
+                # face cutoff. Use fresh `composed` there, EMA elsewhere.
+                band_top = face_cutoff_y
+                band_bot = composed.shape[0]
+                collar_end = band_top + int((band_bot - band_top) * 0.18)
+                stable_region = (a > 0.05).copy()
+                stable_region[:collar_end] = False
+                composed = np.where(stable_region, ema, composed)
             self._prev_result = composed.copy()
             return Image.fromarray(composed)
 
