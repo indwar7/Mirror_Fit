@@ -421,11 +421,12 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        # IP-Adapter scale 1.4 paired with CFG 2.5 (see _infer_tier3). Higher
-        # IP without CFG pushes flat colour; higher CFG without IP drifts
-        # back to the underlying t-shirt colour. This combo holds the
-        # garment's colour while keeping real shirt structure.
-        self.pipeline.set_ip_adapter_scale(1.4)
+        # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3). The
+        # colour-anchor prefill carries most of the colour information, so
+        # IP-Adapter only needs to provide texture/structure detail. Higher
+        # IP at this CFG was over-saturating the result with the garment's
+        # mid-tones, giving a slight purple tint to grey shirts.
+        self.pipeline.set_ip_adapter_scale(1.2)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -1045,13 +1046,14 @@ class TryOnModel:
                 seg = self._mp_seg.process(frame_rgb)
                 if seg.segmentation_mask is not None:
                     s = seg.segmentation_mask.astype(np.float32)
-                    # Threshold at 0.5 → hard binary, then dilate slightly so
-                    # the jacket can extend a few pixels past the body edge
-                    # (sleeve thickness, jacket flare) without clipping.
-                    bm = (s > 0.5).astype(np.float32)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-                    bm = cv2.dilate(bm, kernel, iterations=2)
-                    silhouette = cv2.GaussianBlur(bm, (7, 7), 0).clip(0, 1)
+                    # Threshold at 0.6 (was 0.5) for a tighter person edge.
+                    # Single iteration of dilation gives the jacket just
+                    # enough room for sleeve thickness without producing
+                    # the ghost outline we were seeing past the body.
+                    bm = (s > 0.6).astype(np.float32)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    bm = cv2.dilate(bm, kernel, iterations=1)
+                    silhouette = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
             except Exception as e:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
@@ -1190,19 +1192,20 @@ class TryOnModel:
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
             prompt = (
-                f"photo of a person wearing a fitted {color} shirt, "
-                f"the shirt is {color} coloured, {color} fabric, "
-                f"the shirt fits naturally on the body, visible collar, "
-                f"sleeves following the arms, "
+                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"solid {color} fabric, neutral {color} colour, "
+                f"the shirt fits naturally on the body, visible collar around the neck, "
+                f"long sleeves following the arms down to the wrists, "
                 f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
-            # Explicit anti-colour-bleed: the original t-shirt colour tends
-            # to leak through the inpaint when IP-Adapter is mid-strength,
-            # so we negate the common drift colours.
+            # Anti-drift negatives. Includes purple/violet because at higher
+            # IP-Adapter scales grey shirts pick up a mauve tint from the
+            # mid-tone bias of the embedding.
             neg = (
-                "wrong color, brown, dark brown, beige, tan, faded, washed out, "
-                "different colour from reference, bare arms, t-shirt, tank top, "
-                "sleeveless, naked, floating clothes, shirt on background, "
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
+                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "floating clothes, shirt on background, shirt outline, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
@@ -1231,9 +1234,15 @@ class TryOnModel:
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
             orig_f     = orig_arr.astype(np.float32)
-            blend_mask = body_silhouette.copy()
-            blend_mask[:face_cutoff_y] = 0.0          # protect face & hair
-            blend_mask = cv2.GaussianBlur(blend_mask, (9, 9), 0)
+            # Compose ONLY inside the torso_mask (the same region SD was
+            # actually told to paint). Using body_silhouette here was
+            # letting the inpaint bleed out below the chest band, leaving
+            # a faint colour ghost where the shirt outline floated past
+            # the body. torso_mask is already silhouette ∩ torso-band, so
+            # this gives a clean cut at the bottom of the jacket too.
+            blend_mask = torso_mask.copy()
+            blend_mask[:face_cutoff_y] = 0.0
+            blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
             self._prev_result = composed.copy()
