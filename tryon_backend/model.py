@@ -755,13 +755,15 @@ class TryOnModel:
             # so the collar lands on the neck, not on the jaw. Width = 2× the
             # face width — that's roughly shoulder span for a forward-facing
             # subject.
-            top         = fy + fh + int(fh * 0.18)
-            bottom      = min(H, top + int(fh * 3.2))
-            left        = max(0, cx - int(fw * 1.55))
-            right       = min(W, cx + int(fw * 1.55))
-            # face_bottom = the row above which the original frame is kept
-            # untouched (so the face never gets overwritten by the shirt).
-            face_bottom = fy + fh + int(fh * 0.12)
+            # Shirt top sits a small neck gap below the chin so the collar
+            # lands on the neck. Width = ≈2.7× face width (≈ realistic
+            # shoulder span). Body silhouette will clip whatever extends
+            # past the actual body.
+            top         = fy + fh + int(fh * 0.15)
+            bottom      = min(H, top + int(fh * 3.0))
+            left        = max(0, cx - int(fw * 1.35))
+            right       = min(W, cx + int(fw * 1.35))
+            face_bottom = fy + fh + int(fh * 0.10)
         else:
             top = int(H * 0.32); bottom = int(H * 0.88)
             left = int(W * 0.10); right = int(W * 0.90)
@@ -771,20 +773,31 @@ class TryOnModel:
         th = max(1, bottom - top)
         tw = max(1, right  - left)
 
-        # ── Garment — keep the full image so the collar + shoulder seams
-        # land on the right anatomical spots. Sleeves get masked off by the
-        # body-silhouette anyway, so cropping them out here was costing us
-        # the collar.
-        shirt = np.array(garment.resize((tw, th), Image.LANCZOS))
+        # ── Garment crop — strip a small margin so transparent edges of
+        # the PNG don't bleed; keep enough of the shirt body that the collar
+        # is still visible.
+        gH, gW = np.array(garment).shape[:2]
+        cl = int(gW * 0.08); cr = int(gW * 0.92)
+        g_crop = garment.crop((cl, 0, cr, gH))
+        shirt  = np.array(g_crop.resize((tw, th), Image.LANCZOS))
 
         # ── Alpha mask ────────────────────────────────────────────────────────
         if self._garment_alpha is not None:
-            alpha_pil = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
-            alpha = np.array(alpha_pil.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
+            alpha_pil  = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
+            aw, ah     = alpha_pil.size
+            alpha_crop = alpha_pil.crop((int(aw*0.08), 0, int(aw*0.92), ah))
+            alpha = np.array(alpha_crop.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
         else:
+            # Treat only nearly-pure-white as background; threshold at 250
+            # so light-grey shirts aren't accidentally cut out. Also clean
+            # up isolated speckles with a small morphological close.
             g_gray = cv2.cvtColor(shirt, cv2.COLOR_RGB2GRAY)
-            _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
+            _, bg  = cv2.threshold(g_gray, 250, 255, cv2.THRESH_BINARY)
             alpha  = (255 - bg).astype(np.float32) / 255.0
+            alpha  = cv2.morphologyEx(
+                alpha, cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            )
 
         alpha = cv2.GaussianBlur(alpha, (9, 9), 0)
 
