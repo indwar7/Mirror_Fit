@@ -1079,9 +1079,9 @@ function _startLsTimer() {
   // 120 ms = ~8 fps target. Server frame-drop gate auto-throttles to whatever
   // it can do (full LAB + Poisson + GFPGAN ~120-150 ms). User sees the latest
   // accurate result as soon as the GPU can produce one.
-  // 50 ms = ~20 fps target. Server frame-drop gate auto-throttles if
-  // GPU can't keep up; lower interval just means latest mirror frame.
-  liveSendTimer=setInterval(sendLiveFrame,50);
+  // 100 ms = ~10 fps target. Matches server pipeline (~80-100 ms per
+  // frame at 384 px) so we don't queue dropped frames.
+  liveSendTimer=setInterval(sendLiveFrame,100);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
@@ -1115,14 +1115,15 @@ function sendLiveFrame() {
   if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
   const video=document.getElementById('liveVideo');
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
-  // 256px + JPEG quality 0.75 — minimum viable for face detection.
-  // Frame size is the dominant factor in upload + decode + inswapper time;
-  // dropping from 320 to 256 cuts ~15ms / round trip without visible loss
-  // because the live camera draws underneath at native resolution.
-  const sz=Math.min(vw,vh,256);
+  // 384px + JPEG quality 0.85 — restored from 256 because at 256 the
+  // server result was visibly upscaled (looked zoomed + blurry) AND
+  // landmark accuracy degraded so expression detail transfer broke.
+  // 384 gives sharp face overlay + reliable landmarks while still
+  // staying under the per-frame budget.
+  const sz=Math.min(vw,vh,384);
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
   _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
-  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.75).split(',')[1]}));
+  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────

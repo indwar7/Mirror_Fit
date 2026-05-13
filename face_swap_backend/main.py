@@ -181,9 +181,11 @@ def _load_models() -> None:
     # (which determine warp quality). Recognition/genderage stripped because
     # they're truly unused for target frames.
     _face_app_fast = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    # 320 detection size = ~15ms vs ~30ms at 480. User-priority is latency;
-    # face is roughly centred in frame so the smaller det grid still finds it.
-    _face_app_fast.prepare(ctx_id=0, det_thresh=0.3, det_size=(320, 320))
+    # Back to 480 detection — at 320 the 106 landmarks were jittery,
+    # which broke the expression detail transfer (mouth/brow masks
+    # would jump frame to frame). Costs ~15 ms more but landmarks are
+    # what makes the swap look alive.
+    _face_app_fast.prepare(ctx_id=0, det_thresh=0.3, det_size=(480, 480))
     for mod in ("recognition", "genderage"):
         if mod in _face_app_fast.models:
             del _face_app_fast.models[mod]
@@ -761,10 +763,13 @@ def _transfer_expression_detail(swapped: np.ndarray, original: np.ndarray, tgt_f
     if int((mask > 0).sum()) < 200:
         return swapped
 
-    # Strength ~0.55 — strong enough that motion reads through, gentle
-    # enough that identity (the swap) still dominates.
+    # Strength 0.85 — at 0.55 the muscle motion was barely readable.
+    # User explicitly wants "muscle move karta hu but swap face static
+    # lagta hai" fixed, so push harder. Identity stays via the swap on
+    # the surrounding skin (forehead, cheeks, jaw) which the mask
+    # excludes; only the motion-carrying regions get the original.
     alpha = cv2.GaussianBlur(mask, (31, 31), 0).astype(np.float32) / 255.0
-    alpha = np.clip(alpha * 0.55, 0.0, 1.0)
+    alpha = np.clip(alpha * 0.85, 0.0, 1.0)
     a3    = alpha[:, :, np.newaxis]
     return (original.astype(np.float32) * a3 +
             swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
