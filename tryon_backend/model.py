@@ -197,8 +197,37 @@ class TryOnModel:
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
         base = "zheng-chong/CatVTON"
-        unet = UNet2DConditionModel.from_pretrained(VTON_LORA_CHECKPOINT, torch_dtype=self.dtype,
-                                                     attn_implementation="flash_attention_2").to(self.device)
+
+        # VTON_LORA_CHECKPOINT can be either:
+        #   (a) A full UNet directory (config.json + diffusion_pytorch_model.safetensors)
+        #       → load as a complete model.
+        #   (b) A PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors)
+        #       → load base UNet from zheng-chong/CatVTON, attach LoRA on top.
+        # Our Kaggle training notebook produces (b).
+        ckpt_path = Path(VTON_LORA_CHECKPOINT)
+        is_peft_adapter = (ckpt_path / "adapter_config.json").exists()
+        if is_peft_adapter:
+            log.info(f"Loading PEFT LoRA adapter from {ckpt_path}")
+            unet = UNet2DConditionModel.from_pretrained(
+                base, subfolder="unet",
+                in_channels=12, ignore_mismatched_sizes=True,
+                torch_dtype=self.dtype,
+            ).to(self.device)
+            try:
+                from peft import PeftModel
+                unet = PeftModel.from_pretrained(unet, str(ckpt_path))
+                # Merge so torch.compile / CUDA graphs see a plain UNet
+                unet = unet.merge_and_unload()
+                log.info("LoRA adapter merged into base UNet.")
+            except ImportError:
+                log.error("peft not installed — pip install peft")
+                raise
+        else:
+            log.info(f"Loading full UNet from {ckpt_path}")
+            unet = UNet2DConditionModel.from_pretrained(
+                VTON_LORA_CHECKPOINT, torch_dtype=self.dtype,
+                attn_implementation="flash_attention_2",
+            ).to(self.device)
         unet.requires_grad_(False)
         self._compiled  = CompiledUNet(unet, self.device, self.dtype)
         self._vae = AutoencoderKL.from_pretrained(base, subfolder="vae", torch_dtype=self.dtype).to(self.device)
@@ -216,6 +245,16 @@ class TryOnModel:
         Load CatVTON (zheng-chong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
         The UNet expects 12-channel input: [noise(4), person_lat(4), garment_lat(4)].
         Single DDIM step at inference time → ~1-2 s/frame on A10G, GPU-quality try-on.
+
+        If CATVTON_MASKFREE_VARIANT env var is set (e.g. "vitonhd-16k-512"), this
+        also overlays the MaskFree attention weights from zhengchong/CatVTON-MaskFree
+        on top of the base UNet. Those weights are gated (non-commercial, requires
+        HF login + accepted gate at https://huggingface.co/zhengchong/CatVTON-MaskFree).
+        Set HF_TOKEN to a token from an account that has accepted the gate.
+        Variants available:
+          vitonhd-16k-512  — trained on VITON-HD at 512px (best for upper-body try-on)
+          dresscode-16k-512 — trained on DressCode (broader garment types)
+          mix-48k-1024     — trained on a 48k mixed dataset at 1024px (highest quality)
         """
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
@@ -233,6 +272,13 @@ class TryOnModel:
             in_channels=12, ignore_mismatched_sizes=True,
         ).to(self.device)
         self._catvton_unet.requires_grad_(False)
+
+        # ── MaskFree attention overlay (optional) ────────────────────────────
+        # The MaskFree repo ships only the trained attention layers — they
+        # overwrite matching keys on the base UNet.
+        maskfree_variant = os.environ.get("CATVTON_MASKFREE_VARIANT", "").strip()
+        if maskfree_variant:
+            self._overlay_maskfree_weights(maskfree_variant)
 
         tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
         te  = CLIPTextModel.from_pretrained(
@@ -256,6 +302,64 @@ class TryOnModel:
                 pass
 
         log.info(f"CatVTON direct ready — {self._steps}-step DDIM. Garment-latent concat try-on.")
+
+    def _overlay_maskfree_weights(self, variant: str):
+        """
+        Download zhengchong/CatVTON-MaskFree attention weights for `variant` and
+        merge them into self._catvton_unet. Only attention layers are overwritten;
+        the rest of the UNet stays as the base CatVTON weights.
+
+        Requires:
+          - User has accepted the gate at huggingface.co/zhengchong/CatVTON-MaskFree
+          - HF_TOKEN env var, OR a prior `huggingface-cli login` on the host
+
+        Failure is non-fatal — base CatVTON keeps working.
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+        except ImportError:
+            log.warning("huggingface_hub or safetensors missing — skipping MaskFree overlay")
+            return
+
+        repo_id = "zhengchong/CatVTON-MaskFree"
+        filename = f"{variant}/attention/model.safetensors"
+        log.info(f"Fetching MaskFree weights: {repo_id}/{filename}")
+
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        try:
+            local_path = hf_hub_download(
+                repo_id=repo_id, filename=filename, token=token,
+            )
+        except Exception as e:
+            log.warning(
+                f"MaskFree download failed ({e}). "
+                f"Have you accepted the gate at https://huggingface.co/{repo_id} "
+                f"and set HF_TOKEN? Continuing with base CatVTON."
+            )
+            return
+
+        try:
+            maskfree_state = load_file(local_path, device="cpu")
+        except Exception as e:
+            log.warning(f"Could not read MaskFree safetensors: {e}")
+            return
+
+        # Merge: only overwrite keys that already exist on the base UNet.
+        base_state = self._catvton_unet.state_dict()
+        matched, skipped = 0, 0
+        new_state = dict(base_state)
+        for k, v in maskfree_state.items():
+            if k in base_state and base_state[k].shape == v.shape:
+                new_state[k] = v.to(base_state[k].dtype).to(base_state[k].device)
+                matched += 1
+            else:
+                skipped += 1
+        self._catvton_unet.load_state_dict(new_state, strict=False)
+        log.info(
+            f"MaskFree overlay applied — {matched} layers updated, "
+            f"{skipped} unmatched (base CatVTON weights retained)."
+        )
 
     def _load_tier3(self):
         """
@@ -311,7 +415,11 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(1.5)
+        # IP-Adapter scale 1.0 with guidance_scale=1.0 (LCM): IP-Adapter
+        # provides the garment colour/texture reference, the body-silhouette
+        # mask provides the shape, the prompt provides the jacket structure.
+        # Higher IP scales collapse the inpaint into a flat colour blob.
+        self.pipeline.set_ip_adapter_scale(1.0)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -564,7 +672,7 @@ class TryOnModel:
                         ip_adapter_image_embeds=None,
                         device=self.device,
                         num_images_per_prompt=1,
-                        do_classifier_free_guidance=False,  # guidance_scale=1.0 → no CFG
+                        do_classifier_free_guidance=True,  # CFG ON in inpaint path
                     )
                 log.info("Garment IP embeddings pre-computed and cached.")
             except Exception as e:
@@ -888,6 +996,79 @@ class TryOnModel:
         self._prev_result = result_arr.copy()
         return Image.fromarray(result_arr)
 
+    # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
+
+    def _build_body_mask(self, frame_rgb: np.ndarray):
+        """
+        Build three masks from a 512x512 RGB person frame:
+          torso_mask       — soft mask passed to SD inpainting (where to paint)
+          body_silhouette  — hard person silhouette used to composite result
+          face_cutoff_y    — y-row below which jacket is allowed (above = face/hair)
+
+        torso_mask is body_silhouette restricted to the torso+arms band so SD
+        never paints onto legs or background. If MediaPipe is unavailable we
+        fall back to an elliptical torso approximation.
+        """
+        h, w = frame_rgb.shape[:2]
+
+        # 1. Person silhouette via MediaPipe selfie segmentation
+        silhouette = None
+        if self._mp_seg is not None:
+            try:
+                seg = self._mp_seg.process(frame_rgb)
+                if seg.segmentation_mask is not None:
+                    s = seg.segmentation_mask.astype(np.float32)
+                    # Threshold at 0.5 → hard binary, then dilate slightly so
+                    # the jacket can extend a few pixels past the body edge
+                    # (sleeve thickness, jacket flare) without clipping.
+                    bm = (s > 0.5).astype(np.float32)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                    bm = cv2.dilate(bm, kernel, iterations=2)
+                    silhouette = cv2.GaussianBlur(bm, (7, 7), 0).clip(0, 1)
+            except Exception as e:
+                log.debug(f"MediaPipe seg failed in mask build: {e}")
+
+        if silhouette is None:
+            # Fallback ellipse: same shape the legacy fixed mask used.
+            silhouette = np.zeros((h, w), dtype=np.float32)
+            cv2.ellipse(silhouette,
+                        (w // 2, int(h * 0.62)),
+                        (int(w * 0.40), int(h * 0.36)),
+                        0, 0, 360, 1.0, -1)
+            silhouette = cv2.GaussianBlur(silhouette, (21, 21), 0)
+
+        # 2. Face cutoff — chin row. Everything above is preserved.
+        face_cutoff_y = int(h * 0.35)
+        try:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+            faces = self._haar.detectMultiScale(
+                cv2.equalizeHist(gray), scaleFactor=1.1,
+                minNeighbors=4, minSize=(40, 40),
+            )
+            if len(faces) > 0:
+                fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+                # Cutoff at chin + a real neck gap (~35% of face height) so
+                # the collar lands on the neck, not on the chin. This is the
+                # main "worn on" tweak — without the gap, the jacket sits
+                # like a sticker pressed against the face.
+                face_cutoff_y = int(np.clip(fy + fh + fh * 0.35,
+                                            h * 0.28, h * 0.55))
+        except Exception:
+            pass
+
+        # 3. Torso band — restrict mask vertically. Jacket reaches from just
+        # below the chin to mid-thigh.
+        band = np.zeros((h, w), dtype=np.float32)
+        band[face_cutoff_y:int(h * 0.92), :] = 1.0
+        band = cv2.GaussianBlur(band, (15, 15), 0)
+
+        # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
+        torso_mask = (silhouette * band).clip(0, 1)
+        # Gentle feather so SD has a smooth boundary to denoise into.
+        torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
+
+        return torso_mask, silhouette, face_cutoff_y
+
     # ── Tier 3 live inference ─────────────────────────────────────────────────
 
     def _infer_tier3(self, person_image: Image.Image, garment: Image.Image,
@@ -931,68 +1112,70 @@ class TryOnModel:
 
         generator = torch.Generator(device=self.device).manual_seed(42)
 
-        # ── Build wide torso+arms mask with crisp edges ──────────────────────
-        # Crisp binary mask gives SD a strong signal of WHERE to paint. The
-        # previous 41px Gaussian was so soft that SD was barely modifying
-        # the masked region — that's why the result was just a colour-tinted
-        # tank top instead of a real jacket.
-        if self._fixed_mask_cache is None:
-            m = np.zeros((LIVE_SIZE, LIVE_SIZE), dtype=np.float32)
-            m[int(LIVE_SIZE*0.36):int(LIVE_SIZE*0.95),
-              int(LIVE_SIZE*0.02):int(LIVE_SIZE*0.98)] = 1.0
-            # Tiny blur for soft edges only, mask stays mostly binary
-            self._fixed_mask_cache = cv2.GaussianBlur(m, (11, 11), 0)
-        torso_mask = self._fixed_mask_cache
+        # ── Per-frame body-silhouette mask ────────────────────────────────────
+        # The mask must follow the actual body so SD only paints garment on
+        # the person, not the background or head. Built from:
+        #   1. MediaPipe selfie segmentation → person silhouette
+        #   2. Face detection → cut everything above chin out of the mask
+        #   3. Vertical band → only paint torso+arms, never legs/feet
+        # Result: a body-shaped mask that hugs the actual person each frame.
+        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
 
-        # ── Inpainting path — mask covers torso AND arms ─────────────────────
+        # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
             mask_pil = Image.fromarray((torso_mask * 255).astype(np.uint8))
-            ip_kw = ({"ip_adapter_image_embeds": self._ip_embeds}
-                     if self._ip_embeds is not None
-                     else {"ip_adapter_image": garment})
+            # diffusers' SD-inpaint pipeline unconditionally does
+            #   neg, pos = single_image_embeds.chunk(2)
+            # on the IP-Adapter embeddings, which only works when
+            # do_classifier_free_guidance=True (i.e. guidance_scale > 1.0).
+            # So we MUST run with CFG on in this code path. The cached
+            # embeds were prepared with CFG=False (shape [1,…]) — pass the
+            # raw garment image so diffusers re-encodes with the right
+            # CFG-shape (negative + positive concatenated).
+            ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            # Very explicit garment-structure prompt so SD generates a real
-            # jacket with collar, zipper, sleeves — not just a tinted blob.
             prompt = (
-                f"professional photograph of a person wearing a {color} jacket, "
-                f"the jacket has a visible collar, a zipper down the front, "
-                f"full-length sleeves covering both arms entirely, "
-                f"the jacket is fitted around the torso and shoulders, "
-                f"detailed fabric texture, sharp focus, photorealistic, studio lighting"
+                f"photo of a person wearing a fitted {color} jacket, "
+                f"the jacket fits naturally on the body, visible collar, "
+                f"front zipper, sleeves following the arms, "
+                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
             neg = (
                 "wrong color, faded, washed out, bare arms, t-shirt, tank top, "
-                "sleeveless, naked, no collar, no zipper, flat shapeless garment, "
-                "blurry, deformed, extra limbs, low quality, painting, cartoon"
+                "sleeveless, naked, floating clothes, jacket on background, "
+                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
+            # LCM-distilled UNet prefers guidance≈1.0, but the diffusers
+            # SD-inpaint + IP-Adapter code path requires CFG to be ON or it
+            # crashes on a .chunk(2) of the image embeds. A tiny CFG of 1.5
+            # is the sweet spot: enables the path without degrading LCM.
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=8,   # back up from 5 — needs more denoising for jacket structure
-                    guidance_scale=1.5,      # mild CFG so the prompt actually matters
+                    num_inference_steps=6,
+                    guidance_scale=1.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
-            # Detect face to find exact cutoff — restore everything above chin
-            result_arr = np.array(result)
-            gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
-            faces = self._haar.detectMultiScale(
-                cv2.equalizeHist(gray), scaleFactor=1.1,
-                minNeighbors=4, minSize=(40, 40)
-            )
-            if len(faces) > 0:
-                fx, fy, fw, fh = max(faces, key=lambda r: r[2]*r[3])
-                # Cutoff = chin + small neck gap
-                face_cutoff = min(fy + fh + int(fh * 0.15), int(LIVE_SIZE * 0.70))
-            else:
-                face_cutoff = int(LIVE_SIZE * 0.45)
 
-            result_arr[:face_cutoff] = orig_arr[:face_cutoff]
-            self._prev_result = result_arr.copy()
-            return Image.fromarray(result_arr)
+            # ── Composite result back onto original via body silhouette ──────
+            # SD output can bleed slightly past the mask edge. We blend the
+            # SD result into the original ONLY where body_silhouette has
+            # alpha > 0, and ONLY below the face cutoff. Everything else
+            # (face, background, hair, legs) stays pixel-identical to the
+            # camera frame — so the jacket genuinely appears "worn on" you.
+            result_arr = np.array(result).astype(np.float32)
+            orig_f     = orig_arr.astype(np.float32)
+            blend_mask = body_silhouette.copy()
+            blend_mask[:face_cutoff_y] = 0.0          # protect face & hair
+            blend_mask = cv2.GaussianBlur(blend_mask, (9, 9), 0)
+            a = blend_mask[:, :, np.newaxis]
+            composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
+            self._prev_result = composed.copy()
+            return Image.fromarray(composed)
 
         # ── SD img2img + IP-Adapter fallback ─────────────────────────────────
         else:

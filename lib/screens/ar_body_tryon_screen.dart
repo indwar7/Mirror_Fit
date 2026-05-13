@@ -103,7 +103,7 @@ class _ARBodyTryOnScreenState extends State<ARBodyTryOnScreen> {
 
               Text(
                 _isSupported
-                    ? 'The jacket will appear on your body in real-time using ARKit body tracking.'
+                    ? 'Two modes inside: Selfie (front cam, follows your face) and Back Cam (full body, needs friend or stand).'
                     : 'Body tracking requires iPhone XS or newer (A12+ chip) with iOS 14+.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
@@ -116,19 +116,19 @@ class _ARBodyTryOnScreenState extends State<ARBodyTryOnScreen> {
 
               if (_isSupported) ...[
                 _InstructionTile(
-                  icon: Icons.person_outline_rounded,
-                  text: 'Stand 2–3 meters away',
-                  subtitle: 'Full body should be visible',
+                  icon: Icons.face_retouching_natural,
+                  text: 'Selfie mode (default)',
+                  subtitle: 'Front camera — jacket follows your shoulders',
                 ),
                 _InstructionTile(
-                  icon: Icons.wb_sunny_outlined,
-                  text: 'Good lighting',
-                  subtitle: 'Avoid strong backlight',
+                  icon: Icons.accessibility_new_rounded,
+                  text: 'Back Cam mode',
+                  subtitle: 'Place phone on stand, step back 2-3m',
                 ),
                 _InstructionTile(
-                  icon: Icons.rotate_left_rounded,
-                  text: 'Turn around',
-                  subtitle: 'See front and back view',
+                  icon: Icons.swap_horiz_rounded,
+                  text: 'Toggle anytime',
+                  subtitle: 'Top-right button switches modes',
                 ),
               ],
 

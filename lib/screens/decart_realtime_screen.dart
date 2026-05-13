@@ -1,11 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:animate_do/animate_do.dart';
-import 'package:path_provider/path_provider.dart';
+import '../services/colab_tryon_service.dart';
 import '../services/face_swap_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/haptics.dart';
@@ -44,11 +43,10 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
   InAppWebViewController? _webCtrl;
   late final String _viewId;
 
-  // Mobile-only local server
-  InAppLocalhostServer? _localhostServer;
-  bool _serverReady = false;
-  int _activePort = 8282;
-  static const _basePort = 8282;
+  // Resolved WebSocket URL for the AI backend (set in initState).
+  // Falls back to a clear error string if the user hasn't configured a server.
+  String _backendWsUrl = '';
+  String? _htmlToLoad;
 
   // Face-swap state
   Uint8List? _sourceFaceBytes;
@@ -74,11 +72,7 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
     _liveAnim = Tween<double>(begin: 0.4, end: 1.0)
         .animate(CurvedAnimation(parent: _liveCtrl, curve: Curves.easeInOut));
 
-    if (kIsWeb) {
-      registerWebArView(_buildHtml(widget.garmentUrl, widget.garmentName), _viewId);
-    } else {
-      _startLocalServer();
-    }
+    _initBackendThenStart();
 
     if (widget.autoShowFaceSwap) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -89,51 +83,70 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
     }
   }
 
-  Future<void> _startLocalServer() async {
-    final dir = await getTemporaryDirectory();
-    final htmlFile = File('${dir.path}/tryon.html');
-    await htmlFile.writeAsString(_buildHtml(widget.garmentUrl, widget.garmentName));
+  /// Default backend (EC2 g5.xlarge). Overridden by whatever the user
+  /// saves through the ⚡ bolt-icon dialog on the Try-On screen.
+  static const String _defaultBackendUrl = 'http://13.203.75.149:8000';
 
-    // Try up to 10 ports in case one is still in use from a previous session
-    for (int i = 0; i < 10; i++) {
-      final port = _basePort + i;
-      try {
-        _localhostServer = InAppLocalhostServer(
-          documentRoot: dir.path,
-          port: port,
-        );
-        await _localhostServer!.start();
-        _activePort = port;
-        break;
-      } catch (_) {
-        _localhostServer = null;
-        continue;
-      }
-    }
+  /// Resolve backend URL: prefer saved override, otherwise the default EC2
+  /// host. Converts to a ws:// or wss:// URL pointing at /ws/tryon, then
+  /// hands the HTML to the webview (or web iframe).
+  Future<void> _initBackendThenStart() async {
+    final saved = await ColabTryOnService.getSavedUrl();
+    final base = (saved != null && saved.trim().isNotEmpty)
+        ? saved
+        : _defaultBackendUrl;
+    _backendWsUrl = _toWsUrl(base);
 
-    if (_localhostServer == null) {
-      debugPrint('[Decart] Could not start local server on any port');
-      return;
-    }
+    final html = _buildHtml(widget.garmentUrl, widget.garmentName, _backendWsUrl);
 
-    if (mounted) {
-      _serverReady = true;
+    if (kIsWeb) {
+      registerWebArView(html, _viewId);
+    } else {
+      _htmlToLoad = html;
       _loadTryonPage();
     }
   }
 
+  /// Convert https://host[:port][/path] → wss://host[:port]/ws/tryon
+  /// Returns an empty string when no URL is configured — the HTML treats
+  /// that as a clear "configure server" status message instead of failing
+  /// silently against the old hard-coded placeholder.
+  static String _toWsUrl(String? base) {
+    if (base == null || base.trim().isEmpty) return '';
+    var u = base.trim().replaceAll(RegExp(r'/$'), '');
+    if (u.startsWith('https://')) {
+      u = 'wss://${u.substring('https://'.length)}';
+    } else if (u.startsWith('http://')) {
+      u = 'ws://${u.substring('http://'.length)}';
+    } else if (!u.startsWith('ws://') && !u.startsWith('wss://')) {
+      // Bare host → assume secure
+      u = 'wss://$u';
+    }
+    return '$u/ws/tryon';
+  }
+
   void _loadTryonPage() {
-    _webCtrl?.loadUrl(
-      urlRequest: URLRequest(
-        url: WebUri('http://localhost:$_activePort/tryon.html'),
-      ),
+    final html = _htmlToLoad;
+    final ctrl = _webCtrl;
+    if (html == null || ctrl == null) return;
+    // baseUrl=http://localhost: localhost counts as a secure context for
+    // getUserMedia in modern Chromium, AND because the page itself is
+    // http://, the browser doesn't flag ws://13.203.75.149 as mixed
+    // content. (https://localhost would force the page to be "secure"
+    // and would then block any ws:// upgrade attempts.)
+    ctrl.loadData(
+      data: html,
+      baseUrl: WebUri('http://localhost'),
+      mimeType: 'text/html',
+      encoding: 'utf-8',
     );
   }
 
   @override
   void dispose() {
-    _webCtrl?.evaluateJavascript(source: 'window.decartStop?.()');
-    _localhostServer?.close();
+    try {
+      _webCtrl?.evaluateJavascript(source: 'window.decartStop?.()');
+    } catch (_) {/* webview already torn down */}
     _liveCtrl.dispose();
     super.dispose();
   }
@@ -336,7 +349,7 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
                     ),
                     onWebViewCreated: (ctrl) {
                       _webCtrl = ctrl;
-                      if (_serverReady) _loadTryonPage();
+                      _loadTryonPage();
                     },
                     onPermissionRequest: (ctrl, request) async =>
                         PermissionResponse(
@@ -426,12 +439,9 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
     );
   }
 
-  // ── Set your RunPod backend URL here ─────────────────────────────────────
-  // Example: 'wss://abc123-8000.proxy.runpod.net/ws/tryon'
-  static const String backendWsUrl = 'wss://YOUR_RUNPOD_URL/ws/tryon';
-
-  static String _buildHtml(String garmentUrl, String garmentName) {
-    final garmentUrlJs  = jsonEncode(garmentUrl);
+  static String _buildHtml(String garmentUrl, String garmentName,
+      String backendWsUrl) {
+    final garmentUrlJs   = jsonEncode(garmentUrl);
     final backendWsUrlJs = jsonEncode(backendWsUrl);
 
     return '''
@@ -443,8 +453,8 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
-    #live    { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-    #result  { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.6s; }
+    #live    { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; background:#000; transform: scaleX(-1); }
+    #result  { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; opacity: 0; transition: opacity 0.6s; }
     #result.show { opacity: 1; }
     #status {
       position: fixed; bottom: 140px; left: 50%;
@@ -523,10 +533,20 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
     async function connect() {
       setStatus('Starting camera…');
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 1280 } },
+        video: {
+          facingMode: 'user',
+          width:  { ideal: 720,  max: 1280 },
+          height: { ideal: 1280, max: 1920 },
+          aspectRatio: { ideal: 9/16 },
+        },
         audio: false,
       });
       liveEl.srcObject = stream;
+
+      if (!BACKEND_URL) {
+        setStatus('⚠ No server set — tap the ⚡ on the Try-On screen and paste your server URL');
+        return;
+      }
 
       setStatus('Connecting to AI server…');
       ws = new WebSocket(BACKEND_URL);
