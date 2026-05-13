@@ -1085,16 +1085,20 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band — restrict mask vertically. Jacket reaches from just
-        # below the chin to mid-thigh.
+        # 3. Torso band — restrict mask vertically. Jacket reaches from the
+        # chin neck-gap down to ~bottom-of-frame. The previous 0.92 cap was
+        # cutting the shirt off mid-belly, leaving a curved fade where the
+        # original t-shirt re-appeared. Now we go all the way to the frame
+        # edge so SD paints the full visible torso.
         band = np.zeros((h, w), dtype=np.float32)
-        band[face_cutoff_y:int(h * 0.92), :] = 1.0
-        band = cv2.GaussianBlur(band, (15, 15), 0)
+        band[face_cutoff_y:h, :] = 1.0
+        band = cv2.GaussianBlur(band, (11, 11), 0)
 
         # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
         torso_mask = (silhouette * band).clip(0, 1)
-        # Gentle feather so SD has a smooth boundary to denoise into.
-        torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
+        # Tighter feather so the SD inpaint has a crisp lower boundary and
+        # doesn't fade into a ghost outline at the chest line.
+        torso_mask = cv2.GaussianBlur(torso_mask, (7, 7), 0)
 
         return torso_mask, silhouette, face_cutoff_y
 
@@ -1242,7 +1246,7 @@ class TryOnModel:
             # this gives a clean cut at the bottom of the jacket too.
             blend_mask = torso_mask.copy()
             blend_mask[:face_cutoff_y] = 0.0
-            blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), 0)
+            blend_mask = cv2.GaussianBlur(blend_mask, (5, 5), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
             self._prev_result = composed.copy()
