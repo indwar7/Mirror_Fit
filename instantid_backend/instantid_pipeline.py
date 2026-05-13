@@ -170,9 +170,15 @@ class InstantIDEngine:
 
         self._torch = torch
         self.pipe = _load_pipeline()
+        # InsightFace constructs the path as `{root}/models/{name}`.
+        # Our antelopev2 files live at `instantid_backend/models/antelopev2`,
+        # so root must be `instantid_backend/` (i.e. MODEL_ROOT.parent),
+        # NOT `instantid_backend/models/`. Using MODEL_ROOT directly makes
+        # InsightFace look in `instantid_backend/models/models/antelopev2/`
+        # and crash with `assert 'detection' in self.models`.
         self.face_app = FaceAnalysis(
             name="antelopev2",
-            root=str(MODEL_ROOT),
+            root=str(MODEL_ROOT.parent),
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
         self.face_app.prepare(ctx_id=0, det_size=(640, 640))
