@@ -643,11 +643,48 @@ header {
 <script>
 const FACE_API = 'http://13.203.75.149:7860';
 const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
-const SWAP_WS  = 'ws://13.203.75.149:7860/ws/live-swap';
+// Two swap backends:
+//   - InstantID (port 7861, slow ~1.5 s/frame, ~95 % photo-real, true mask)
+//   - inswapper-128 (port 7860, fast ~150 ms/frame, ~70 % photo-real)
+// Demo tries InstantID first. If the WS doesn't open within INSTANTID_PROBE_MS
+// (server may be down, model still loading, SG closed), it falls back to
+// inswapper so the demo always works.
+const SWAP_WS_INSTANTID = 'ws://13.203.75.149:7861/ws/instantid-swap';
+const SWAP_WS_INSWAPPER = 'ws://13.203.75.149:7860/ws/live-swap';
+const INSTANTID_PROBE_MS = 3000;
+let SWAP_WS = SWAP_WS_INSTANTID;   // mutated by probe at startup
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so the
 // server can drive Wav2Lip lip-sync from the rolling pitch-shifted audio.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
                                 + '_' + Date.now().toString(36);
+
+// One-shot health probe at startup so the user knows which backend is active.
+(function probeInstantID() {
+  let resolved = false;
+  const sock = new WebSocket(SWAP_WS_INSTANTID);
+  const fallback = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    try { sock.close(); } catch(_) {}
+    SWAP_WS = SWAP_WS_INSWAPPER;
+    console.warn('[swap] InstantID unreachable, using inswapper-128');
+  }, INSTANTID_PROBE_MS);
+  sock.onopen = () => {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(fallback);
+    try { sock.close(); } catch(_) {}
+    SWAP_WS = SWAP_WS_INSTANTID;
+    console.log('[swap] InstantID reachable, using photo-real backend');
+  };
+  sock.onerror = () => {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(fallback);
+    SWAP_WS = SWAP_WS_INSWAPPER;
+    console.warn('[swap] InstantID errored, using inswapper-128');
+  };
+})();
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
