@@ -517,8 +517,9 @@ header {
         </div>
       </div>
 
-      <!-- Voice card -->
-      <div class="voice-card" id="voiceCard">
+      <!-- Voice card — voice now auto-starts with live swap; UI kept
+           hidden but elements remain so existing JS handlers don't crash -->
+      <div class="voice-card" id="voiceCard" style="display:none">
         <div class="voice-avatar">🎭 Speaking as <strong id="voiceAvatarName">—</strong></div>
         <button class="voice-btn" id="voiceBtn" onclick="toggleStreamingVoice()">
           <span class="rec-pulse" id="recDot"></span>
@@ -1043,6 +1044,12 @@ function startLiveSwap() {
     if (msg.type==='ready') {
       setStatus('liveStatus','success','Live swap active');
       _startLsRender(); _startLsTimer(); sendLiveFrame();
+      // Auto-start voice + lipsync when swap is ready (no separate
+      // button — user gesture from the Start Live Swap click satisfies
+      // the browser's audioCtx.resume() requirement).
+      if (typeof _startStreamingVoice === 'function' && !_vsActive) {
+        _startStreamingVoice().catch(err => console.warn('[voice] auto-start failed', err));
+      }
     } else if (msg.type==='result') {
       const img=new Image();
       img.onload=()=>{ liveLatestResult=img; };
@@ -1062,13 +1069,19 @@ function stopLiveSwap() {
   _stopLsTimer(); _stopLsRender(); liveRunning=false;
   document.getElementById('liveSwapBtn').textContent='Start Live Swap';
   document.getElementById('liveSwapBtn').className='btn btn-primary';
+  // Auto-stop voice when swap stops
+  if (typeof _stopStreamingVoice === 'function' && _vsActive) {
+    _stopStreamingVoice();
+  }
 }
 function _startLsTimer() {
   if (liveSendTimer) clearInterval(liveSendTimer);
   // 120 ms = ~8 fps target. Server frame-drop gate auto-throttles to whatever
   // it can do (full LAB + Poisson + GFPGAN ~120-150 ms). User sees the latest
   // accurate result as soon as the GPU can produce one.
-  liveSendTimer=setInterval(sendLiveFrame,120);
+  // 80 ms = ~12 fps target. Server frame-drop gate auto-throttles if
+  // GPU can't keep up; lower interval just means latest mirror frame.
+  liveSendTimer=setInterval(sendLiveFrame,80);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
@@ -1102,12 +1115,14 @@ function sendLiveFrame() {
   if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
   const video=document.getElementById('liveVideo');
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
-  // 384px + JPEG quality 0.85 — larger, sharper frame for accurate detection
-  // and a result that doesn't look pixelated when stretched to the canvas.
-  const sz=Math.min(vw,vh,384);
+  // 320px + JPEG quality 0.82 — smaller frame = lower send + decode +
+  // CodeFormer time, so expression changes mirror more instantly.
+  // Canvas overlay still draws the full live camera underneath at native
+  // resolution so the user sees no quality drop.
+  const sz=Math.min(vw,vh,320);
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
   _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
-  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
+  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.82).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────

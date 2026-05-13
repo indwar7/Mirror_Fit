@@ -827,19 +827,9 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         result = _run_inswapper(src_face, tgt_face, target_img)
         # 2. LAB skin-tone match (bbox region, proven 8de2dc2 path)
         result = _color_correct_face(result, target_img, tgt_face.bbox)
-        # 3. CodeFormer face restoration — sharpens the soft 128px
-        # inswapper output so it reads as photo-real skin, not a
-        # patch. Pass the SAME face hull as the inswapper paste so
-        # the restoration boundary cannot show as a separate seam.
-        if _codeformer is not None and getattr(tgt_face, "kps", None) is not None:
-            try:
-                shared_mask = _build_face_hull_mask(tgt_face, result.shape[:2])
-                result = _codeformer.restore_face(
-                    result, tgt_face.kps, weight=0.6,
-                    face_mask=shared_mask,
-                )
-            except Exception as e:
-                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
+        # NOTE: CodeFormer pass moved to ws_live_swap so it can be gated
+        # to every 2nd frame (cuts ~50ms / frame, doubles expression
+        # responsiveness while still sharpening on alternate frames).
         return result, tgt_face
 
     # Cartoon source
@@ -1412,18 +1402,37 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        # Hair transfer + expression amplification REMOVED.
-                        # The good "with hair" look comes from _run_inswapper
-                        # itself: its blend mask now covers forehead +
-                        # hairline, so seamlessClone naturally pulls the
-                        # avatar's hair into the user's head region.
-                        # No separate hair pass means no wig artifacts.
+                        # Hair / expression amp removed (see commit a0e2da4).
+                        frame_counter += 1
+
+                        # ── CodeFormer face restoration (every 2nd frame) ──
+                        # Sharpens the soft 128px inswapper output to
+                        # photo-real skin. Same shared face hull mask as
+                        # the inswapper paste, so no double seam. Skipped
+                        # on alternate frames so per-frame budget stays low
+                        # and expression changes feel instant.
+                        if (_codeformer is not None
+                                and tgt_face is not None
+                                and getattr(tgt_face, "kps", None) is not None
+                                and (frame_counter % 2) == 0):
+                            try:
+                                shared_mask = _build_face_hull_mask(
+                                    tgt_face, result.shape[:2]
+                                )
+                                result = await loop.run_in_executor(
+                                    None,
+                                    lambda: _codeformer.restore_face(
+                                        result, tgt_face.kps,
+                                        weight=0.6, face_mask=shared_mask,
+                                    ),
+                                )
+                            except Exception as e:
+                                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
 
                         # ── Wav2Lip mouth pass ─────────────────────────────
                         # Drives the avatar mouth from the rolling pitch-
                         # shifted audio buffer maintained by /ws/voice-stream.
                         # Runs every LIPSYNC_EVERY-th frame to keep >=6 fps.
-                        frame_counter += 1
                         if (_wav2lip is not None
                                 and session is not None
                                 and tgt_face is not None
