@@ -1110,16 +1110,20 @@ class TryOnModel:
         band[face_cutoff_y:h, band_l:band_r] = 1.0
         band = cv2.GaussianBlur(band, (9, 9), 0)
 
-        # 4. torso_mask = the band, softened so SD has a smooth boundary.
-        # Multiplied lightly with a dilated silhouette so completely-empty
-        # background pixels (which MediaPipe is sure about) don't get
-        # painted, but the lower-torso uncertainty area is preserved.
+        # 4. torso_mask = band ∩ generously-dilated silhouette. We give
+        # MediaPipe's silhouette a wide skirt of dilation so the lower
+        # torso (where confidence drops) still gets included, but we DO
+        # multiply by the silhouette directly — no constant floor — so
+        # the rectangle's left/right corners over background don't get
+        # painted. That was the source of the rectangular halo behind
+        # the body in the result.
         loose_silhouette = cv2.dilate(
             silhouette,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
-            iterations=2,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)),
+            iterations=3,
         ).clip(0, 1)
-        torso_mask = (band * np.maximum(loose_silhouette, 0.65)).clip(0, 1)
+        loose_silhouette = cv2.GaussianBlur(loose_silhouette, (15, 15), 0).clip(0, 1)
+        torso_mask = (band * loose_silhouette).clip(0, 1)
         torso_mask = cv2.GaussianBlur(torso_mask, (5, 5), 0)
 
         return torso_mask, silhouette, face_cutoff_y
@@ -1293,12 +1297,12 @@ class TryOnModel:
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            # Hard binary mask, then a 3-px feather. The earlier Gaussian
-            # blur was creating a wide low-alpha halo where SD output got
-            # blended at 30-50%, which is exactly where the green/purple
-            # outline was appearing. Hard cut = no halo.
+            # Hard binary mask intersected with the body silhouette as a
+            # final safety net so SD output never leaks onto the actual
+            # camera background (the rectangular halo we kept seeing).
             blend_mask = (torso_mask > 0.4).astype(np.float32)
             blend_mask[:face_cutoff_y] = 0.0
+            blend_mask = blend_mask * (body_silhouette > 0.5).astype(np.float32)
             blend_mask = cv2.GaussianBlur(blend_mask, (3, 3), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
