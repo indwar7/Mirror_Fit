@@ -712,6 +712,64 @@ def _color_correct_face_hull(swapped: np.ndarray, target: np.ndarray, tgt_face) 
             swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
 
 
+def _transfer_expression_detail(swapped: np.ndarray, original: np.ndarray, tgt_face) -> np.ndarray:
+    """Layer the user's eye / brow / mouth detail from the ORIGINAL camera
+    frame onto the swapped face.
+
+    Why this exists:
+      Inswapper is identity-only — its 128 px output smooths out the small
+      muscle motion (brow flex, lip-corner pull, eye narrow) that signals
+      a live expression. The face starts looking 'static' because all the
+      motion cues are gone.
+
+    What it does:
+      1. Build a soft mask over mouth + brows + eyes from the 106 landmarks.
+      2. Linear blend the original camera pixels into the swapped image
+         under that mask. Identity (skin tone, jaw shape) stays from the
+         swap; live motion comes from the original.
+      3. Mask is generously feathered (31 px Gaussian) so there's no visible
+         seam between the swap and the inserted detail.
+
+    Cheap (~3-5 ms on 256 px frames). Skips silently if landmarks missing.
+    """
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 106:
+        return swapped
+    if swapped.shape != original.shape:
+        return swapped
+
+    h, w = swapped.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+
+    def fill_hull(idxs):
+        try:
+            pts = lmk[idxs].astype(np.int32)
+            if len(pts) < 3:
+                return
+            cv2.fillPoly(mask, [cv2.convexHull(pts)], 255)
+        except Exception:
+            pass
+
+    # Mouth (52..71), brows (43..51, 97..105), eyes (87..96 right, 33..42 left)
+    fill_hull(list(range(52, 72)))
+    fill_hull(list(range(43, 52)))
+    fill_hull(list(range(97, 106)))
+    fill_hull(list(range(33, 43)))
+    fill_hull(list(range(87, 97)))
+    mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+
+    if int((mask > 0).sum()) < 200:
+        return swapped
+
+    # Strength ~0.55 — strong enough that motion reads through, gentle
+    # enough that identity (the swap) still dominates.
+    alpha = cv2.GaussianBlur(mask, (31, 31), 0).astype(np.float32) / 255.0
+    alpha = np.clip(alpha * 0.55, 0.0, 1.0)
+    a3    = alpha[:, :, np.newaxis]
+    return (original.astype(np.float32) * a3 +
+            swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+
+
 def _build_face_hull_mask(tgt_face, shape_hw) -> np.ndarray:
     """Reproduce the SAME hull mask used inside _run_inswapper so other
     passes (CodeFormer, etc.) can restrict themselves to the exact same
@@ -829,9 +887,17 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         result = _run_inswapper(src_face, tgt_face, target_img)
         # 2. LAB skin-tone match (bbox region, proven 8de2dc2 path)
         result = _color_correct_face(result, target_img, tgt_face.bbox)
+        # 3. Expression detail transfer — layer the user's eye / brow /
+        # mouth pixels from the ORIGINAL camera frame onto the swap.
+        # Inswapper smooths small muscle motion away; this re-introduces
+        # it so the swapped face mirrors live expressions instead of
+        # looking static. Cheap (~3-5 ms).
+        try:
+            result = _transfer_expression_detail(result, target_img, tgt_face)
+        except Exception as e:
+            print(f"[expr] skipped: {type(e).__name__}: {e}")
         # NOTE: CodeFormer pass moved to ws_live_swap so it can be gated
-        # to every 2nd frame (cuts ~50ms / frame, doubles expression
-        # responsiveness while still sharpening on alternate frames).
+        # to every 2nd frame.
         return result, tgt_face
 
     # Cartoon source
