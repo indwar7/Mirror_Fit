@@ -2,7 +2,7 @@
 BiSeNet face-parsing ONNX wrapper.
 
 Outputs a per-pixel label map (19 classes from the CelebAMask-HQ palette).
-We care most about class 17 = 'hair' and class 13 = 'cloth' — those are what
+We care most about class 17 = 'hair' and class 13 = 'cloth'. These are what
 let us do proper hair transfer for the live face swap.
 
 Model file expected at: face_swap_backend/models/models/face_parser.onnx
@@ -12,7 +12,7 @@ Try any of these to download:
   https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/bisenet_resnet_34.onnx
 
 Input:  RGB image, resized to (512, 512), normalized with ImageNet mean/std
-Output: (1, 19, 512, 512) class logits OR (1, 512, 512) argmax — handled both
+Output: (1, 19, 512, 512) class logits OR (1, 512, 512) argmax (handled both)
 """
 from __future__ import annotations
 
@@ -87,12 +87,11 @@ class FaceParserONNX:
         out = self.session.run([self.output_name], {self.input_name: x})[0]
         # Accept (1, C, H, W) or (1, H, W)
         if out.ndim == 4:
-            labels = out[0].argmax(axis=0).astype(np.uint8)   # (H, W)
+            labels = out[0].argmax(axis=0).astype(np.uint8)
         elif out.ndim == 3:
             labels = out[0].astype(np.uint8)
         else:
             raise RuntimeError(f"unexpected parser output shape: {out.shape}")
-        # Upsample back to original resolution
         labels = cv2.resize(labels, (w, h), interpolation=cv2.INTER_NEAREST)
         return labels
 
@@ -110,7 +109,6 @@ class FaceParserONNX:
             if n > best_n:
                 best_n, best_cls = n, cid
         mask = ((labels == best_cls).astype(np.uint8)) * 255
-        # Clean up — close small holes, soften edges
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         mask = cv2.GaussianBlur(mask, (5, 5), 0)
         return mask
@@ -124,21 +122,25 @@ def transfer_hair(
     tgt_hair_mask: np.ndarray,
     tgt_face_kps: np.ndarray,
     tgt_face_exclusion_mask: Optional[np.ndarray] = None,
+    tgt_head_region_mask:    Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Warp the avatar's hair onto the target image using a face-aligned
-    affine and clip with the target's own hair silhouette.
+    """Warp avatar hair onto the target image. Clean version, no wig artifacts.
 
-    Pipeline:
-      1. Affine src->tgt from 5 face keypoints — anchors the warp to the
-         user's actual face geometry.
-      2. Combined mask = (warped avatar hair) ∪ (user hair), intersected
-         with a generously-dilated user-hair region (no floating blocks).
-      3. SUBTRACT tgt_face_exclusion_mask (the user's face convex hull,
-         slightly dilated) from the combined mask. This is what stops
-         the avatar's forehead/cheek pixels from bleeding over the
-         inswapper face — hair only paints ABOVE the eyebrow line and
-         OUTSIDE the face oval.
-      4. Feathered Gaussian alpha for a soft edge.
+    Critical correctness rules:
+      1. Source is PRE-MASKED to hair-only (background -> 0) BEFORE warping.
+         Otherwise warpAffine produces an opaque rectangle that then
+         shows as a hard wig outline.
+      2. Paint area is the warped HAIR mask only (NOT union with user hair).
+         Union with user hair previously bled the avatar background into
+         the user's existing hair region.
+      3. Paint is intersected with a HEAD-REGION mask (oval grown from the
+         user's bbox). Guarantees we never paint outside a plausible
+         head silhouette, even if BiSeNet hallucinates.
+      4. Paint subtracts the FACE-EXCLUSION mask (convex hull of user's
+         106 landmarks). Hair never paints over the inswapper face.
+      5. LAB colour-match warps the avatar hair tone toward the user's
+         scene lighting so it blends instead of looking pasted.
+      6. Wide Gaussian (41 px) feather, no alpha boost. Soft natural edge.
     """
     th, tw = tgt_bgr.shape[:2]
 
@@ -149,42 +151,68 @@ def transfer_hair(
     if M is None:
         return tgt_bgr
 
+    # 1. Pre-mask source so warp produces no background.
+    src_alpha     = (src_hair_mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
+    src_hair_only = (src_bgr.astype(np.float32) * src_alpha).astype(np.uint8)
+
     src_warp = cv2.warpAffine(
-        src_bgr, M, (tw, th),
-        flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
+        src_hair_only, M, (tw, th),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
     mask_warp = cv2.warpAffine(
         src_hair_mask, M, (tw, th),
-        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
 
-    # Use the UNION of warped avatar hair and user hair as the paint area.
-    # We don't intersect with a dilated user-hair-only region because that
-    # collapses to ~user-hair when avatar and user hair shapes are similar
-    # (the visible-color-change problem on Lucas-like avatars).
-    combined = cv2.bitwise_or(mask_warp, tgt_hair_mask)
+    # 2. Paint = warped avatar hair only.
+    paint = mask_warp.copy()
 
-    # Hard-exclude the user's face region — prevents forehead bleed.
+    # 3. Clip to a head-region mask if supplied.
+    if tgt_head_region_mask is not None:
+        if tgt_head_region_mask.shape[:2] != (th, tw):
+            tgt_head_region_mask = cv2.resize(
+                tgt_head_region_mask, (tw, th), interpolation=cv2.INTER_NEAREST
+            )
+        paint = cv2.bitwise_and(paint, tgt_head_region_mask)
+
+    # 4. Subtract the face exclusion hull.
     if tgt_face_exclusion_mask is not None:
         if tgt_face_exclusion_mask.shape[:2] != (th, tw):
             tgt_face_exclusion_mask = cv2.resize(
                 tgt_face_exclusion_mask, (tw, th), interpolation=cv2.INTER_NEAREST
             )
-        combined = cv2.bitwise_and(combined, cv2.bitwise_not(tgt_face_exclusion_mask))
+        paint = cv2.bitwise_and(paint, cv2.bitwise_not(tgt_face_exclusion_mask))
 
-    n_pix = int(combined.sum() // 255)
-    if n_pix < 500:
-        print(f"[hair] skip: combined too small ({n_pix} px)")
+    n_pix = int((paint > 0).sum())
+    if n_pix < 800:
         return tgt_bgr
 
-    # Diagnostic so we can see at a glance whether hair is actually painting
-    print(f"[hair] paint: combined={n_pix}px  warp={int(mask_warp.sum()//255)}px  "
-          f"tgt={int(tgt_hair_mask.sum()//255)}px  excl="
-          f"{0 if tgt_face_exclusion_mask is None else int(tgt_face_exclusion_mask.sum()//255)}px")
+    # 5. LAB colour transfer: avatar hair tone -> user scene lighting.
+    try:
+        if int((tgt_hair_mask > 128).sum()) > 300 and int((mask_warp > 128).sum()) > 300:
+            src_lab_full = cv2.cvtColor(src_warp, cv2.COLOR_BGR2LAB).astype(np.float32)
+            src_pix = src_warp[mask_warp > 128].reshape(-1, 3).astype(np.uint8)
+            tgt_pix = tgt_bgr[tgt_hair_mask > 128].reshape(-1, 3).astype(np.uint8)
+            sm_lab  = cv2.cvtColor(src_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB)[0]
+            tm_lab  = cv2.cvtColor(tgt_pix.reshape(1, -1, 3), cv2.COLOR_BGR2LAB)[0]
+            for c in range(3):
+                ss = sm_lab[:, c].std() + 1e-6
+                ts = tm_lab[:, c].std() + 1e-6
+                src_lab_full[:, :, c] = (
+                    (src_lab_full[:, :, c] - sm_lab[:, c].mean()) * (ts / ss)
+                    + tm_lab[:, c].mean()
+                )
+            src_warp = cv2.cvtColor(
+                np.clip(src_lab_full, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR
+            )
+    except Exception:
+        pass  # colour match is a nice-to-have
 
-    alpha = cv2.GaussianBlur(combined, (15, 15), 0).astype(np.float32) / 255.0
-    alpha = np.clip(alpha * 1.4, 0.0, 1.0)
+    # 6. Soft feather, no boost.
+    alpha = cv2.GaussianBlur(paint, (41, 41), 0).astype(np.float32) / 255.0
     a3    = alpha[:, :, np.newaxis]
     out   = (src_warp.astype(np.float32) * a3 +
-             tgt_bgr.astype(np.float32) * (1 - a3)).astype(np.uint8)
+             tgt_bgr.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
     return out

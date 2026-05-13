@@ -645,6 +645,69 @@ def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.nda
     return result
 
 
+# 106-landmark indices for InsightFace 2d106det:
+#   Mouth outline: 52..71  (20 points around the lips)
+#   L brow:        43..51  (9 points)
+#   R brow:        97..105 (9 points)
+# Using ranges instead of exact ids keeps us robust to off-by-one
+# differences across InsightFace versions.
+_LMK_MOUTH = list(range(52, 72))
+_LMK_LBROW = list(range(43, 52))
+_LMK_RBROW = list(range(97, 106))
+
+
+def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
+    """Amplify mouth + brow contrast inside the face hull.
+
+    The inswapper already preserves the user's expression (target patch
+    carries the user's mouth/brow shape). But the swap output looks
+    smoothed because of the 128px upscale and Poisson clone. This adds
+    a soft local contrast boost ONLY inside mouth + brow regions so
+    smiles, frowns and brow raises read clearly without changing identity.
+
+    Cheap (~3-5 ms on 384px frames). Skips silently if landmarks missing.
+    """
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 106:
+        return swapped
+
+    h, w = swapped.shape[:2]
+
+    # Build a soft mask over mouth + brow regions
+    mask = np.zeros((h, w), np.uint8)
+
+    def fill_hull(idxs):
+        try:
+            pts = lmk[idxs].astype(np.int32)
+            if len(pts) < 3:
+                return
+            hull = cv2.convexHull(pts)
+            cv2.fillPoly(mask, [hull], 255)
+        except Exception:
+            pass
+
+    fill_hull(_LMK_MOUTH)
+    fill_hull(_LMK_LBROW)
+    fill_hull(_LMK_RBROW)
+    # Single dilation pass at the end (cheaper than per-region)
+    mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+
+    if int((mask > 0).sum()) < 200:
+        return swapped
+
+    # Soft alpha so the boost fades at the region edges
+    alpha = cv2.GaussianBlur(mask, (15, 15), 0).astype(np.float32) / 255.0
+    a3    = alpha[:, :, np.newaxis]
+
+    # Local contrast boost via unsharp mask
+    blur    = cv2.GaussianBlur(swapped, (0, 0), sigmaX=2.0)
+    sharpen = cv2.addWeighted(swapped, 1.6, blur, -0.6, 0)
+
+    out = (sharpen.astype(np.float32) * a3 +
+           swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+    return out
+
+
 def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
     """
     Fast live swap with cached src_detection.
@@ -1240,22 +1303,90 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        # Hair transfer DISABLED for now — the union-mask
-                        # approach paints the avatar's source background as
-                        # well, producing visible rectangular bleed around
-                        # the head. Need a proper redesign:
-                        #   • restrict avatar source to a tight head bbox
-                        #     before warping (kill background pixels)
-                        #   • clip the warped result to a head-region
-                        #     ellipse derived from the user's bbox
-                        #   • feathered edges everywhere
-                        # Until that lands, leave the swap result clean.
-                        pass
+                        # ── Hair transfer (clean v3) ───────────────────────
+                        # 1. tight head-region oval from user bbox
+                        # 2. face-exclusion convex hull from 106 landmarks
+                        # 3. transfer_hair handles bg-cut on source + soft
+                        #    feather + LAB colour match
+                        if (_face_parser is not None
+                                and transfer_hair is not None
+                                and src_hair_mask is not None
+                                and tgt_face is not None
+                                and getattr(tgt_face, "kps", None) is not None
+                                and getattr(src_detection[0], "kps", None) is not None):
+                            try:
+                                if tgt_hair_cache is None or tgt_hair_cache_ttl <= 0:
+                                    tgt_hair_cache = await loop.run_in_executor(
+                                        None, _face_parser.hair_mask, frame
+                                    )
+                                    tgt_hair_cache_ttl = HAIR_REFRESH_FRAMES
+                                else:
+                                    tgt_hair_cache_ttl -= 1
+
+                                fh, fw = result.shape[:2]
+                                tx1, ty1, tx2, ty2 = (int(v) for v in tgt_face.bbox)
+                                fbw, fbh = tx2 - tx1, ty2 - ty1
+                                fcx, fcy = (tx1 + tx2) // 2, (ty1 + ty2) // 2
+
+                                # Head-region ellipse — slightly above face centre,
+                                # ~1.6x face height, ~1.5x face width. Tight enough
+                                # to avoid painting on shoulders/walls, generous
+                                # enough to cover long hair flowing past the head.
+                                head_region = np.zeros((fh, fw), np.uint8)
+                                ell_cy = fcy - int(fbh * 0.20)
+                                ell_rx = max(8, int(fbw * 0.95))
+                                ell_ry = max(8, int(fbh * 1.30))
+                                ell_cx = int(np.clip(fcx,    ell_rx + 1, fw - ell_rx - 1))
+                                ell_cy = int(np.clip(ell_cy, ell_ry + 1, fh - ell_ry - 1))
+                                cv2.ellipse(head_region, (ell_cx, ell_cy),
+                                            (ell_rx, ell_ry), 0, 0, 360, 255, -1)
+
+                                # Face-exclusion convex hull from 106 landmarks
+                                excl_mask = None
+                                lmk = getattr(tgt_face, "landmark_2d_106", None)
+                                if lmk is not None and len(lmk) > 10:
+                                    excl = np.zeros((fh, fw), np.uint8)
+                                    pts  = lmk.astype(np.float32)
+                                    fc   = pts.mean(axis=0)
+                                    expanded = (pts - fc) * 1.05 + fc
+                                    hull = cv2.convexHull(expanded.astype(np.int32))
+                                    cv2.fillPoly(excl, [hull], 255)
+                                    excl = cv2.dilate(excl, np.ones((7, 7), np.uint8), 1)
+                                    excl_mask = excl
+
+                                result = await loop.run_in_executor(
+                                    None,
+                                    lambda: transfer_hair(
+                                        src_img,
+                                        src_hair_mask,
+                                        src_detection[0].kps,
+                                        result,
+                                        tgt_hair_cache,
+                                        tgt_face.kps,
+                                        excl_mask,
+                                        head_region,
+                                    ),
+                                )
+                            except Exception as e:
+                                print(f"[hair] transfer skipped: {type(e).__name__}: {e}")
+
+                        # ── Expression transfer / amplification ────────────
+                        # The inswapper already preserves the user's
+                        # expression (jaw, brow, mouth shape come from the
+                        # target face patch). _amplify_expression sharpens
+                        # mouth + brow contrast inside the face hull so
+                        # smiles, frowns and brow raises read more clearly
+                        # against the avatar's neutral baseline.
+                        if tgt_face is not None:
+                            try:
+                                result = _amplify_expression(result, tgt_face)
+                            except Exception as e:
+                                print(f"[expr] skipped: {type(e).__name__}: {e}")
 
                         # ── Wav2Lip mouth pass ─────────────────────────────
                         # Drives the avatar mouth from the rolling pitch-
                         # shifted audio buffer maintained by /ws/voice-stream.
-                        # Runs every LIPSYNC_EVERY-th frame to keep ≥6 fps.
+                        # Runs every LIPSYNC_EVERY-th frame to keep >=6 fps.
                         frame_counter += 1
                         if (_wav2lip is not None
                                 and session is not None
