@@ -1240,58 +1240,17 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        # Hair transfer — only when BiSeNet is loaded, the
-                        # source hair mask was computed at init, and we got a
-                        # real tgt_face back (so we have landmarks for the
-                        # face-exclusion hull). Refreshes the target hair mask
-                        # every HAIR_REFRESH_FRAMES frames to stay under the
-                        # per-frame budget.
-                        if (_face_parser is not None
-                                and transfer_hair is not None
-                                and src_hair_mask is not None
-                                and tgt_face is not None
-                                and getattr(tgt_face, "kps", None) is not None
-                                and getattr(src_detection[0], "kps", None) is not None):
-                            try:
-                                if tgt_hair_cache is None or tgt_hair_cache_ttl <= 0:
-                                    tgt_hair_cache = await loop.run_in_executor(
-                                        None, _face_parser.hair_mask, frame
-                                    )
-                                    tgt_hair_cache_ttl = HAIR_REFRESH_FRAMES
-                                else:
-                                    tgt_hair_cache_ttl -= 1
-
-                                # Build a face-exclusion mask from the user's
-                                # 106 landmarks — convex hull, slightly dilated.
-                                # Hair must NEVER paint inside this region.
-                                lmk = getattr(tgt_face, "landmark_2d_106", None)
-                                excl_mask = None
-                                if lmk is not None and len(lmk) > 10:
-                                    fh, fw = result.shape[:2]
-                                    excl = np.zeros((fh, fw), np.uint8)
-                                    pts  = lmk.astype(np.int32)
-                                    fc   = pts.mean(axis=0).astype(np.float32)
-                                    expanded = (pts.astype(np.float32) - fc) * 1.10 + fc
-                                    hull = cv2.convexHull(expanded.astype(np.int32))
-                                    cv2.fillPoly(excl, [hull], 255)
-                                    excl = cv2.dilate(excl, np.ones((9, 9), np.uint8), iterations=1)
-                                    excl_mask = excl
-
-                                result = await loop.run_in_executor(
-                                    None,
-                                    lambda: transfer_hair(
-                                        src_img,
-                                        src_hair_mask,
-                                        src_detection[0].kps,
-                                        result,
-                                        tgt_hair_cache,
-                                        tgt_face.kps,
-                                        excl_mask,
-                                    ),
-                                )
-                            except Exception as e:
-                                # Never let a hair-pass error break the swap.
-                                print(f"[hair] transfer skipped: {type(e).__name__}: {e}")
+                        # Hair transfer DISABLED for now — the union-mask
+                        # approach paints the avatar's source background as
+                        # well, producing visible rectangular bleed around
+                        # the head. Need a proper redesign:
+                        #   • restrict avatar source to a tight head bbox
+                        #     before warping (kill background pixels)
+                        #   • clip the warped result to a head-region
+                        #     ellipse derived from the user's bbox
+                        #   • feathered edges everywhere
+                        # Until that lands, leave the swap result clean.
+                        pass
 
                         # ── Wav2Lip mouth pass ─────────────────────────────
                         # Drives the avatar mouth from the rolling pitch-
