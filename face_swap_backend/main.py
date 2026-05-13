@@ -460,8 +460,20 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         expanded = (pts.astype(np.float32) - center) * 1.06 + center
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
+        # Add an upward extension so the paste covers forehead + hairline.
+        # SeamlessClone will then naturally blend the avatar's hair into
+        # this region (this is what gave the good "with hair" result in
+        # earlier versions). Ellipse top-half centred slightly above the
+        # face centroid, ~0.9x face width, ~0.7x face height upward.
+        ext_cy = cy - int(fh * 0.20)
+        ext_rx = int(fw * 0.55)
+        ext_ry = int(fh * 0.70)
+        ext_cy = max(ext_ry + 1, ext_cy)
+        ext_cx = int(np.clip(cx, ext_rx + 1, iw - ext_rx - 1))
+        cv2.ellipse(blend_mask, (ext_cx, ext_cy), (ext_rx, ext_ry),
+                    0, 180, 360, 255, -1)
         # Tiny smoothing pass on the edges
-        blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
+        blend_mask = cv2.GaussianBlur(blend_mask, (25, 25), 0)
         _, blend_mask = cv2.threshold(blend_mask, 100, 255, cv2.THRESH_BINARY)
         # Centre of mass for Poisson
         M_m = cv2.moments(blend_mask)
@@ -791,18 +803,10 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
     if src_real and tgt_face is not None:
         # Identity transfer (avatar face on user's head/body)
         result = _run_inswapper(src_face, tgt_face, target_img)
-        # LAB skin-tone match across the FULL face hull (not just bbox)
-        # so chin + jawline blend into the user's neck without a seam.
-        result = _color_correct_face_hull(result, target_img, tgt_face)
-        # CodeFormer face restoration — sharpens the soft 128px inswapper
-        # output to user-skin level detail. Keeps identity (weight=0.7).
-        if _codeformer is not None and getattr(tgt_face, "kps", None) is not None:
-            try:
-                result = _codeformer.restore_face(
-                    result, tgt_face.kps, weight=0.7,
-                )
-            except Exception as e:
-                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
+        # LAB skin-tone match using the bbox region (the proven-good
+        # version from 8de2dc2). Hull match + CodeFormer were producing
+        # ghost edges where their masks overlapped — reverted.
+        result = _color_correct_face(result, target_img, tgt_face.bbox)
         return result, tgt_face
 
     # Cartoon source
@@ -1375,85 +1379,12 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        # ── Hair transfer (clean v3) ───────────────────────
-                        # 1. tight head-region oval from user bbox
-                        # 2. face-exclusion convex hull from 106 landmarks
-                        # 3. transfer_hair handles bg-cut on source + soft
-                        #    feather + LAB colour match
-                        if (_face_parser is not None
-                                and transfer_hair is not None
-                                and src_hair_mask is not None
-                                and tgt_face is not None
-                                and getattr(tgt_face, "kps", None) is not None
-                                and getattr(src_detection[0], "kps", None) is not None):
-                            try:
-                                if tgt_hair_cache is None or tgt_hair_cache_ttl <= 0:
-                                    tgt_hair_cache = await loop.run_in_executor(
-                                        None, _face_parser.hair_mask, frame
-                                    )
-                                    tgt_hair_cache_ttl = HAIR_REFRESH_FRAMES
-                                else:
-                                    tgt_hair_cache_ttl -= 1
-
-                                fh, fw = result.shape[:2]
-                                tx1, ty1, tx2, ty2 = (int(v) for v in tgt_face.bbox)
-                                fbw, fbh = tx2 - tx1, ty2 - ty1
-                                fcx, fcy = (tx1 + tx2) // 2, (ty1 + ty2) // 2
-
-                                # Head-region ellipse — slightly above face centre,
-                                # ~1.6x face height, ~1.5x face width. Tight enough
-                                # to avoid painting on shoulders/walls, generous
-                                # enough to cover long hair flowing past the head.
-                                head_region = np.zeros((fh, fw), np.uint8)
-                                ell_cy = fcy - int(fbh * 0.20)
-                                ell_rx = max(8, int(fbw * 0.95))
-                                ell_ry = max(8, int(fbh * 1.30))
-                                ell_cx = int(np.clip(fcx,    ell_rx + 1, fw - ell_rx - 1))
-                                ell_cy = int(np.clip(ell_cy, ell_ry + 1, fh - ell_ry - 1))
-                                cv2.ellipse(head_region, (ell_cx, ell_cy),
-                                            (ell_rx, ell_ry), 0, 0, 360, 255, -1)
-
-                                # Face-exclusion convex hull from 106 landmarks
-                                excl_mask = None
-                                lmk = getattr(tgt_face, "landmark_2d_106", None)
-                                if lmk is not None and len(lmk) > 10:
-                                    excl = np.zeros((fh, fw), np.uint8)
-                                    pts  = lmk.astype(np.float32)
-                                    fc   = pts.mean(axis=0)
-                                    expanded = (pts - fc) * 1.05 + fc
-                                    hull = cv2.convexHull(expanded.astype(np.int32))
-                                    cv2.fillPoly(excl, [hull], 255)
-                                    excl = cv2.dilate(excl, np.ones((7, 7), np.uint8), 1)
-                                    excl_mask = excl
-
-                                result = await loop.run_in_executor(
-                                    None,
-                                    lambda: transfer_hair(
-                                        src_img,
-                                        src_hair_mask,
-                                        src_detection[0].kps,
-                                        result,
-                                        tgt_hair_cache,
-                                        tgt_face.kps,
-                                        excl_mask,
-                                        head_region,
-                                    ),
-                                )
-                            except Exception as e:
-                                print(f"[hair] transfer skipped: {type(e).__name__}: {e}")
-
-                        # ── Expression transfer / amplification ────────────
-                        # The inswapper already preserves the user's
-                        # expression (jaw, brow, mouth shape come from the
-                        # target face patch). _amplify_expression sharpens
-                        # mouth + brow contrast inside the face hull so
-                        # smiles, frowns and brow raises read more clearly
-                        # against the avatar's neutral baseline.
-                        if tgt_face is not None:
-                            try:
-                                result = _amplify_expression(result, tgt_face)
-                            except Exception as e:
-                                print(f"[expr] skipped: {type(e).__name__}: {e}")
+                        # Hair transfer + expression amplification REMOVED.
+                        # The good "with hair" look comes from _run_inswapper
+                        # itself: its blend mask now covers forehead +
+                        # hairline, so seamlessClone naturally pulls the
+                        # avatar's hair into the user's head region.
+                        # No separate hair pass means no wig artifacts.
 
                         # ── Wav2Lip mouth pass ─────────────────────────────
                         # Drives the avatar mouth from the rolling pitch-
