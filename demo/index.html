@@ -1079,9 +1079,9 @@ function _startLsTimer() {
   // 120 ms = ~8 fps target. Server frame-drop gate auto-throttles to whatever
   // it can do (full LAB + Poisson + GFPGAN ~120-150 ms). User sees the latest
   // accurate result as soon as the GPU can produce one.
-  // 80 ms = ~12 fps target. Server frame-drop gate auto-throttles if
+  // 50 ms = ~20 fps target. Server frame-drop gate auto-throttles if
   // GPU can't keep up; lower interval just means latest mirror frame.
-  liveSendTimer=setInterval(sendLiveFrame,80);
+  liveSendTimer=setInterval(sendLiveFrame,50);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
@@ -1115,14 +1115,14 @@ function sendLiveFrame() {
   if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
   const video=document.getElementById('liveVideo');
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
-  // 320px + JPEG quality 0.82 — smaller frame = lower send + decode +
-  // CodeFormer time, so expression changes mirror more instantly.
-  // Canvas overlay still draws the full live camera underneath at native
-  // resolution so the user sees no quality drop.
-  const sz=Math.min(vw,vh,320);
+  // 256px + JPEG quality 0.75 — minimum viable for face detection.
+  // Frame size is the dominant factor in upload + decode + inswapper time;
+  // dropping from 320 to 256 cuts ~15ms / round trip without visible loss
+  // because the live camera draws underneath at native resolution.
+  const sz=Math.min(vw,vh,256);
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
   _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
-  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.82).split(',')[1]}));
+  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.75).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────

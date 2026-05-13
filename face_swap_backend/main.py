@@ -181,7 +181,9 @@ def _load_models() -> None:
     # (which determine warp quality). Recognition/genderage stripped because
     # they're truly unused for target frames.
     _face_app_fast = FaceAnalysis(name="buffalo_l", providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    _face_app_fast.prepare(ctx_id=0, det_thresh=0.3, det_size=(480, 480))
+    # 320 detection size = ~15ms vs ~30ms at 480. User-priority is latency;
+    # face is roughly centred in frame so the smaller det grid still finds it.
+    _face_app_fast.prepare(ctx_id=0, det_thresh=0.3, det_size=(320, 320))
     for mod in ("recognition", "genderage"):
         if mod in _face_app_fast.models:
             del _face_app_fast.models[mod]
@@ -1402,32 +1404,11 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         await send({"type":"no_face"})
                     else:
-                        # Hair / expression amp removed (see commit a0e2da4).
+                        # Hair / expression amp / CodeFormer all removed for
+                        # max responsiveness. User priority: lowest possible
+                        # latency. Result: face slightly soft (inswapper 128px)
+                        # but expression mirrors with minimum lag.
                         frame_counter += 1
-
-                        # ── CodeFormer face restoration (every 2nd frame) ──
-                        # Sharpens the soft 128px inswapper output to
-                        # photo-real skin. Same shared face hull mask as
-                        # the inswapper paste, so no double seam. Skipped
-                        # on alternate frames so per-frame budget stays low
-                        # and expression changes feel instant.
-                        if (_codeformer is not None
-                                and tgt_face is not None
-                                and getattr(tgt_face, "kps", None) is not None
-                                and (frame_counter % 2) == 0):
-                            try:
-                                shared_mask = _build_face_hull_mask(
-                                    tgt_face, result.shape[:2]
-                                )
-                                result = await loop.run_in_executor(
-                                    None,
-                                    lambda: _codeformer.restore_face(
-                                        result, tgt_face.kps,
-                                        weight=0.6, face_mask=shared_mask,
-                                    ),
-                                )
-                            except Exception as e:
-                                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
 
                         # ── Wav2Lip mouth pass ─────────────────────────────
                         # Drives the avatar mouth from the rolling pitch-
@@ -1457,7 +1438,9 @@ async def ws_live_swap(ws: WebSocket):
                             session["last_frame"] = result
                             session["last_face"]  = tgt_face
 
-                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                        # JPEG q=80 keeps face detail readable while shaving
+                        # ~30 % off response size = lower transit + decode time.
+                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 80])
                         # `audio_t_ms` lets the client align playback if it
                         # wants — for now it just sees the latest frame.
                         payload = {"type":"result","image": base64.b64encode(buf).decode()}
