@@ -147,6 +147,19 @@ class TryOnModel:
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
 
+        # ── Mask cache (every-3-frame refresh) ───────────────────────────────
+        # The body-silhouette + face-cutoff + colour-anchor seed are
+        # surprisingly expensive (MediaPipe + Haar + numpy reductions).
+        # Re-running them every frame is wasteful when the subject is
+        # near-stationary. We cache the result and only refresh every Nth
+        # call — the EMA blend smooths over any small pose mismatch.
+        self._mask_cache_seed: np.ndarray | None = None   # colour-anchored person frame
+        self._mask_cache_torso: np.ndarray | None = None  # torso_mask
+        self._mask_cache_silh: np.ndarray | None = None   # body silhouette
+        self._mask_cache_cutoff: int = 0                  # face_cutoff_y
+        self._mask_cache_frame_count: int = 0
+        self._mask_cache_refresh_every: int = 3
+
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
         self._frame_buffer: list[np.ndarray] = []   # raw BGR frames waiting for batch processing
@@ -1161,7 +1174,25 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
+        #
+        # Optimisation: cache the mask for N frames. The subject moves
+        # slowly relative to the 3-second inference cycle, and the EMA
+        # blend smooths the result, so a stale mask is acceptable.
+        self._mask_cache_frame_count += 1
+        cache_valid = (
+            self._mask_cache_torso is not None
+            and self._mask_cache_torso.shape == orig_arr.shape[:2]
+            and (self._mask_cache_frame_count % self._mask_cache_refresh_every) != 0
+        )
+        if cache_valid:
+            torso_mask     = self._mask_cache_torso
+            body_silhouette = self._mask_cache_silh
+            face_cutoff_y  = self._mask_cache_cutoff
+        else:
+            torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
+            self._mask_cache_torso  = torso_mask
+            self._mask_cache_silh   = body_silhouette
+            self._mask_cache_cutoff = face_cutoff_y
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -1205,11 +1236,13 @@ class TryOnModel:
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
             prompt = (
-                f"photo of a person wearing a fitted {color} button-up shirt, "
-                f"solid {color} fabric, neutral {color} colour, "
-                f"the shirt fits naturally on the body, visible collar around the neck, "
-                f"long sleeves following the arms down to the wrists, "
-                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
+                f"professional studio photograph of a man wearing a tailored "
+                f"{color} button-up shirt, the shirt fits the body naturally with "
+                f"realistic creases at the shoulders and chest, the collar wraps "
+                f"around the neck, buttons running down the centre, long sleeves "
+                f"draping over the arms, soft fabric folds, woven cotton texture, "
+                f"natural indoor lighting, subtle shadow under the collar, "
+                f"sharp focus, photorealistic, high detail"
             )
             # Keep negatives minimal — listing specific colours pushes SD
             # toward complementary colours (purple→green halo). Only call
@@ -1232,7 +1265,7 @@ class TryOnModel:
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=6,
+                    num_inference_steps=8,
                     guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
@@ -1246,6 +1279,14 @@ class TryOnModel:
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
             orig_f     = orig_arr.astype(np.float32)
+
+            # Subtle shadow under the collar — multiply a narrow horizontal
+            # band just below face_cutoff by 0.88 so the shirt looks like
+            # it's catching the natural shadow of the neck overhang. This
+            # is the cheap-and-good way to fake depth.
+            shadow_top = face_cutoff_y
+            shadow_bot = min(face_cutoff_y + 12, result_arr.shape[0])
+            result_arr[shadow_top:shadow_bot] *= 0.88
             # Compose ONLY inside the torso_mask (the same region SD was
             # actually told to paint). Using body_silhouette here was
             # letting the inpaint bleed out below the chest band, leaving
