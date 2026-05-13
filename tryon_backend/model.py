@@ -39,9 +39,10 @@ ANIMATEDIFF_ADAPTER_PATH  = os.environ.get("ANIMATEDIFF_ADAPTER_PATH", "")
 VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 
 # When set, skips every AI tier and always uses the geometric warp.
-# Used when the user prefers a fast, stable, predictable overlay over
-# AI-quality (which on this stack tends to drift in colour/structure).
-TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "1") == "1"
+# Default OFF — AI inpaint with strong colour anchor tends to win on
+# realism. Set TRYON_FORCE_GEOMETRIC=1 to flip back to the deterministic
+# overlay if the AI path is misbehaving.
+TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
@@ -420,13 +421,11 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        # IP-Adapter scale 1.6: the inpaint path uses CFG=1.5 which dilutes
-        # the garment signal, so we push the IP scale up to keep the
-        # garment's actual colour/texture from being overwritten by SD's
-        # priors (which otherwise drift toward whatever colour the original
-        # t-shirt was). 1.6 still keeps real garment structure; 2.0+ would
-        # collapse to a flat colour blob.
-        self.pipeline.set_ip_adapter_scale(1.6)
+        # IP-Adapter scale 1.4 paired with CFG 2.5 (see _infer_tier3). Higher
+        # IP without CFG pushes flat colour; higher CFG without IP drifts
+        # back to the underlying t-shirt colour. This combo holds the
+        # garment's colour while keeping real shirt structure.
+        self.pipeline.set_ip_adapter_scale(1.4)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -1152,6 +1151,34 @@ class TryOnModel:
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
             mask_pil = Image.fromarray((torso_mask * 255).astype(np.uint8))
+
+            # ── Colour anchor: prefill the masked torso with the garment's
+            # mean colour BEFORE inpainting. The pipeline starts denoising
+            # from this seed, so SD has a much stronger pull toward the
+            # right colour than from prompt + IP-Adapter alone. This is the
+            # cheapest fix for the brown-drift we were seeing.
+            try:
+                g_arr = np.array(garment.convert("RGB"))
+                # Use the dark/saturated centre of the garment as the seed
+                # (skip white/transparent edges).
+                gh, gw = g_arr.shape[:2]
+                cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
+                cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
+                centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+                seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
+                seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
+                # Blend the seed colour into the orig_arr ONLY where the
+                # torso mask is high — outside the mask we keep the camera
+                # pixels untouched so the seed colour doesn't leak.
+                m = torso_mask[:, :, np.newaxis]
+                anchor = (
+                    seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
+                    + orig_arr.astype(np.float32) * (1.0 - m)
+                ).astype(np.uint8)
+                person = Image.fromarray(anchor)
+            except Exception as e:
+                log.debug(f"colour anchor prefill failed (using raw frame): {e}")
             # diffusers' SD-inpaint pipeline unconditionally does
             #   neg, pos = single_image_embeds.chunk(2)
             # on the IP-Adapter embeddings, which only works when
@@ -1178,10 +1205,12 @@ class TryOnModel:
                 "sleeveless, naked, floating clothes, shirt on background, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
-            # LCM-distilled UNet prefers guidance≈1.0, but the diffusers
-            # SD-inpaint + IP-Adapter code path requires CFG to be ON or it
-            # crashes on a .chunk(2) of the image embeds. A tiny CFG of 1.5
-            # is the sweet spot: enables the path without degrading LCM.
+            # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
+            # diffusers happy. With LCM, 2.5 still converges in 6 steps
+            # and is what finally beats the brown-drift problem. The
+            # masked region is pre-seeded with the garment's mean colour
+            # (see colour-anchor block above) which is the other half of
+            # the fix.
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
@@ -1189,7 +1218,7 @@ class TryOnModel:
                     image=person,
                     mask_image=mask_pil,
                     num_inference_steps=6,
-                    guidance_scale=1.5,
+                    guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
