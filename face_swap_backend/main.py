@@ -1336,7 +1336,10 @@ async def ws_voice_stream(ws: WebSocket):
     loop        = asyncio.get_event_loop()
     session     = None
 
-    async def _shift(pcm: np.ndarray) -> np.ndarray:
+    def _shift(pcm: np.ndarray) -> np.ndarray:
+        # SYNC function — runs in the default thread executor. Was async
+        # previously which caused `coroutine was never awaited` and the
+        # voice WS to drop on the very first audio chunk.
         if semitones == 0 or pcm.size == 0:
             return pcm
         # librosa pitch_shift preserves duration; just changes the pitch
@@ -1392,7 +1395,7 @@ async def ws_voice_stream(ws: WebSocket):
             if pcm.size == 0:
                 continue
             try:
-                shifted = await loop.run_in_executor(None, lambda: _shift(pcm))
+                shifted = await loop.run_in_executor(None, _shift, pcm)
             except Exception as e:
                 with contextlib.suppress(Exception):
                     await ws.send_text(json.dumps({"type":"error","message":str(e)}))
