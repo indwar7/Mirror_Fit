@@ -108,6 +108,8 @@ _wav2lip                              = None   # Wav2LipONNX for audio-driven li
 _WAV2LIP_PATH                          = str(_HERE / "models" / "models" / "wav2lip_gan.onnx")
 _face_parser                          = None   # BiSeNet face-parser ONNX for hair swap (optional)
 _FACE_PARSER_PATH                      = str(_HERE / "models" / "models" / "face_parser.onnx")
+_codeformer                           = None   # CodeFormer ONNX for face restoration (optional)
+_CODEFORMER_PATH                       = str(_HERE / "models" / "models" / "codeformer.onnx")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cross-WebSocket session state
@@ -234,6 +236,22 @@ def _load_models() -> None:
     except Exception as e:
         _face_parser = None
         print(f"[LUCY] face parser load failed ({type(e).__name__}: {e}) — hair swap DISABLED")
+
+    # CodeFormer — face restoration ONNX. Sharpens the soft 128px inswapper
+    # output so the swap looks like the user's actual face, not a blurred patch.
+    # Pure onnxruntime, no basicsr. ~200 MB. ~40-60 ms per frame on A10G.
+    global _codeformer
+    try:
+        from codeformer import CodeFormerONNX
+        if pathlib.Path(_CODEFORMER_PATH).exists():
+            _codeformer = CodeFormerONNX(_CODEFORMER_PATH)
+            print(f"[LUCY] CodeFormer loaded — PHOTO-REAL face restoration ENABLED")
+        else:
+            print(f"[LUCY] codeformer.onnx not found at {_CODEFORMER_PATH} — face restoration DISABLED. "
+                  f"Download from facefusion-assets release.")
+    except Exception as e:
+        _codeformer = None
+        print(f"[LUCY] CodeFormer load failed ({type(e).__name__}: {e}) — face restoration DISABLED")
 
     # GFPGAN v1.4 — face restoration on the swap output (sharpens identity,
     # fixes the inherent softness of inswapper_128). ~333MB, auto-downloads
@@ -645,6 +663,51 @@ def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.nda
     return result
 
 
+def _color_correct_face_hull(swapped: np.ndarray, target: np.ndarray, tgt_face) -> np.ndarray:
+    """LAB-space mean/std transfer using the user's actual face hull
+    (not bbox) as the sample region.
+
+    Sampling from bbox includes background pixels and can shift the chin
+    colour incorrectly. Using the convex hull of the 106 landmarks gives
+    skin-only statistics, so chin / jawline blend into the user's neck.
+
+    Falls back to the bbox-based version if landmarks are missing.
+    """
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 10:
+        return _color_correct_face(swapped, target, tgt_face.bbox)
+
+    h, w = swapped.shape[:2]
+    pts  = lmk.astype(np.int32)
+    hull = cv2.convexHull(pts)
+
+    hull_mask = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(hull_mask, [hull], 255)
+    sel = hull_mask > 128
+    if int(sel.sum()) < 200:
+        return _color_correct_face(swapped, target, tgt_face.bbox)
+
+    sw_lab  = cv2.cvtColor(swapped, cv2.COLOR_BGR2LAB).astype(np.float32)
+    tg_lab  = cv2.cvtColor(target,  cv2.COLOR_BGR2LAB).astype(np.float32)
+
+    out_lab = sw_lab.copy()
+    blends  = (0.65, 0.95, 0.95)   # L moderate, a/b strong (skin tone)
+    for c in range(3):
+        sm, ss = sw_lab[..., c][sel].mean(), sw_lab[..., c][sel].std() + 1e-6
+        tm, ts = tg_lab[..., c][sel].mean(), tg_lab[..., c][sel].std() + 1e-6
+        adjusted = (sw_lab[..., c] - sm) * (ts / ss) + tm
+        out_lab[..., c] = blends[c] * adjusted + (1 - blends[c]) * sw_lab[..., c]
+    out_lab = np.clip(out_lab, 0, 255).astype(np.uint8)
+    out_bgr = cv2.cvtColor(out_lab, cv2.COLOR_LAB2BGR)
+
+    # Only apply colour correction inside a softly-feathered hull so the
+    # rest of the body (neck, hair) stays untouched.
+    alpha = cv2.GaussianBlur(hull_mask, (31, 31), 0).astype(np.float32) / 255.0
+    a3    = alpha[:, :, np.newaxis]
+    return (out_bgr.astype(np.float32) * a3 +
+            swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+
+
 # 106-landmark indices for InsightFace 2d106det:
 #   Mouth outline: 52..71  (20 points around the lips)
 #   L brow:        43..51  (9 points)
@@ -728,9 +791,18 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
     if src_real and tgt_face is not None:
         # Identity transfer (avatar face on user's head/body)
         result = _run_inswapper(src_face, tgt_face, target_img)
-        # LAB skin-tone match — back on. ~10 ms / frame but materially
-        # improves how the swapped face blends into the user's neck/body.
-        result = _color_correct_face(result, target_img, tgt_face.bbox)
+        # LAB skin-tone match across the FULL face hull (not just bbox)
+        # so chin + jawline blend into the user's neck without a seam.
+        result = _color_correct_face_hull(result, target_img, tgt_face)
+        # CodeFormer face restoration — sharpens the soft 128px inswapper
+        # output to user-skin level detail. Keeps identity (weight=0.7).
+        if _codeformer is not None and getattr(tgt_face, "kps", None) is not None:
+            try:
+                result = _codeformer.restore_face(
+                    result, tgt_face.kps, weight=0.7,
+                )
+            except Exception as e:
+                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
         return result, tgt_face
 
     # Cartoon source
