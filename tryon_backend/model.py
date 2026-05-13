@@ -1202,15 +1202,14 @@ class TryOnModel:
                 f"long sleeves following the arms down to the wrists, "
                 f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
-            # Anti-drift negatives. Includes purple/violet because at higher
-            # IP-Adapter scales grey shirts pick up a mauve tint from the
-            # mid-tone bias of the embedding.
+            # Keep negatives minimal — listing specific colours pushes SD
+            # toward complementary colours (purple→green halo). Only call
+            # out structural problems, let the colour-anchor prefill and
+            # IP-Adapter handle the actual colour.
             neg = (
-                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
-                "saturated, oversaturated, tinted, faded, washed out, "
-                "bare arms, t-shirt, tank top, sleeveless, naked, "
-                "floating clothes, shirt on background, shirt outline, "
-                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
+                "bare chest, naked, t-shirt, tank top, sleeveless, "
+                "floating clothes, shirt outline, neon glow, "
+                "deformed body, blurry, low quality, cartoon"
             )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
@@ -1244,9 +1243,13 @@ class TryOnModel:
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            blend_mask = torso_mask.copy()
+            # Hard binary mask, then a 3-px feather. The earlier Gaussian
+            # blur was creating a wide low-alpha halo where SD output got
+            # blended at 30-50%, which is exactly where the green/purple
+            # outline was appearing. Hard cut = no halo.
+            blend_mask = (torso_mask > 0.4).astype(np.float32)
             blend_mask[:face_cutoff_y] = 0.0
-            blend_mask = cv2.GaussianBlur(blend_mask, (5, 5), 0)
+            blend_mask = cv2.GaussianBlur(blend_mask, (3, 3), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
             self._prev_result = composed.copy()
