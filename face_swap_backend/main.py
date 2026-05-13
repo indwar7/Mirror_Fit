@@ -460,20 +460,10 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         expanded = (pts.astype(np.float32) - center) * 1.06 + center
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
-        # Add an upward extension so the paste covers forehead + hairline.
-        # SeamlessClone will then naturally blend the avatar's hair into
-        # this region (this is what gave the good "with hair" result in
-        # earlier versions). Ellipse top-half centred slightly above the
-        # face centroid, ~0.9x face width, ~0.7x face height upward.
-        ext_cy = cy - int(fh * 0.20)
-        ext_rx = int(fw * 0.55)
-        ext_ry = int(fh * 0.70)
-        ext_cy = max(ext_ry + 1, ext_cy)
-        ext_cx = int(np.clip(cx, ext_rx + 1, iw - ext_rx - 1))
-        cv2.ellipse(blend_mask, (ext_cx, ext_cy), (ext_rx, ext_ry),
-                    0, 180, 360, 255, -1)
-        # Tiny smoothing pass on the edges
-        blend_mask = cv2.GaussianBlur(blend_mask, (25, 25), 0)
+        # Tight hull only. Hair-area extension was producing a visible
+        # patch outline. Hair is dropped from scope; this is the clean
+        # face-only mask that gives the best soul-of-the-photo blend.
+        blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
         _, blend_mask = cv2.threshold(blend_mask, 100, 255, cv2.THRESH_BINARY)
         # Centre of mass for Poisson
         M_m = cv2.moments(blend_mask)
@@ -720,6 +710,38 @@ def _color_correct_face_hull(swapped: np.ndarray, target: np.ndarray, tgt_face) 
             swapped.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
 
 
+def _build_face_hull_mask(tgt_face, shape_hw) -> np.ndarray:
+    """Reproduce the SAME hull mask used inside _run_inswapper so other
+    passes (CodeFormer, etc.) can restrict themselves to the exact same
+    boundary. Sharing the boundary is what kills the visible-patch effect:
+    if every pass paints to the same edge, there's only one edge."""
+    h, w = shape_hw
+    mask = np.zeros((h, w), np.uint8)
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 10:
+        # Fallback ellipse — same dims as _run_inswapper fallback
+        x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
+        fw, fh = x2 - x1, y2 - y1
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        oval_cy = max(1, cy - int(fh * 0.08))
+        oval_rx = max(1, int(fw * 0.54))
+        oval_ry = max(1, int(fh * 0.62))
+        oval_cy = int(np.clip(oval_cy, oval_ry + 1, h - oval_ry - 1))
+        ecx     = int(np.clip(cx,      oval_rx + 1, w - oval_rx - 1))
+        cv2.ellipse(mask, (ecx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
+        return mask
+    x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    pts    = lmk.astype(np.int32)
+    center = np.array([cx, cy], dtype=np.float32)
+    expanded = (pts.astype(np.float32) - center) * 1.06 + center
+    hull = cv2.convexHull(expanded.astype(np.int32))
+    cv2.fillPoly(mask, [hull], 255)
+    mask = cv2.GaussianBlur(mask, (15, 15), 0)
+    _, mask = cv2.threshold(mask, 100, 255, cv2.THRESH_BINARY)
+    return mask
+
+
 # 106-landmark indices for InsightFace 2d106det:
 #   Mouth outline: 52..71  (20 points around the lips)
 #   L brow:        43..51  (9 points)
@@ -801,12 +823,23 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         return None, None
 
     if src_real and tgt_face is not None:
-        # Identity transfer (avatar face on user's head/body)
+        # 1. Identity transfer
         result = _run_inswapper(src_face, tgt_face, target_img)
-        # LAB skin-tone match using the bbox region (the proven-good
-        # version from 8de2dc2). Hull match + CodeFormer were producing
-        # ghost edges where their masks overlapped — reverted.
+        # 2. LAB skin-tone match (bbox region, proven 8de2dc2 path)
         result = _color_correct_face(result, target_img, tgt_face.bbox)
+        # 3. CodeFormer face restoration — sharpens the soft 128px
+        # inswapper output so it reads as photo-real skin, not a
+        # patch. Pass the SAME face hull as the inswapper paste so
+        # the restoration boundary cannot show as a separate seam.
+        if _codeformer is not None and getattr(tgt_face, "kps", None) is not None:
+            try:
+                shared_mask = _build_face_hull_mask(tgt_face, result.shape[:2])
+                result = _codeformer.restore_face(
+                    result, tgt_face.kps, weight=0.6,
+                    face_mask=shared_mask,
+                )
+            except Exception as e:
+                print(f"[codeformer] skipped: {type(e).__name__}: {e}")
         return result, tgt_face
 
     # Cartoon source
