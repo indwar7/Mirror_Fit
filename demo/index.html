@@ -643,6 +643,10 @@ header {
 const FACE_API = 'http://13.203.75.149:7860';
 const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
 const SWAP_WS  = 'ws://13.203.75.149:7860/ws/live-swap';
+// Same session_id is sent on both /ws/live-swap and /ws/voice-stream so the
+// server can drive Wav2Lip lip-sync from the rolling pitch-shifted audio.
+const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
+                                + '_' + Date.now().toString(36);
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
@@ -770,6 +774,7 @@ let _vsProcessor  = null;    // ScriptProcessorNode
 let _vsWs         = null;    // WebSocket
 let _vsActive     = false;
 let _vsPlayTime   = 0;       // next scheduled playback start (sec)
+let _vsReconnected = false;  // one-shot guard for the auto-reconnect attempt
 
 function _resetVoiceUI() {
   document.getElementById('voiceBtnLabel').textContent = '🎤 Start Live Voice';
@@ -806,13 +811,7 @@ async function _startStreamingVoice() {
     console.log('[voice] audioCtx state:', _vsCtx.state, _vsPlayCtx.state);
     _vsPlayTime = _vsPlayCtx.currentTime + 0.1;
 
-    _vsWs = new WebSocket(VOICE_WS_URL);
-    _vsWs.binaryType = 'arraybuffer';
-    _vsWs.onopen  = () => {
-      console.log('[voice] ws open');
-      _vsWs.send(JSON.stringify({ type: 'init', avatar_id: _selectedAvatar }));
-    };
-    _vsWs.onmessage = (e) => {
+    const _vsHandleMessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         const pcm = new Float32Array(e.data);
         if (pcm.length === 0) return;
@@ -828,6 +827,13 @@ async function _startStreamingVoice() {
       } else {
         try {
           const m = JSON.parse(e.data);
+          // Keepalive: server pings us every 20s; reply with pong so any
+          // intermediate proxy sees bidirectional traffic. Swallow pongs.
+          if (m.type === 'ping') {
+            try { _vsWs.send(JSON.stringify({ type:'pong', t: m.t })); } catch(_) {}
+            return;
+          }
+          if (m.type === 'pong') return;
           console.log('[voice] ws msg:', m);
           if (m.type === 'ready') {
             const av = _allAvatars.find(a => a.id === _selectedAvatar);
@@ -839,14 +845,49 @@ async function _startStreamingVoice() {
         } catch(_) {}
       }
     };
-    _vsWs.onerror = (err) => {
+    const _vsHandleError = (err) => {
       console.error('[voice] ws error', err);
       setStatus('voiceStatus','error','Voice stream WS error — check console');
     };
-    _vsWs.onclose = (ev) => {
-      console.log('[voice] ws close', ev.code, ev.reason);
-      if (_vsActive) _stopStreamingVoice();
+    const _vsAttach = (sock) => {
+      sock.binaryType = 'arraybuffer';
+      sock.onopen = () => {
+        console.log('[voice] ws open', 'audioCtx=', _vsCtx?.state, 'playCtx=', _vsPlayCtx?.state);
+        sock.send(JSON.stringify({
+          type: 'init',
+          avatar_id:  _selectedAvatar,
+          session_id: LUCY_SESSION_ID,
+        }));
+      };
+      sock.onmessage = _vsHandleMessage;
+      sock.onerror   = _vsHandleError;
+      sock.onclose   = (ev) => {
+        console.log('[voice] ws close', ev.code, ev.reason,
+                    'wasClean=', ev.wasClean,
+                    'audioCtx=', _vsCtx?.state);
+        // Auto-reconnect ONCE if the user didn't intentionally stop —
+        // covers transient ALB/SG/NAT cuts. Mic + audio contexts are still
+        // live; only the socket needs replacing.
+        if (_vsActive && !_vsReconnected) {
+          _vsReconnected = true;
+          console.log('[voice] attempting one reconnect…');
+          setTimeout(() => {
+            if (!_vsActive) return;
+            try {
+              _vsWs = new WebSocket(VOICE_WS_URL);
+              _vsAttach(_vsWs);
+            } catch (e) {
+              console.error('[voice] reconnect failed', e);
+              _stopStreamingVoice();
+            }
+          }, 600);
+          return;
+        }
+        if (_vsActive) _stopStreamingVoice();
+      };
     };
+    _vsWs = new WebSocket(VOICE_WS_URL);
+    _vsAttach(_vsWs);
 
     const source     = _vsCtx.createMediaStreamSource(_vsStream);
     _vsProcessor     = _vsCtx.createScriptProcessor(STREAM_CHUNK, 1, 1);
@@ -881,6 +922,7 @@ async function _startStreamingVoice() {
 
 function _stopStreamingVoice() {
   _vsActive = false;
+  _vsReconnected = false;
   try { if (_vsWs)        _vsWs.close();          } catch(_) {}
   try { if (_vsProcessor) _vsProcessor.disconnect(); } catch(_) {}
   try { if (_vsStream)    _vsStream.getTracks().forEach(t => t.stop()); } catch(_) {}
@@ -981,9 +1023,10 @@ function startLiveSwap() {
   liveWs = new WebSocket(SWAP_WS);
   liveWs.onopen = () => {
     setDot('ls',true);
+    const baseInit = { type:'init', session_id: LUCY_SESSION_ID };
     const initMsg = (liveSource&&liveSource.avatar_id)
-      ? {type:'init',avatar_id:liveSource.avatar_id}
-      : {type:'init',source_image:liveSource};
+      ? Object.assign(baseInit, { avatar_id: liveSource.avatar_id })
+      : Object.assign(baseInit, { source_image: liveSource });
     liveWs.send(JSON.stringify(initMsg));
     document.getElementById('liveSwapBtn').textContent='⏹ Stop';
     document.getElementById('liveSwapBtn').className='btn btn-stop';
@@ -991,6 +1034,12 @@ function startLiveSwap() {
   };
   liveWs.onmessage = e => {
     const msg=JSON.parse(e.data);
+    // Keepalive — reply to server pings; ignore pongs.
+    if (msg.type==='ping') {
+      try { liveWs.send(JSON.stringify({type:'pong', t: msg.t})); } catch(_) {}
+      return;
+    }
+    if (msg.type==='pong') return;
     if (msg.type==='ready') {
       setStatus('liveStatus','success','Live swap active');
       _startLsRender(); _startLsTimer(); sendLiveFrame();

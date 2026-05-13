@@ -123,18 +123,22 @@ def transfer_hair(
     tgt_bgr: np.ndarray,
     tgt_hair_mask: np.ndarray,
     tgt_face_kps: np.ndarray,
+    tgt_face_exclusion_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Warp the avatar's hair onto the target image using a face-aligned
     affine and clip with the target's own hair silhouette.
 
-    The trick that keeps this from looking pasted:
-      1. Affine src->tgt is computed from 5 face keypoints — hair pixels
-         that are close to the face keypoints land cleanly on target.
-      2. We then AND the warped hair mask with the TARGET hair mask so
-         only the area where the user actually has hair gets replaced.
-         The avatar's hair pixels far above the head are clipped off
-         instead of floating in the background.
-      3. Soft Gaussian on the combined mask gives a feathered edge.
+    Pipeline:
+      1. Affine src->tgt from 5 face keypoints — anchors the warp to the
+         user's actual face geometry.
+      2. Combined mask = (warped avatar hair) ∪ (user hair), intersected
+         with a generously-dilated user-hair region (no floating blocks).
+      3. SUBTRACT tgt_face_exclusion_mask (the user's face convex hull,
+         slightly dilated) from the combined mask. This is what stops
+         the avatar's forehead/cheek pixels from bleeding over the
+         inswapper face — hair only paints ABOVE the eyebrow line and
+         OUTSIDE the face oval.
+      4. Feathered Gaussian alpha for a soft edge.
     """
     th, tw = tgt_bgr.shape[:2]
 
@@ -145,7 +149,6 @@ def transfer_hair(
     if M is None:
         return tgt_bgr
 
-    # Warp the avatar's full image + its hair mask onto target geometry
     src_warp = cv2.warpAffine(
         src_bgr, M, (tw, th),
         flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
@@ -155,25 +158,31 @@ def transfer_hair(
         flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
 
-    # Combine: dilate target hair generously so longer avatar hair can show
-    # outside the user's current hairline (otherwise short user hair would
-    # always clip the avatar's longer hair invisibly).
-    tgt_dil = cv2.dilate(tgt_hair_mask, np.ones((15, 15), np.uint8), iterations=2)
-    # Use UNION of (warped avatar hair) and (user hair) so the avatar's
-    # full hair shape carries over, but only where ONE of them has hair —
-    # never extends into clear background.
+    # Use the UNION of warped avatar hair and user hair as the paint area.
+    # We don't intersect with a dilated user-hair-only region because that
+    # collapses to ~user-hair when avatar and user hair shapes are similar
+    # (the visible-color-change problem on Lucas-like avatars).
     combined = cv2.bitwise_or(mask_warp, tgt_hair_mask)
-    # Then intersect with the dilated user-hair region to avoid floating
-    # blocks far from the user's head.
-    combined = cv2.bitwise_and(combined, tgt_dil)
 
-    if int(combined.sum()) < 500:
+    # Hard-exclude the user's face region — prevents forehead bleed.
+    if tgt_face_exclusion_mask is not None:
+        if tgt_face_exclusion_mask.shape[:2] != (th, tw):
+            tgt_face_exclusion_mask = cv2.resize(
+                tgt_face_exclusion_mask, (tw, th), interpolation=cv2.INTER_NEAREST
+            )
+        combined = cv2.bitwise_and(combined, cv2.bitwise_not(tgt_face_exclusion_mask))
+
+    n_pix = int(combined.sum() // 255)
+    if n_pix < 500:
+        print(f"[hair] skip: combined too small ({n_pix} px)")
         return tgt_bgr
 
-    # Stronger alpha — keep the center fully opaque so the colour change
-    # is actually visible, only feather the last few pixels at the edge.
+    # Diagnostic so we can see at a glance whether hair is actually painting
+    print(f"[hair] paint: combined={n_pix}px  warp={int(mask_warp.sum()//255)}px  "
+          f"tgt={int(tgt_hair_mask.sum()//255)}px  excl="
+          f"{0 if tgt_face_exclusion_mask is None else int(tgt_face_exclusion_mask.sum()//255)}px")
+
     alpha = cv2.GaussianBlur(combined, (15, 15), 0).astype(np.float32) / 255.0
-    # Boost mid-range alpha (anywhere mask was >50%) toward 1.0
     alpha = np.clip(alpha * 1.4, 0.0, 1.0)
     a3    = alpha[:, :, np.newaxis]
     out   = (src_warp.astype(np.float32) * a3 +

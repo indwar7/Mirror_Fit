@@ -9,6 +9,7 @@ import base64
 import io
 import json
 import os
+import time
 import contextlib
 import pathlib
 from typing import Optional
@@ -20,6 +21,11 @@ import soundfile as sf
 import librosa
 
 from insightface.app import FaceAnalysis
+
+try:
+    from face_parser import transfer_hair
+except Exception:
+    transfer_hair = None  # face_parser module unavailable — hair pass becomes a no-op
 
 from fastapi import (
     FastAPI, File, Form, HTTPException, Response,
@@ -102,6 +108,61 @@ _wav2lip                              = None   # Wav2LipONNX for audio-driven li
 _WAV2LIP_PATH                          = str(_HERE / "models" / "models" / "wav2lip_gan.onnx")
 _face_parser                          = None   # BiSeNet face-parser ONNX for hair swap (optional)
 _FACE_PARSER_PATH                      = str(_HERE / "models" / "models" / "face_parser.onnx")
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cross-WebSocket session state
+#
+#  The /ws/live-swap and /ws/voice-stream sockets are independent FastAPI
+#  endpoints, but they belong to the same demo session. To run Wav2Lip in
+#  real time we need to share two things between them:
+#    • the pitch-shifted audio (produced by voice-stream) — read by the
+#      swap loop to drive Wav2Lip
+#    • the latest swapped face frame + bbox (produced by live-swap) — used
+#      if we ever want to push lip-synced frames from the voice side
+#
+#  Both clients send `session_id` in their init payload (fall back to
+#  avatar_id). Keyed lookup in this dict glues them together.
+#
+#  The session struct is intentionally a plain dict — no classes — so it's
+#  trivial to GC when both sockets disconnect.
+# ─────────────────────────────────────────────────────────────────────────────
+_SESSIONS: dict[str, dict] = {}
+_SESSIONS_LOCK = asyncio.Lock()
+# Rolling pitch-shifted audio buffer length (samples @ 16kHz). 800 ms gives
+# Wav2Lip enough mel context for stable mouth shapes while keeping the
+# audio→video lag well under the 400 ms target.
+_LIPSYNC_BUFFER_SEC = 0.8
+_LIPSYNC_BUFFER_SAMPLES = int(_LIPSYNC_BUFFER_SEC * 16000)
+
+
+async def _get_session(session_id: str) -> dict:
+    """Return (creating if needed) the session struct for `session_id`."""
+    async with _SESSIONS_LOCK:
+        s = _SESSIONS.get(session_id)
+        if s is None:
+            s = {
+                "audio_buf":      np.zeros(0, dtype=np.float32),
+                "audio_t_ms":     0,             # cumulative pitch-shifted audio output time
+                "last_frame":     None,          # most recent swapped frame BGR np.uint8
+                "last_face":      None,          # most recent tgt_face object
+                "lipsync_every":  2,             # run Wav2Lip every Nth swap frame
+                "frame_counter":  0,
+            }
+            _SESSIONS[session_id] = s
+        return s
+
+
+async def _release_session(session_id: str, key: str) -> None:
+    """Drop a session entry once both endpoints have released their hold."""
+    async with _SESSIONS_LOCK:
+        s = _SESSIONS.get(session_id)
+        if s is None:
+            return
+        s.pop(key, None)
+        # Only GC when neither endpoint is actively touching the session.
+        # We use sentinel keys "live_active" / "voice_active" — see endpoints.
+        if not s.get("live_active") and not s.get("voice_active"):
+            _SESSIONS.pop(session_id, None)
 
 
 def _load_models() -> None:
@@ -589,13 +650,17 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
     Fast live swap with cached src_detection.
     Real faces: inswapper + color correction + feathered boundary.
     Cartoon:    geometric warp.
+
+    Returns (result_img, tgt_face) — tgt_face is None for cartoon path or
+    when no face was detected. Caller can use tgt_face for downstream
+    operations (hair transfer, lip sync) without re-detecting.
     """
     src_face, src_kps, src_bbox, src_real = src_detection
     # Use the stripped-down detector for per-frame target — ~3x faster
     tgt_faces = _face_app_fast.get(target_img)
     tgt_face  = _largest_face(tgt_faces)
     if src_face is None or tgt_face is None:
-        return None
+        return None, None
 
     if src_real and tgt_face is not None:
         # Identity transfer (avatar face on user's head/body)
@@ -603,11 +668,11 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         # LAB skin-tone match — back on. ~10 ms / frame but materially
         # improves how the swapped face blends into the user's neck/body.
         result = _color_correct_face(result, target_img, tgt_face.bbox)
-        return result
+        return result, tgt_face
 
     # Cartoon source
-    try: return _swap_geometric(src_img, target_img)
-    except: return None
+    try: return _swap_geometric(src_img, target_img), tgt_face
+    except: return None, None
 
 
 def _do_swap(src_img: np.ndarray, frame: np.ndarray) -> Optional[np.ndarray]:
@@ -980,6 +1045,99 @@ async def lipsync_generate(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  WebSocket — shared keepalive
+#
+#  Long-lived WebSocket connections die in the wild from three places:
+#    • AWS Security Group / ALB idle timeout (default 60s for idle TCP)
+#    • Mobile NAT timers (often ~30s for idle UDP-mapped flows; WS over TLS
+#      keeps it alive but cleartext WS can still get scavenged)
+#    • Corporate proxies
+#  The fix is a server-side keepalive: send a tiny JSON `ping` every 20s so
+#  there's always recent traffic. The clients are configured to ignore the
+#  ping (or echo it as `pong`) — see demo/index.html.
+#
+#  AWS NOTE — for production this app needs the EC2 Security Group on
+#  port 7860 to allow inbound `TCP, custom, 0.0.0.0/0`. The /ws/voice-stream
+#  endpoint shares the port with HTTP traffic, so once HTTP works the WS
+#  upgrade works too — but make sure no idle-connection scrubber is in
+#  front of the instance (e.g. NLB with short idle timeout).
+# ─────────────────────────────────────────────────────────────────────────────
+WS_KEEPALIVE_SEC = 20
+
+
+async def _ws_keepalive(ws: WebSocket, every: float = WS_KEEPALIVE_SEC):
+    """Send a periodic `{"type":"ping"}` so idle scrubbers don't close us.
+
+    Returns when the socket disconnects or the task is cancelled. Errors are
+    swallowed silently — keepalive must never crash a session.
+    """
+    try:
+        while True:
+            await asyncio.sleep(every)
+            try:
+                await ws.send_text(json.dumps({"type": "ping", "t": int(time.time() * 1000)}))
+            except Exception:
+                # Socket closed/closing — bail out cleanly
+                return
+    except asyncio.CancelledError:
+        return
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Wav2Lip streaming — one-frame inference driven by the rolling audio buffer
+# ─────────────────────────────────────────────────────────────────────────────
+def _lipsync_one_frame(face_bgr: np.ndarray,
+                       face_bbox: tuple,
+                       audio_pcm: np.ndarray,
+                       audio_sr: int = 16000) -> Optional[np.ndarray]:
+    """Run a single Wav2Lip inference on `face_bgr` with the most recent mel
+    window from `audio_pcm`. Composites the mouth back into the full frame.
+
+    Returns the composited frame, or None if Wav2Lip is not loaded / the
+    audio buffer is empty.
+    """
+    if _wav2lip is None or audio_pcm is None or audio_pcm.size == 0:
+        return None
+    try:
+        from wav2lip import _build_mel, MEL_WINDOW, TARGET_PX
+    except Exception:
+        return None
+
+    H, W = face_bgr.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in face_bbox)
+    fw, fh = x2 - x1, y2 - y1
+    pad = int(0.20 * max(fw, fh))
+    x1c, y1c = max(0, x1 - pad), max(0, y1 - pad)
+    x2c, y2c = min(W,  x2 + pad), min(H, y2 + pad)
+    crop = face_bgr[y1c:y2c, x1c:x2c]
+    if crop.size == 0:
+        return None
+    crop_h, crop_w = crop.shape[:2]
+    face96 = cv2.resize(crop, (TARGET_PX, TARGET_PX), interpolation=cv2.INTER_LINEAR)
+
+    mel = _build_mel(audio_pcm.astype(np.float32), sr=audio_sr)   # (80, T)
+    if mel.shape[1] < MEL_WINDOW:
+        # Pad the mel on the left so we can sample a full window
+        pad_left = MEL_WINDOW - mel.shape[1]
+        mel = np.pad(mel, ((0, 0), (pad_left, 0)), mode="edge")
+    # Take the most recent mel window — this is what the user is hearing
+    # *now*, so the mouth will match the audio with minimal lag.
+    chunk = mel[:, -MEL_WINDOW:]
+
+    mouth = _wav2lip._infer(face96, chunk)
+    mouth_big = cv2.resize(mouth, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+    # Feathered vertical mask — replace lower half, blend along midline
+    alpha = np.zeros((crop_h, crop_w), dtype=np.float32)
+    alpha[crop_h // 2:, :] = 1.0
+    alpha = cv2.GaussianBlur(alpha, (51, 51), 0)[:, :, np.newaxis]
+    blended = (mouth_big.astype(np.float32) * alpha +
+               crop.astype(np.float32) * (1.0 - alpha)).astype(np.uint8)
+    out = face_bgr.copy()
+    out[y1c:y2c, x1c:x2c] = blended
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  WebSocket — live face swap
 # ─────────────────────────────────────────────────────────────────────────────
 @app.websocket("/ws/live-swap")
@@ -991,18 +1149,41 @@ async def ws_live_swap(ws: WebSocket):
     src_hair_mask = None   # BiSeNet hair mask of source (cached per session)
     processing    = False
     loop          = asyncio.get_event_loop()
+    # Target hair mask is recomputed every N frames — BiSeNet @ 512 is ~30ms
+    # on A10G, too expensive to run per frame at 6+ fps with everything else.
+    tgt_hair_cache       = None
+    tgt_hair_cache_ttl   = 0
+    HAIR_REFRESH_FRAMES  = 4
+    # Cross-WS state (shared with /ws/voice-stream via session_id) — set on init
+    session_id    = None
+    session       = None
+    frame_counter = 0
+    # Wav2Lip runs every Nth swap frame so the pipeline still hits 6+ fps.
+    LIPSYNC_EVERY = 2
 
     async def send(obj):
         await ws.send_text(json.dumps(obj))
 
+    keepalive_task = asyncio.create_task(_ws_keepalive(ws))
     try:
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
+            mtype = msg.get("type")
 
-            if msg["type"] == "init":
+            # Connection-liveness messages — keep the socket warm without
+            # interrupting the swap pipeline.
+            if mtype in ("ping", "pong"):
+                if mtype == "ping":
+                    with contextlib.suppress(Exception):
+                        await send({"type": "pong", "t": msg.get("t")})
+                continue
+
+            if mtype == "init":
+                av_id_for_session = None
                 if "avatar_id" in msg:
                     av_id      = msg["avatar_id"]
+                    av_id_for_session = av_id
                     cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
                     if av_id not in _AVATAR_MAP:
                         await send({"type":"error","message":"Unknown avatar"})
@@ -1015,6 +1196,14 @@ async def ws_live_swap(ws: WebSocket):
                 else:
                     img_bytes = base64.b64decode(msg["source_image"])
                     src_img   = await loop.run_in_executor(None, _decode_image, img_bytes)
+
+                # Optional cross-WS session key for Wav2Lip lip-sync. Client
+                # sends the same `session_id` on /ws/voice-stream so the two
+                # endpoints can share the rolling pitch-shifted audio buffer.
+                session_id = msg.get("session_id") or av_id_for_session
+                if session_id:
+                    session = await _get_session(session_id)
+                    session["live_active"] = True
 
                 # Cache source face detection once — never re-run per frame
                 src_detection = await loop.run_in_executor(None, _detect, src_img)
@@ -1031,9 +1220,9 @@ async def ws_live_swap(ws: WebSocket):
                             )
                         except Exception:
                             src_hair_mask = None
-                    await send({"type":"ready"})
+                    await send({"type":"ready", "session_id": session_id})
 
-            elif msg["type"] == "frame":
+            elif mtype == "frame":
                 if src_img is None:
                     await send({"type":"error","message":"Send init first"})
                     continue
@@ -1045,18 +1234,101 @@ async def ws_live_swap(ws: WebSocket):
                 try:
                     frame_bytes = base64.b64decode(msg["image"])
                     frame  = await loop.run_in_executor(None, _decode_image, frame_bytes)
-                    # Hair transfer disabled in the live loop — the warped
-                    # avatar forehead was bleeding over the inswapper face
-                    # region. Will re-enable with proper face-exclusion masks
-                    # next session.
-                    result = await loop.run_in_executor(
+                    result, tgt_face = await loop.run_in_executor(
                         None, _swap_live, src_img, src_detection, frame
                     )
                     if result is None:
                         await send({"type":"no_face"})
                     else:
+                        # Hair transfer — only when BiSeNet is loaded, the
+                        # source hair mask was computed at init, and we got a
+                        # real tgt_face back (so we have landmarks for the
+                        # face-exclusion hull). Refreshes the target hair mask
+                        # every HAIR_REFRESH_FRAMES frames to stay under the
+                        # per-frame budget.
+                        if (_face_parser is not None
+                                and transfer_hair is not None
+                                and src_hair_mask is not None
+                                and tgt_face is not None
+                                and getattr(tgt_face, "kps", None) is not None
+                                and getattr(src_detection[0], "kps", None) is not None):
+                            try:
+                                if tgt_hair_cache is None or tgt_hair_cache_ttl <= 0:
+                                    tgt_hair_cache = await loop.run_in_executor(
+                                        None, _face_parser.hair_mask, frame
+                                    )
+                                    tgt_hair_cache_ttl = HAIR_REFRESH_FRAMES
+                                else:
+                                    tgt_hair_cache_ttl -= 1
+
+                                # Build a face-exclusion mask from the user's
+                                # 106 landmarks — convex hull, slightly dilated.
+                                # Hair must NEVER paint inside this region.
+                                lmk = getattr(tgt_face, "landmark_2d_106", None)
+                                excl_mask = None
+                                if lmk is not None and len(lmk) > 10:
+                                    fh, fw = result.shape[:2]
+                                    excl = np.zeros((fh, fw), np.uint8)
+                                    pts  = lmk.astype(np.int32)
+                                    fc   = pts.mean(axis=0).astype(np.float32)
+                                    expanded = (pts.astype(np.float32) - fc) * 1.10 + fc
+                                    hull = cv2.convexHull(expanded.astype(np.int32))
+                                    cv2.fillPoly(excl, [hull], 255)
+                                    excl = cv2.dilate(excl, np.ones((9, 9), np.uint8), iterations=1)
+                                    excl_mask = excl
+
+                                result = await loop.run_in_executor(
+                                    None,
+                                    lambda: transfer_hair(
+                                        src_img,
+                                        src_hair_mask,
+                                        src_detection[0].kps,
+                                        result,
+                                        tgt_hair_cache,
+                                        tgt_face.kps,
+                                        excl_mask,
+                                    ),
+                                )
+                            except Exception as e:
+                                # Never let a hair-pass error break the swap.
+                                print(f"[hair] transfer skipped: {type(e).__name__}: {e}")
+
+                        # ── Wav2Lip mouth pass ─────────────────────────────
+                        # Drives the avatar mouth from the rolling pitch-
+                        # shifted audio buffer maintained by /ws/voice-stream.
+                        # Runs every LIPSYNC_EVERY-th frame to keep ≥6 fps.
+                        frame_counter += 1
+                        if (_wav2lip is not None
+                                and session is not None
+                                and tgt_face is not None
+                                and (frame_counter % LIPSYNC_EVERY) == 0):
+                            audio_buf = session.get("audio_buf")
+                            if audio_buf is not None and audio_buf.size > 0:
+                                try:
+                                    bbox = tuple(int(v) for v in tgt_face.bbox)
+                                    lipsynced = await loop.run_in_executor(
+                                        None,
+                                        _lipsync_one_frame,
+                                        result, bbox, audio_buf, 16000,
+                                    )
+                                    if lipsynced is not None:
+                                        result = lipsynced
+                                except Exception as e:
+                                    print(f"[lipsync] skipped: {type(e).__name__}: {e}")
+
+                        # Stash the latest swap+lipsync result so a future
+                        # voice-side push (or another consumer) can read it.
+                        if session is not None:
+                            session["last_frame"] = result
+                            session["last_face"]  = tgt_face
+
                         _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 92])
-                        await send({"type":"result","image": base64.b64encode(buf).decode()})
+                        # `audio_t_ms` lets the client align playback if it
+                        # wants — for now it just sees the latest frame.
+                        payload = {"type":"result","image": base64.b64encode(buf).decode()}
+                        if session is not None:
+                            payload["audio_t_ms"] = session.get("audio_t_ms", 0)
+                        await send(payload)
                 finally:
                     processing = False
 
@@ -1065,6 +1337,14 @@ async def ws_live_swap(ws: WebSocket):
     except Exception as e:
         with contextlib.suppress(Exception):
             await send({"type":"error","message":str(e)})
+    finally:
+        keepalive_task.cancel()
+        with contextlib.suppress(Exception):
+            await keepalive_task
+        if session is not None and session_id:
+            session["live_active"] = False
+            with contextlib.suppress(Exception):
+                await _release_session(session_id, "live_active")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1076,9 +1356,14 @@ async def ws_voice_stream(ws: WebSocket):
     Real-time voice transform.
 
     Client → server (text init):
-        {"type":"init", "avatar_id":"gen_f_01"}
+        {"type":"init", "avatar_id":"gen_f_01", "session_id":"<optional>"}
+        — `session_id` lets us share state with /ws/live-swap so Wav2Lip
+          can lip-sync the swap frames to the pitch-shifted audio.
+          Falls back to `avatar_id` if not supplied.
+    Client → server (text ping/pong):
+        {"type":"ping"} / {"type":"pong"}
     Client → server (binary):
-        Float32 PCM @ 16 kHz mono, ~500 ms chunks
+        Float32 PCM @ 16 kHz mono, ~256 ms chunks
 
     Server → client:
         Float32 PCM @ 16 kHz mono — same chunk pitch-shifted to the avatar
@@ -1086,9 +1371,11 @@ async def ws_voice_stream(ws: WebSocket):
     """
     await ws.accept()
     avatar_id   = None
+    session_id  = None
     semitones   = 0
     sr_in       = 16000   # client sends 16 kHz; if not, we resample
     loop        = asyncio.get_event_loop()
+    session     = None
 
     async def _shift(pcm: np.ndarray) -> np.ndarray:
         if semitones == 0 or pcm.size == 0:
@@ -1097,6 +1384,7 @@ async def ws_voice_stream(ws: WebSocket):
         return librosa.effects.pitch_shift(pcm.astype(np.float32),
                                            sr=sr_in, n_steps=semitones)
 
+    keepalive_task = asyncio.create_task(_ws_keepalive(ws))
     try:
         while True:
             msg = await ws.receive()
@@ -1111,18 +1399,30 @@ async def ws_voice_stream(ws: WebSocket):
                 except Exception:
                     await ws.send_text(json.dumps({"type":"error","message":"bad json"}))
                     continue
-                if payload.get("type") == "init":
-                    avatar_id = payload.get("avatar_id")
+                ptype = payload.get("type")
+                # Keepalive: reply to client pings, ignore pongs.
+                if ptype in ("ping", "pong"):
+                    if ptype == "ping":
+                        with contextlib.suppress(Exception):
+                            await ws.send_text(json.dumps({"type": "pong", "t": payload.get("t")}))
+                    continue
+                if ptype == "init":
+                    avatar_id  = payload.get("avatar_id")
+                    session_id = payload.get("session_id") or avatar_id
                     if avatar_id and avatar_id in _AVATAR_MAP:
                         # Match longest voice-fx prefix
                         for prefix in sorted(_VOICE_FX.keys(), key=len, reverse=True):
                             if avatar_id.startswith(prefix):
                                 semitones = _VOICE_FX[prefix]["semitones"]
                                 break
+                    if session_id:
+                        session = await _get_session(session_id)
+                        session["voice_active"] = True
                     await ws.send_text(json.dumps({
                         "type": "ready",
                         "semitones": semitones,
                         "sample_rate": sr_in,
+                        "session_id": session_id,
                     }))
                 continue
 
@@ -1138,6 +1438,19 @@ async def ws_voice_stream(ws: WebSocket):
                 with contextlib.suppress(Exception):
                     await ws.send_text(json.dumps({"type":"error","message":str(e)}))
                 continue
+
+            # Append to the per-session rolling buffer so the live-swap loop
+            # can read recent pitch-shifted audio to drive Wav2Lip. Keep the
+            # last _LIPSYNC_BUFFER_SAMPLES samples; older audio is irrelevant
+            # for lip-sync because Wav2Lip only attends to ~640 ms of context.
+            if session is not None:
+                buf = session["audio_buf"]
+                new = np.concatenate([buf, shifted.astype(np.float32)])
+                if new.size > _LIPSYNC_BUFFER_SAMPLES:
+                    new = new[-_LIPSYNC_BUFFER_SAMPLES:]
+                session["audio_buf"]  = new
+                session["audio_t_ms"] = session.get("audio_t_ms", 0) + int(1000 * shifted.size / sr_in)
+
             await ws.send_bytes(shifted.astype(np.float32).tobytes())
 
     except WebSocketDisconnect:
@@ -1145,6 +1458,14 @@ async def ws_voice_stream(ws: WebSocket):
     except Exception:
         # Don't crash the server on per-session errors
         pass
+    finally:
+        keepalive_task.cancel()
+        with contextlib.suppress(Exception):
+            await keepalive_task
+        if session is not None and session_id:
+            session["voice_active"] = False
+            with contextlib.suppress(Exception):
+                await _release_session(session_id, "voice_active")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
