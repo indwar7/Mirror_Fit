@@ -53,12 +53,16 @@ LIGHTNING_UNET = MODEL_ROOT / "sdxl_lightning_4step_unet.safetensors"
 def _load_pipeline():
     import torch
     from diffusers import (
-        StableDiffusionXLControlNetPipeline,
         ControlNetModel,
         EulerDiscreteScheduler,
         UNet2DConditionModel,
     )
     from huggingface_hub import hf_hub_download
+    # Use InstantID's CUSTOM pipeline class (vendored next to this file).
+    # Standard StableDiffusionXLControlNetPipeline does not have
+    # `load_ip_adapter_instantid`, which is the method that loads
+    # InstantID's per-token face projection + IP-Adapter cross-attention.
+    from pipeline_stable_diffusion_xl_instantid import StableDiffusionXLInstantIDPipeline
 
     if not ANTELOPE_DIR.exists():
         raise FileNotFoundError(
@@ -98,8 +102,8 @@ def _load_pipeline():
         torch_dtype=torch.float16,
     )
 
-    log.info("[InstantID] assembling pipeline")
-    pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
+    log.info("[InstantID] assembling pipeline (InstantID custom class)")
+    pipe = StableDiffusionXLInstantIDPipeline.from_pretrained(
         base_repo,
         controlnet=controlnet,
         unet=unet,
