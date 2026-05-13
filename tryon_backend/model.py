@@ -415,11 +415,13 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        # IP-Adapter scale 1.0 with guidance_scale=1.0 (LCM): IP-Adapter
-        # provides the garment colour/texture reference, the body-silhouette
-        # mask provides the shape, the prompt provides the jacket structure.
-        # Higher IP scales collapse the inpaint into a flat colour blob.
-        self.pipeline.set_ip_adapter_scale(1.0)
+        # IP-Adapter scale 1.6: the inpaint path uses CFG=1.5 which dilutes
+        # the garment signal, so we push the IP scale up to keep the
+        # garment's actual colour/texture from being overwritten by SD's
+        # priors (which otherwise drift toward whatever colour the original
+        # t-shirt was). 1.6 still keeps real garment structure; 2.0+ would
+        # collapse to a flat colour blob.
+        self.pipeline.set_ip_adapter_scale(1.6)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -1135,14 +1137,19 @@ class TryOnModel:
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
             prompt = (
-                f"photo of a person wearing a fitted {color} jacket, "
-                f"the jacket fits naturally on the body, visible collar, "
-                f"front zipper, sleeves following the arms, "
+                f"photo of a person wearing a fitted {color} shirt, "
+                f"the shirt is {color} coloured, {color} fabric, "
+                f"the shirt fits naturally on the body, visible collar, "
+                f"sleeves following the arms, "
                 f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
+            # Explicit anti-colour-bleed: the original t-shirt colour tends
+            # to leak through the inpaint when IP-Adapter is mid-strength,
+            # so we negate the common drift colours.
             neg = (
-                "wrong color, faded, washed out, bare arms, t-shirt, tank top, "
-                "sleeveless, naked, floating clothes, jacket on background, "
+                "wrong color, brown, dark brown, beige, tan, faded, washed out, "
+                "different colour from reference, bare arms, t-shirt, tank top, "
+                "sleeveless, naked, floating clothes, shirt on background, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
             # LCM-distilled UNet prefers guidance≈1.0, but the diffusers
