@@ -38,6 +38,11 @@ TRT_ENGINE_PATH           = os.environ.get("TRT_ENGINE_PATH", "")
 ANIMATEDIFF_ADAPTER_PATH  = os.environ.get("ANIMATEDIFF_ADAPTER_PATH", "")
 VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 
+# When set, skips every AI tier and always uses the geometric warp.
+# Used when the user prefers a fast, stable, predictable overlay over
+# AI-quality (which on this stack tends to drift in colour/structure).
+TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "1") == "1"
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -690,6 +695,11 @@ class TryOnModel:
         if garment is None:
             return person_image
 
+        # Geometric override: skip every AI tier when the operator wants
+        # the deterministic, lag-free overlay (TRYON_FORCE_GEOMETRIC=1).
+        if TRYON_FORCE_GEOMETRIC:
+            return self._infer_live_geometric(person_image)
+
         if self._trt is not None:
             return self._infer_catvton(person_image.resize((OUTPUT_W, OUTPUT_H)),
                                         garment.resize((OUTPUT_W, OUTPUT_H)),
@@ -741,12 +751,17 @@ class TryOnModel:
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
-            # Jacket top = just below chin, shoulder-width placement
-            top         = fy + fh - int(fh * 0.05)
-            bottom      = min(H, top + int(fh * 2.8))
-            left        = max(0, cx - int(fw * 1.4))
-            right       = min(W, cx + int(fw * 1.4))
-            face_bottom = fy + fh + int(fh * 0.08)
+            # Shirt top = just below the chin (≈18% face-height neck gap)
+            # so the collar lands on the neck, not on the jaw. Width = 2× the
+            # face width — that's roughly shoulder span for a forward-facing
+            # subject.
+            top         = fy + fh + int(fh * 0.18)
+            bottom      = min(H, top + int(fh * 3.2))
+            left        = max(0, cx - int(fw * 1.55))
+            right       = min(W, cx + int(fw * 1.55))
+            # face_bottom = the row above which the original frame is kept
+            # untouched (so the face never gets overwritten by the shirt).
+            face_bottom = fy + fh + int(fh * 0.12)
         else:
             top = int(H * 0.32); bottom = int(H * 0.88)
             left = int(W * 0.10); right = int(W * 0.90)
@@ -756,18 +771,16 @@ class TryOnModel:
         th = max(1, bottom - top)
         tw = max(1, right  - left)
 
-        # ── Garment crop — strip sleeves ──────────────────────────────────────
-        gH, gW = np.array(garment).shape[:2]
-        cl = int(gW * 0.15); cr = int(gW * 0.85)
-        g_crop = garment.crop((cl, 0, cr, gH))
-        shirt  = np.array(g_crop.resize((tw, th), Image.LANCZOS))
+        # ── Garment — keep the full image so the collar + shoulder seams
+        # land on the right anatomical spots. Sleeves get masked off by the
+        # body-silhouette anyway, so cropping them out here was costing us
+        # the collar.
+        shirt = np.array(garment.resize((tw, th), Image.LANCZOS))
 
         # ── Alpha mask ────────────────────────────────────────────────────────
         if self._garment_alpha is not None:
-            alpha_pil  = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
-            aw, ah     = alpha_pil.size
-            alpha_crop = alpha_pil.crop((int(aw*0.15), 0, int(aw*0.85), ah))
-            alpha = np.array(alpha_crop.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
+            alpha_pil = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
+            alpha = np.array(alpha_pil.resize((tw, th), Image.LANCZOS)).astype(np.float32) / 255.0
         else:
             g_gray = cv2.cvtColor(shirt, cv2.COLOR_RGB2GRAY)
             _, bg  = cv2.threshold(g_gray, 240, 255, cv2.THRESH_BINARY)
