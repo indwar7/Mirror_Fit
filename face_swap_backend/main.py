@@ -168,7 +168,18 @@ async def _release_session(session_id: str, key: str) -> None:
 
 
 def _load_models() -> None:
-    """Load InsightFace FaceAnalysis, inswapper (+ emap), and Haar cascade."""
+    """Load InsightFace FaceAnalysis, inswapper (+ emap), and Haar cascade.
+
+    Honors LUCY_MINIMAL_MODE=1 env var: when set, skips ALL GPU model loads
+    (inswapper, BiSeNet, Wav2Lip, CodeFormer, GFPGAN, FaceAnalysis). Only
+    voice WS (CPU librosa pitch-shift) + demo HTML + avatar serving stay
+    alive. This frees ~3-4 GB GPU so InstantID (port 7861) can use the
+    full 24 GB on A10G.
+    """
+    if os.environ.get("LUCY_MINIMAL_MODE") == "1":
+        print("[LUCY] MINIMAL_MODE=1 — skipping GPU model loads. "
+              "Voice WS + demo HTML + avatar serving only.")
+        return
     global _face_app, _face_app_fast, _inswapper, _inswap_emap, _haar_cascade
 
     # Full pipeline (detection + landmarks + ArcFace + gender/age) — used ONCE
