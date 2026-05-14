@@ -240,7 +240,7 @@ class TryOnModel:
     def _load_tier1(self):
         from diffusers import AutoencoderKL, DDIMScheduler
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zheng-chong/CatVTON"
+        base = "zhengchong/CatVTON"
         self._vae = AutoencoderKL.from_pretrained(base, subfolder="vae", torch_dtype=self.dtype).to(self.device)
         self._vae.requires_grad_(False)
         tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
@@ -256,13 +256,13 @@ class TryOnModel:
     def _load_tier2(self):
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zheng-chong/CatVTON"
+        base = "zhengchong/CatVTON"
 
         # VTON_LORA_CHECKPOINT can be either:
         #   (a) A full UNet directory (config.json + diffusion_pytorch_model.safetensors)
         #       → load as a complete model.
         #   (b) A PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors)
-        #       → load base UNet from zheng-chong/CatVTON, attach LoRA on top.
+        #       → load base UNet from zhengchong/CatVTON, attach LoRA on top.
         # Our Kaggle training notebook produces (b).
         ckpt_path = Path(VTON_LORA_CHECKPOINT)
         is_peft_adapter = (ckpt_path / "adapter_config.json").exists()
@@ -302,7 +302,7 @@ class TryOnModel:
 
     def _load_catvton_direct(self):
         """
-        Load CatVTON (zheng-chong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
+        Load CatVTON (zhengchong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
         The UNet expects 12-channel input: [noise(4), person_lat(4), garment_lat(4)].
         Single DDIM step at inference time → ~1-2 s/frame on A10G, GPU-quality try-on.
 
@@ -319,7 +319,7 @@ class TryOnModel:
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
-        base = "zheng-chong/CatVTON"
+        base = "zhengchong/CatVTON"
         log.info(f"Loading CatVTON model from {base} …")
 
         self._vae = AutoencoderKL.from_pretrained(
@@ -423,7 +423,7 @@ class TryOnModel:
 
     def _load_tier3(self):
         """
-        Primary: CatVTON direct (zheng-chong/CatVTON) — concatenates garment+person in latent.
+        Primary: CatVTON direct (zhengchong/CatVTON) — concatenates garment+person in latent.
         Fallback 1: SD Inpainting + IP-Adapter.
         Fallback 2: geometric warp (always works, no model required).
         """
