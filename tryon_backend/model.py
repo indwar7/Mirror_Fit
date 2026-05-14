@@ -44,6 +44,10 @@ VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 # overlay if the AI path is misbehaving.
 TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 
+# Phase E: SDXL img2img refiner pass after CatVTON. Costs ~1.5 s and 7 GB
+# VRAM per frame. Off by default. Set TRYON_SDXL_REFINER=1 to enable.
+TRYON_SDXL_REFINER        = os.environ.get("TRYON_SDXL_REFINER", "0") == "1"
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -173,6 +177,9 @@ class TryOnModel:
         # ── Phase 3: DWPose body-pose detector ───────────────────────────────
         self._dwpose = None   # loaded by _load_dwpose() when controlnet_aux available
 
+        # ── Phase E: SDXL img2img refiner (lazy, env-gated) ──────────────────
+        self._sdxl_refiner = None  # set by _try_load_sdxl_refiner() when TRYON_SDXL_REFINER=1
+
         log.info(f"Device: {self.device} | TRT: {bool(TRT_ENGINE_PATH)} | "
                  f"LoRA: {bool(VTON_LORA_CHECKPOINT)} | "
                  f"AnimateDiff: {bool(ANIMATEDIFF_ADAPTER_PATH)}")
@@ -183,18 +190,52 @@ class TryOnModel:
         if self.device != "cuda":
             self._load_tier3()
             self._try_load_dwpose()
+            self._try_load_sdxl_refiner()
             return
         if TRT_ENGINE_PATH and Path(TRT_ENGINE_PATH).exists():
-            try: self._load_tier1(); self._try_load_dwpose(); return
+            try: self._load_tier1(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
             except Exception as e: log.warning(f"Tier 1 failed: {e}")
         if VTON_LORA_CHECKPOINT and Path(VTON_LORA_CHECKPOINT).exists():
-            try: self._load_tier2(); self._try_load_dwpose(); return
+            try: self._load_tier2(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
             except Exception as e: log.warning(f"Tier 2 failed: {e}")
         if ANIMATEDIFF_ADAPTER_PATH and Path(ANIMATEDIFF_ADAPTER_PATH).exists():
-            try: self._load_tier4_animatediff(); self._try_load_dwpose(); return
+            try: self._load_tier4_animatediff(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
             except Exception as e: log.warning(f"Tier 4 AnimateDiff failed: {e}")
         self._load_tier3()
         self._try_load_dwpose()
+        self._try_load_sdxl_refiner()
+
+    def _try_load_sdxl_refiner(self):
+        """
+        Load SDXL img2img pipeline for the optional Phase E refiner pass.
+        Gated by TRYON_SDXL_REFINER env var because it costs ~7 GB extra
+        VRAM and ~1.5 s/frame. If load fails, we silently skip — the
+        CatVTON output is still usable on its own.
+        """
+        if not TRYON_SDXL_REFINER:
+            log.info("SDXL refiner disabled (set TRYON_SDXL_REFINER=1 to enable).")
+            return
+        try:
+            from diffusers import StableDiffusionXLImg2ImgPipeline
+            log.info("Loading SDXL img2img refiner (stabilityai/sdxl-turbo)…")
+            self._sdxl_refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+                "stabilityai/sdxl-turbo",
+                torch_dtype=self.dtype,
+                variant="fp16" if self.dtype == torch.float16 else None,
+                use_safetensors=True,
+            ).to(self.device)
+            try:
+                self._sdxl_refiner.enable_xformers_memory_efficient_attention()
+            except Exception:
+                pass
+            try:
+                self._sdxl_refiner.unet.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+            log.info("SDXL refiner ready (Phase E enabled).")
+        except Exception as e:
+            log.warning(f"SDXL refiner load failed, skipping Phase E: {e}")
+            self._sdxl_refiner = None
 
     def _load_tier1(self):
         from diffusers import AutoencoderKL, DDIMScheduler
@@ -996,7 +1037,10 @@ class TryOnModel:
         """
         Multi-step DDIM denoising with the direct CatVTON UNet.
         Input concat: [x_t(4), person_lat(4), garment_lat(4)] → 12 channels.
-        After generation, face region is restored from original frame.
+        Post-process: histogram-match the painted torso to the garment so the
+        colour matches the input exactly (CatVTON drifts ±5% on hue), then
+        optionally run an SDXL img2img refiner at 1024² for fabric detail.
+        Finally restore the face region from the original frame.
         """
         import torchvision.transforms.functional as TF
         to_lat = lambda img: TF.normalize(
@@ -1021,8 +1065,32 @@ class TryOnModel:
 
         result_arr = np.array(TF.to_pil_image(out[0].float().cpu()))
 
+        # ── Phase D: histogram colour match (torso only) ─────────────────────
+        # Lock the painted torso's colour distribution to the garment's so
+        # any CatVTON hue drift disappears. We compute a torso-only mask
+        # (silhouette ∩ band below face) and match histograms inside it.
+        sz = result_arr.shape[0]
+        try:
+            torso_mask, _silh, fc_y = self._build_body_mask(orig_arr)
+            torso_bool = torso_mask > 0.5
+            if torso_bool.sum() > 1000:
+                result_arr = self._histogram_match_torso(
+                    result_arr, np.array(garment), torso_bool
+                )
+        except Exception as e:
+            log.debug(f"histogram match skipped: {e}")
+            fc_y = None
+
+        # ── Phase E: SDXL refiner pass (optional, env-controlled) ─────────────
+        # Adds realistic fabric weave + sharper folds. Skipped by default
+        # because it adds ~1.5 s/frame and 7 GB VRAM.
+        if self._sdxl_refiner is not None:
+            try:
+                result_arr = self._sdxl_refine(result_arr)
+            except Exception as e:
+                log.debug(f"SDXL refiner skipped: {e}")
+
         # Restore face — CatVTON may alter the upper portion
-        sz    = result_arr.shape[0]
         gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
             cv2.equalizeHist(gray), scaleFactor=1.1,
@@ -1036,6 +1104,86 @@ class TryOnModel:
         result_arr[:cutoff] = orig_arr[:cutoff]
         self._prev_result = result_arr.copy()
         return Image.fromarray(result_arr)
+
+    # ── Phase D helper: histogram match the painted torso to the garment ─────
+
+    @staticmethod
+    def _histogram_match_torso(
+        result_arr: np.ndarray, garment_arr: np.ndarray, torso_mask: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Match the colour histogram of the torso region in `result_arr` to
+        the garment's central region (where the actual cloth pixels are,
+        not white background). Operates in LAB space and only on the
+        L and a/b channels' distributions so lighting structure survives.
+        Works WITHOUT skimage — does a per-channel CDF lookup directly.
+        """
+        # Source: the painted torso pixels
+        src = result_arr[torso_mask]  # (N, 3) RGB
+        # Target: garment centre (drop white edges)
+        gh, gw = garment_arr.shape[:2]
+        cx0, cx1 = int(gw * 0.25), int(gw * 0.75)
+        cy0, cy1 = int(gh * 0.25), int(gh * 0.75)
+        centre = garment_arr[cy0:cy1, cx0:cx1].reshape(-1, 3)
+        mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+        tgt = centre[mk] if mk.sum() > 500 else centre
+        if src.size == 0 or tgt.size == 0:
+            return result_arr
+
+        # Convert to LAB so we can match colour (a/b) without crushing
+        # luminance (which carries fabric folds + lighting).
+        src_lab = cv2.cvtColor(src.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3)
+        tgt_lab = cv2.cvtColor(tgt.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3)
+
+        matched_lab = src_lab.copy()
+        # Match a and b channels (colour); leave L (lightness) mostly alone
+        # — we only nudge it gently toward the target mean so the shirt's
+        # overall brightness aligns without erasing folds.
+        for ch in (1, 2):
+            src_vals = src_lab[:, ch]
+            tgt_vals = tgt_lab[:, ch]
+            src_hist, src_bins = np.histogram(src_vals, 256, [0, 256], density=True)
+            tgt_hist, _        = np.histogram(tgt_vals, 256, [0, 256], density=True)
+            src_cdf = src_hist.cumsum()
+            tgt_cdf = tgt_hist.cumsum()
+            lut = np.interp(src_cdf, tgt_cdf, np.arange(256)).astype(np.uint8)
+            matched_lab[:, ch] = lut[src_vals]
+        # Gentle L nudge
+        l_shift = float(tgt_lab[:, 0].mean() - src_lab[:, 0].mean()) * 0.35
+        matched_lab[:, 0] = np.clip(
+            matched_lab[:, 0].astype(np.float32) + l_shift, 0, 255
+        ).astype(np.uint8)
+
+        matched_rgb = cv2.cvtColor(matched_lab.reshape(-1, 1, 3), cv2.COLOR_LAB2RGB).reshape(-1, 3)
+        out = result_arr.copy()
+        out[torso_mask] = matched_rgb
+        return out
+
+    # ── Phase E helper: SDXL img2img refiner pass ────────────────────────────
+
+    def _sdxl_refine(self, result_arr: np.ndarray) -> np.ndarray:
+        """
+        Take the 512² CatVTON result, upscale to 1024², run SDXL img2img at
+        a low strength (0.22) with a fabric-texture prompt, then downscale
+        back to 512². Adds realistic woven texture that SD 1.5 / CatVTON
+        cannot produce. Only runs when self._sdxl_refiner is loaded.
+        """
+        from PIL import Image as _PI
+        pil = _PI.fromarray(result_arr).resize((1024, 1024), _PI.LANCZOS)
+        with torch.inference_mode():
+            refined = self._sdxl_refiner(
+                prompt=(
+                    "high quality photograph, realistic woven cotton fabric, "
+                    "natural shirt folds, sharp focus, studio lighting"
+                ),
+                negative_prompt="blurry, soft, plastic, painted, cartoon",
+                image=pil,
+                strength=0.22,
+                num_inference_steps=8,
+                guidance_scale=4.0,
+            ).images[0]
+        refined = refined.resize((result_arr.shape[1], result_arr.shape[0]), _PI.LANCZOS)
+        return np.array(refined)
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
