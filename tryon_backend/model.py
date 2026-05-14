@@ -423,15 +423,12 @@ class TryOnModel:
 
     def _load_tier3(self):
         """
-        Primary: CatVTON direct (zhengchong/CatVTON) — concatenates garment+person in latent.
-        Fallback 1: SD Inpainting + IP-Adapter.
-        Fallback 2: geometric warp (always works, no model required).
+        Primary: SD Inpainting + IP-Adapter + (optional) CatVTON-MaskFree
+        attention overlay. zhengchong/CatVTON ships attention-only weights,
+        not a full UNet, so the "direct" path was a wrong design and is
+        skipped now. The MaskFree overlay still runs inside _load_catvton.
+        Fallback: geometric warp (always works, no model required).
         """
-        try:
-            self._load_catvton_direct()
-            return
-        except Exception as e:
-            log.warning(f"CatVTON direct load failed ({e}), trying SD+IP-Adapter…")
         try:
             self._load_catvton()
         except Exception as e:
@@ -481,6 +478,20 @@ class TryOnModel:
         # IP at this CFG was over-saturating the result with the garment's
         # mid-tones, giving a slight purple tint to grey shirts.
         self.pipeline.set_ip_adapter_scale(1.2)
+
+        # ── CatVTON-MaskFree attention overlay (optional) ───────────────────
+        # zhengchong/CatVTON ships attention-only weights, NOT a full UNet.
+        # Those attention layers are designed to overwrite matching keys on
+        # an SD 1.5 inpaint UNet (this one), turning generic inpaint into
+        # try-on aware inpaint. Only keys whose shapes match get applied.
+        maskfree_variant = os.environ.get("CATVTON_MASKFREE_VARIANT", "").strip()
+        if maskfree_variant:
+            try:
+                self._catvton_unet = self.pipeline.unet  # so the helper finds it
+                self._overlay_maskfree_weights(maskfree_variant)
+                self._catvton_unet = None
+            except Exception as e:
+                log.warning(f"CatVTON-MaskFree overlay skipped on SD inpaint UNet: {e}")
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -1452,6 +1463,31 @@ class TryOnModel:
             blend_mask[:face_cutoff_y] = 0.0
             blend_mask = blend_mask * (body_silhouette > 0.5).astype(np.float32)
             blend_mask = cv2.GaussianBlur(blend_mask, (3, 3), 0)
+
+            # ── Phase D: histogram colour match on the painted torso ─────
+            # Lock the SD output's a/b channels to the garment's central
+            # pixels so the colour matches the input garment exactly.
+            try:
+                torso_bool = blend_mask > 0.5
+                if torso_bool.sum() > 1000:
+                    result_arr_u8 = np.clip(result_arr, 0, 255).astype(np.uint8)
+                    matched = self._histogram_match_torso(
+                        result_arr_u8, np.array(garment.convert("RGB")), torso_bool,
+                    )
+                    result_arr = matched.astype(np.float32)
+            except Exception as e:
+                log.debug(f"histogram match skipped: {e}")
+
+            # ── Phase E: optional SDXL refiner pass ──────────────────────
+            if self._sdxl_refiner is not None:
+                try:
+                    refined = self._sdxl_refine(
+                        np.clip(result_arr, 0, 255).astype(np.uint8),
+                    )
+                    result_arr = refined.astype(np.float32)
+                except Exception as e:
+                    log.debug(f"SDXL refiner skipped: {e}")
+
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
