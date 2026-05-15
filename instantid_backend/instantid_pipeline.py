@@ -310,7 +310,35 @@ class InstantIDEngine:
         out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
         out_bgr = cv2.resize(out_bgr, (side, side), interpolation=cv2.INTER_LINEAR)
 
-        # 5. Paste back into a copy of the original frame so dimensions match
+        # 5. SOFT-MASK COMPOSITE: only the face oval gets the InstantID
+        # pixels; the rest of the frame (hair, neck, body, background)
+        # stays as the user's original camera frame. This is the
+        # "skin over my face" behaviour the user wants - the video is
+        # still the user, just the face identity is the avatar's.
         result = frame_bgr.copy()
-        result[y_off:y_off + side, x_off:x_off + side] = out_bgr
+
+        # Build a soft elliptical mask centred on the user's face bbox
+        # in ORIGINAL frame coordinates (not the resized square).
+        x1, y1, x2, y2 = (int(v) for v in face.bbox)
+        fw, fh = max(1, x2 - x1), max(1, y2 - y1)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2 - int(fh * 0.05)   # slight upward bias to cover forehead
+        # Slightly tighter than full bbox so jaw/hair don't get repainted
+        rx = int(fw * 0.55)
+        ry = int(fh * 0.70)
+
+        # Draw mask on a single-channel canvas the same shape as the frame
+        mask = np.zeros((h0, w0), np.uint8)
+        cv2.ellipse(mask, (cx, cy), (rx, ry), 0, 0, 360, 255, -1)
+        # Wide Gaussian feather so the boundary is invisible
+        mask_f = cv2.GaussianBlur(mask, (0, 0), sigmaX=max(8, fw * 0.05))
+        alpha = (mask_f.astype(np.float32) / 255.0)[..., None]
+
+        # Compose: result = alpha * out_bgr_full + (1 - alpha) * frame_bgr
+        # out_bgr is only the square; expand it back to the full frame
+        # canvas (rest stays black, but mask zeroes those pixels anyway).
+        full_out = frame_bgr.copy()
+        full_out[y_off:y_off + side, x_off:x_off + side] = out_bgr
+        result = (full_out.astype(np.float32) * alpha
+                  + frame_bgr.astype(np.float32) * (1.0 - alpha)).astype(np.uint8)
         return result
