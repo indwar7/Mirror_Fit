@@ -642,13 +642,26 @@ class TryOnModel:
 
     def _load_dwpose(self):
         """
-        Load DWPose full-body pose estimator from controlnet_aux.
-        Called unconditionally on startup; if the package is missing we log a warning
-        and continue without pose conditioning (graceful degradation).
+        Load a body-pose estimator from controlnet_aux. Prefers DWPose
+        (best quality, but mediapipe.solutions dependency breaks on
+        Python 3.13). Falls back to OpenposeDetector, which uses its own
+        torch-only model and is unaffected by the mediapipe drop.
+
+        After load, self._dwpose is callable with (pil_image, output_type,
+        detect_resolution, image_resolution) and returns a PIL pose drawing.
         """
-        from controlnet_aux import DWposeDetector
-        self._dwpose = DWposeDetector.from_pretrained("lllyasviel/Annotators")
-        log.info("DWPose detector loaded — pose conditioning active.")
+        try:
+            from controlnet_aux import DWposeDetector
+            self._dwpose = DWposeDetector.from_pretrained("lllyasviel/Annotators")
+            log.info("DWPose detector loaded — pose conditioning active.")
+            return
+        except Exception as e:
+            log.warning(
+                f"DWPose unavailable ({e}); falling back to OpenposeDetector."
+            )
+        from controlnet_aux import OpenposeDetector
+        self._dwpose = OpenposeDetector.from_pretrained("lllyasviel/Annotators")
+        log.info("OpenposeDetector loaded — pose conditioning active.")
 
     def _try_load_dwpose(self):
         """Silently skip DWPose if controlnet_aux is not installed."""
