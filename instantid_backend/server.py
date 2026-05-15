@@ -138,18 +138,41 @@ async def ws_instantid_swap(ws: WebSocket):
 
             if mtype == "init":
                 avatar_id = msg.get("avatar_id")
-                session_id = msg.get("session_id") or avatar_id
-                if not avatar_id:
-                    await send({"type": "error", "message": "missing avatar_id"})
+                source_image_b64 = msg.get("source_image")
+                session_id = msg.get("session_id") or avatar_id or "upload"
+
+                # Accept either a preset avatar_id OR a base64 uploaded image.
+                # The demo client sends source_image when the user picks an
+                # uploaded JPEG from the "Or upload your own" slot.
+                avatar_path: Optional[str] = None
+                tmp_path: Optional[Path] = None
+
+                if avatar_id:
+                    p = _AVATAR_CACHE / f"{avatar_id}.jpg"
+                    if not p.exists():
+                        await send({"type": "error",
+                                    "message": f"avatar not generated: {avatar_id}"})
+                        continue
+                    avatar_path = str(p)
+                elif source_image_b64:
+                    try:
+                        img_bytes = base64.b64decode(source_image_b64)
+                        tmp_path = _HERE / f"_upload_{session_id}.jpg"
+                        tmp_path.write_bytes(img_bytes)
+                        avatar_path = str(tmp_path)
+                    except Exception as e:
+                        await send({"type": "error",
+                                    "message": f"bad source_image: {e}"})
+                        continue
+                else:
+                    await send({"type": "error",
+                                "message": "missing avatar_id or source_image"})
                     continue
-                avatar_path = _AVATAR_CACHE / f"{avatar_id}.jpg"
-                if not avatar_path.exists():
-                    await send({"type": "error", "message": f"avatar not generated: {avatar_id}"})
-                    continue
+
                 try:
                     engine = _get_engine()
                     ok = await loop.run_in_executor(
-                        None, engine.load_avatar, session_id, str(avatar_path)
+                        None, engine.load_avatar, session_id, avatar_path
                     )
                     if not ok:
                         await send({"type": "error", "message": "no face in avatar image"})
@@ -159,6 +182,12 @@ async def ws_instantid_swap(ws: WebSocket):
                 except Exception as e:
                     log.exception("[InstantID] init failed")
                     await send({"type": "error", "message": str(e)})
+                finally:
+                    # Clean up the temp upload file once the engine has
+                    # cached its embedding (we don't need the file anymore).
+                    if tmp_path is not None and tmp_path.exists():
+                        with contextlib.suppress(Exception):
+                            tmp_path.unlink()
                 continue
 
             if mtype == "frame":
