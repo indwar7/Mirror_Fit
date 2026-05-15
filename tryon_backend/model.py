@@ -16,6 +16,7 @@ Env vars (set by run_all.sh after training):
 """
 import logging
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -1316,6 +1317,10 @@ class TryOnModel:
 
         When DWPose is not available, falls back to vanilla img2img (original behaviour).
         """
+        # ── Stage timings (logged at end of _infer_tier3) ─────────────────────
+        _t_start = time.perf_counter()
+        _stage = {}
+
         # person_image is already center-cropped + blended by tryon() when _prev_result exists
         pw, ph = person_image.size
         sq = min(pw, ph)
@@ -1323,6 +1328,7 @@ class TryOnModel:
                                     (pw + sq) // 2, (ph + sq) // 2))
         person = person.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         orig_arr = np.array(person)
+        _stage["prep"] = (time.perf_counter() - _t_start) * 1000
 
         ip_kwargs = (
             {"ip_adapter_image_embeds": self._ip_embeds}
@@ -1354,6 +1360,7 @@ class TryOnModel:
         # Optimisation: cache the mask for N frames. The subject moves
         # slowly relative to the 3-second inference cycle, and the EMA
         # blend smooths the result, so a stale mask is acceptable.
+        _t = time.perf_counter()
         self._mask_cache_frame_count += 1
         cache_valid = (
             self._mask_cache_torso is not None
@@ -1369,6 +1376,7 @@ class TryOnModel:
             self._mask_cache_torso  = torso_mask
             self._mask_cache_silh   = body_silhouette
             self._mask_cache_cutoff = face_cutoff_y
+        _stage["mask"] = (time.perf_counter() - _t) * 1000
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -1435,6 +1443,7 @@ class TryOnModel:
             # masked region is pre-seeded with the garment's mean colour
             # (see colour-anchor block above) which is the other half of
             # the fix.
+            _t = time.perf_counter()
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
@@ -1446,6 +1455,7 @@ class TryOnModel:
                     generator=generator,
                     **ip_kw,
                 ).images[0]
+            _stage["sd"] = (time.perf_counter() - _t) * 1000
 
             # ── Composite result back onto original via body silhouette ──────
             # SD output can bleed slightly past the mask edge. We blend the
@@ -1480,6 +1490,7 @@ class TryOnModel:
             # ── Phase D: histogram colour match on the painted torso ─────
             # Lock the SD output's a/b channels to the garment's central
             # pixels so the colour matches the input garment exactly.
+            _t = time.perf_counter()
             try:
                 torso_bool = blend_mask > 0.5
                 if torso_bool.sum() > 1000:
@@ -1490,6 +1501,7 @@ class TryOnModel:
                     result_arr = matched.astype(np.float32)
             except Exception as e:
                 log.debug(f"histogram match skipped: {e}")
+            _stage["hist"] = (time.perf_counter() - _t) * 1000
 
             # ── Phase E: optional SDXL refiner pass ──────────────────────
             if self._sdxl_refiner is not None:
@@ -1511,7 +1523,10 @@ class TryOnModel:
             # neck pixels keep getting averaged in and the collar fades
             # out over time.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                alpha_ema = 0.6  # weight of new frame
+                # Weight of new frame; lower = stickier/smoother but laggier.
+                # 0.4 = "more responsive" sweet spot — fresh detail bleeds
+                # in faster, flicker still suppressed by the 60% prev term.
+                alpha_ema = 0.4
                 ema = (
                     composed.astype(np.float32) * alpha_ema
                     + self._prev_result.astype(np.float32) * (1.0 - alpha_ema)
@@ -1525,6 +1540,16 @@ class TryOnModel:
                 stable_region[:collar_end] = False
                 composed = np.where(stable_region, ema, composed)
             self._prev_result = composed.copy()
+
+            # ── Stage timing summary ─────────────────────────────────────
+            _total = (time.perf_counter() - _t_start) * 1000
+            log.info(
+                f"[tier3] prep={_stage.get('prep',0):.0f}ms "
+                f"mask={_stage.get('mask',0):.0f}ms "
+                f"sd={_stage.get('sd',0):.0f}ms "
+                f"hist={_stage.get('hist',0):.0f}ms "
+                f"total={_total:.0f}ms"
+            )
             return Image.fromarray(composed)
 
         # ── SD img2img + IP-Adapter fallback ─────────────────────────────────

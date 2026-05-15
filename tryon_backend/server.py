@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -111,13 +112,29 @@ async def tryon_ws(ws: WebSocket):
                 processing = True
                 try:
                     # Decode on thread pool (CPU-bound)
+                    t0 = time.perf_counter()
                     person_img = await run_in_thread(_decode_image, msg["image"])
+                    t_decode = time.perf_counter() - t0
 
-                    # Inference (GPU-bound, released by thread pool)
+                    # Inference (GPU-bound, released by thread pool).
+                    # `tryon` internally measures + logs its sub-stages.
+                    t1 = time.perf_counter()
                     result_img = await run_in_thread(tryon_model.tryon, person_img)
+                    t_infer = time.perf_counter() - t1
 
                     # JPEG encode on thread pool — never blocks the async loop
+                    t2 = time.perf_counter()
                     result_b64 = await run_in_thread(_encode_jpeg, result_img)
+                    t_encode = time.perf_counter() - t2
+
+                    total = time.perf_counter() - t0
+                    log.info(
+                        f"[lat] decode={t_decode*1000:.0f}ms "
+                        f"infer={t_infer*1000:.0f}ms "
+                        f"encode={t_encode*1000:.0f}ms "
+                        f"total={total*1000:.0f}ms "
+                        f"fps={1.0/max(total, 1e-3):.2f}"
+                    )
 
                     await send({"type": "result", "image": result_b64})
 
