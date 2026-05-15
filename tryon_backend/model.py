@@ -1419,14 +1419,14 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
+            # Prompt kept under the 77-CLIP-token limit; the longer version
+            # was being silently truncated, so the tail words ("high detail")
+            # never reached the model.
             prompt = (
-                f"professional studio photograph of a man wearing a tailored "
-                f"{color} button-up shirt, the shirt fits the body naturally with "
-                f"realistic creases at the shoulders and chest, the collar wraps "
-                f"around the neck, buttons running down the centre, long sleeves "
-                f"draping over the arms, soft fabric folds, woven cotton texture, "
-                f"natural indoor lighting, subtle shadow under the collar, "
-                f"sharp focus, photorealistic, high detail"
+                f"photo of a man wearing a tailored {color} button-up shirt, "
+                f"shirt fits naturally, collar around the neck, buttons "
+                f"down the centre, sleeves on the arms, fabric folds, "
+                f"sharp focus, photorealistic"
             )
             # Keep negatives minimal — listing specific colours pushes SD
             # toward complementary colours (purple→green halo). Only call
@@ -1450,7 +1450,10 @@ class TryOnModel:
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=8,
+                    # Honour VTON_STEPS env var (= self._steps). Hardcoded
+                    # 8 was the reason every frame cost ~800 ms regardless
+                    # of the env override.
+                    num_inference_steps=self._steps,
                     guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
