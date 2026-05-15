@@ -643,12 +643,15 @@ header {
 <script>
 const FACE_API = 'http://13.203.75.149:7860';
 const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
-// Photo-real swap is the only acceptable mode (user requirement).
-// InstantID (port 7861) is the swap backend. Voice (port 7860) runs in
-// MINIMAL_MODE so face_swap_backend doesn't take GPU memory away from it.
-const SWAP_WS = 'ws://13.203.75.149:7861/ws/instantid-swap';
-// Same session_id is sent on both /ws/instantid-swap and /ws/voice-stream
-// (latter still on 7860) so the voice server can correlate audio with frames.
+// Restored to the proven face_swap_backend on port 7860 (commit 8de2dc2
+// pipeline: inswapper-128 + LAB colour match + tight landmark hull
+// seamlessClone). InstantID experiment removed from the live demo path —
+// it produced full-frame regenerations that drifted from "skin over
+// my face" requirement. To re-enable later, point this back to
+// ws://...:7861/ws/instantid-swap.
+const SWAP_WS = 'ws://13.203.75.149:7860/ws/live-swap';
+// Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
+// the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
                                 + '_' + Date.now().toString(36);
 

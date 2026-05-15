@@ -899,21 +899,12 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray):
         return None, None
 
     if src_real and tgt_face is not None:
-        # 1. Identity transfer
+        # The proven 8de2dc2 pipeline: inswapper + LAB color match.
+        # Nothing else. CodeFormer / expression-detail transfer / hair
+        # transfer were experimented with on top and each one introduced
+        # visible artefacts (ghost edges, skin leak, wig effect). Reverted.
         result = _run_inswapper(src_face, tgt_face, target_img)
-        # 2. LAB skin-tone match (bbox region, proven 8de2dc2 path)
         result = _color_correct_face(result, target_img, tgt_face.bbox)
-        # 3. Expression detail transfer — layer the user's eye / brow /
-        # mouth pixels from the ORIGINAL camera frame onto the swap.
-        # Inswapper smooths small muscle motion away; this re-introduces
-        # it so the swapped face mirrors live expressions instead of
-        # looking static. Cheap (~3-5 ms).
-        try:
-            result = _transfer_expression_detail(result, target_img, tgt_face)
-        except Exception as e:
-            print(f"[expr] skipped: {type(e).__name__}: {e}")
-        # NOTE: CodeFormer pass moved to ws_live_swap so it can be gated
-        # to every 2nd frame.
         return result, tgt_face
 
     # Cartoon source
