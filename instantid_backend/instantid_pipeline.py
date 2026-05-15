@@ -238,14 +238,25 @@ class InstantIDEngine:
     # ── Per-frame inference ────────────────────────────────────────────────
     def transfer(self, session_id: str, frame_bgr: np.ndarray) -> Optional[np.ndarray]:
         """Apply the cached avatar identity to the user's frame.
-        Returns the swapped frame at INFERENCE_RESOLUTION, or None if no
-        face was detected in the frame."""
+
+        Returns a result image the SAME shape as the input frame so the
+        demo client can overlay it 1-to-1. Internally we:
+          1. Center-square-crop the input frame (no top-left padding -
+             the previous version made the result look heavily zoomed
+             because the model placed the face at the canvas centre but
+             we cropped the top-left rectangle out).
+          2. Resize the square crop to INFERENCE_RESOLUTION.
+          3. Run InstantID with rescaled keypoints.
+          4. Resize result back to the square crop size.
+          5. Paste the square result back into the original-shape canvas
+             at the same position we cropped from, so the face lines up
+             with where it was in the original frame.
+        """
         sess = self._sessions.get(session_id)
         if sess is None:
             log.warning("[InstantID] unknown session: %s", session_id)
             return None
 
-        # Detect user face in webcam frame
         faces = self.face_app.get(frame_bgr)
         if not faces:
             return None
@@ -254,18 +265,21 @@ class InstantIDEngine:
             key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]),
         )[-1]
 
-        # Resize user frame to inference resolution; render landmarks to
-        # match. ControlNet input must be the same size as the output.
+        # 1. Center-square-crop the input frame (preserves face position)
         h0, w0 = frame_bgr.shape[:2]
-        scale = INFERENCE_RESOLUTION / max(h0, w0)
-        new_w, new_h = int(w0 * scale), int(h0 * scale)
-        # Pad to square (top-left aligned) so kps coords scale linearly
-        canvas = np.zeros((INFERENCE_RESOLUTION, INFERENCE_RESOLUTION, 3), np.uint8)
-        resized = cv2.resize(frame_bgr, (new_w, new_h))
-        canvas[:new_h, :new_w] = resized
-        kps_scaled = face.kps.copy()
-        kps_scaled[:, 0] *= scale
-        kps_scaled[:, 1] *= scale
+        side = min(h0, w0)
+        x_off = (w0 - side) // 2
+        y_off = (h0 - side) // 2
+        square = frame_bgr[y_off:y_off + side, x_off:x_off + side]
+
+        # Recompute kps relative to the crop
+        kps_in_crop = face.kps.copy()
+        kps_in_crop[:, 0] -= x_off
+        kps_in_crop[:, 1] -= y_off
+
+        # 2. Resize the square crop to INFERENCE_RESOLUTION
+        scale = INFERENCE_RESOLUTION / float(side)
+        kps_scaled = kps_in_crop * scale
 
         from PIL import Image
         kps_img = _draw_kps(
@@ -273,6 +287,7 @@ class InstantIDEngine:
             kps_scaled,
         )
 
+        # 3. Run InstantID
         with self._lock, self._torch.no_grad():
             self.pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
             out = self.pipe(
@@ -290,11 +305,12 @@ class InstantIDEngine:
                 output_type="np",
             ).images[0]
 
-        # Crop back to the original aspect ratio (we padded top-left)
-        out = (np.clip(out, 0, 1) * 255).astype(np.uint8)
-        out = out[:new_h, :new_w]
-        out_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
-        # Resize back to the input frame's original resolution so the demo
-        # client can overlay it 1-to-1 without scaling artefacts.
-        out_bgr = cv2.resize(out_bgr, (w0, h0), interpolation=cv2.INTER_LINEAR)
-        return out_bgr
+        # 4. Resize result back to the square crop size
+        out_rgb = (np.clip(out, 0, 1) * 255).astype(np.uint8)
+        out_bgr = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
+        out_bgr = cv2.resize(out_bgr, (side, side), interpolation=cv2.INTER_LINEAR)
+
+        # 5. Paste back into a copy of the original frame so dimensions match
+        result = frame_bgr.copy()
+        result[y_off:y_off + side, x_off:x_off + side] = out_bgr
+        return result
