@@ -1245,6 +1245,23 @@ class TryOnModel:
             blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
+
+            # ── Temporal stability: lock the painted shirt to previous
+            # frame, so colour stops flickering every 3 s. Only blend
+            # inside the masked region; outside, the live camera passes
+            # through untouched. Strong prev weight (0.7) keeps the shirt
+            # rock-steady even as small generation differences come and
+            # go. Body movement still shows because the silhouette mask
+            # itself is updating per frame from MediaPipe.
+            if self._prev_result is not None and self._prev_result.shape == composed.shape:
+                alpha_new = 0.30   # weight of fresh result; (1 - α) on prev
+                ema = (
+                    composed.astype(np.float32) * alpha_new
+                    + self._prev_result.astype(np.float32) * (1.0 - alpha_new)
+                ).astype(np.uint8)
+                stable_region = (a > 0.05)
+                composed = np.where(stable_region, ema, composed)
+
             self._prev_result = composed.copy()
             return Image.fromarray(composed)
 
