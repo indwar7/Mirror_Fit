@@ -26,8 +26,26 @@ if (-not (Test-Path $lpRoot)) {
 
 Write-Host "[setup] downloading LivePortrait model weights (~2.2 GB)" -ForegroundColor Cyan
 $weights = Join-Path $lpRoot "pretrained_weights"
-huggingface-cli download KwaiVGI/LivePortrait `
-    --local-dir $weights `
-    --include "liveportrait/*" "insightface/models/buffalo_l/*"
+# Use `hf` (new HuggingFace CLI). `huggingface-cli` is deprecated and
+# returns 0 exit code with only a warning, causing silent download failure.
+hf download KwaiVGI/LivePortrait --local-dir $weights
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[setup] ERROR: HuggingFace download failed (exit $LASTEXITCODE)" -ForegroundColor Red
+    exit 1
+}
+# Sanity check: verify the 4 critical .pth files actually exist.
+$required = @(
+    "liveportrait\base_models\appearance_feature_extractor.pth",
+    "liveportrait\base_models\motion_extractor.pth",
+    "liveportrait\base_models\warping_module.pth",
+    "liveportrait\base_models\spade_generator.pth"
+)
+foreach ($f in $required) {
+    $full = Join-Path $weights $f
+    if (-not (Test-Path $full)) {
+        Write-Host "[setup] ERROR: required file missing after download: $f" -ForegroundColor Red
+        exit 1
+    }
+}
 
 Write-Host "[setup] DONE. Run: powershell .\start.ps1" -ForegroundColor Green
