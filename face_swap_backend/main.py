@@ -468,30 +468,19 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     lmk = getattr(tgt_face, "landmark_2d_106", None)
     blend_mask = np.zeros((ih, iw), np.uint8)
     if lmk is not None and len(lmk) > 10:
-        pts_f = lmk.astype(np.float32)
+        pts = lmk.astype(np.int32)
+        # Tight hull (1.06). Larger expansions tried earlier (1.15 +
+        # chin-downward bias + 25 px feather) created a visible blur
+        # halo around the lower face because the wide soft mask
+        # blended swap+original pixels over a large strip - the user
+        # called it "vovel" (oval). Tight hull + small feather +
+        # MIXED_CLONE (below) gives an invisible mask boundary the
+        # way wearing a real mask does.
         center = np.array([cx, cy], dtype=np.float32)
-        # Expand the hull more aggressively (1.06 -> 1.15) so the mask
-        # covers full jaw + chin instead of stopping right at the
-        # landmark line. User reported chin area was not fully covered
-        # and looked unstable frame-to-frame because the boundary was
-        # sitting exactly on the jaw landmarks (which jitter with
-        # detection noise).
-        expanded = (pts_f - center) * 1.15 + center
-
-        # Additional downward bias on the LOWER half of the hull so the
-        # mask extends a bit below the chin landmarks specifically.
-        # Upper half (forehead area) stays at the expanded position so
-        # we don't paint over hair.
-        for i in range(len(expanded)):
-            if expanded[i, 1] > cy:   # point is below face centre
-                expanded[i, 1] += fh * 0.08   # ~8% face-height downward
-
+        expanded = (pts.astype(np.float32) - center) * 1.06 + center
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
-        # Wider Gaussian (15 -> 25) so the mask boundary is more
-        # feathered. A wider feather absorbs the 1-2 px per-frame
-        # landmark jitter so the user no longer sees the edge shaking.
-        blend_mask = cv2.GaussianBlur(blend_mask, (25, 25), 0)
+        blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
         _, blend_mask = cv2.threshold(blend_mask, 100, 255, cv2.THRESH_BINARY)
         M_m = cv2.moments(blend_mask)
         if M_m["m00"] > 0:
@@ -509,11 +498,18 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         cv2.ellipse(blend_mask, (ecx, oval_cy), (oval_rx, oval_ry), 0, 0, 360, 255, -1)
         poisson_cx, poisson_cy = ecx, oval_cy
 
-    # Poisson seamless clone — gradients match at the mask boundary so the
-    # face flows into the surrounding skin with no visible seam.
+    # Poisson seamless clone in MIXED_CLONE mode. MIXED_CLONE picks the
+    # stronger gradient between source and target at the boundary so
+    # skin texture, lighting and pores carry over from the user's
+    # original frame into the swapped region. This is what produces
+    # the "wearing as a real mask" look the user asked for: the
+    # boundary becomes invisible because the surrounding skin and the
+    # swap converge to the same texture. NORMAL_CLONE only flattens
+    # the colour gradient and can leave a visible patch when source
+    # lighting differs from target lighting.
     try:
         swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
-                                    (poisson_cx, poisson_cy), cv2.NORMAL_CLONE)
+                                    (poisson_cx, poisson_cy), cv2.MIXED_CLONE)
     except cv2.error:
         bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
         alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0

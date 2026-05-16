@@ -16,7 +16,6 @@ Env vars (set by run_all.sh after training):
 """
 import logging
 import os
-import time
 from pathlib import Path
 
 import cv2
@@ -44,10 +43,6 @@ VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 # realism. Set TRYON_FORCE_GEOMETRIC=1 to flip back to the deterministic
 # overlay if the AI path is misbehaving.
 TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
-
-# Phase E: SDXL img2img refiner pass after CatVTON. Costs ~1.5 s and 7 GB
-# VRAM per frame. Off by default. Set TRYON_SDXL_REFINER=1 to enable.
-TRYON_SDXL_REFINER        = os.environ.get("TRYON_SDXL_REFINER", "0") == "1"
 
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
@@ -152,19 +147,6 @@ class TryOnModel:
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
 
-        # ── Mask cache (every-3-frame refresh) ───────────────────────────────
-        # The body-silhouette + face-cutoff + colour-anchor seed are
-        # surprisingly expensive (MediaPipe + Haar + numpy reductions).
-        # Re-running them every frame is wasteful when the subject is
-        # near-stationary. We cache the result and only refresh every Nth
-        # call — the EMA blend smooths over any small pose mismatch.
-        self._mask_cache_seed: np.ndarray | None = None   # colour-anchored person frame
-        self._mask_cache_torso: np.ndarray | None = None  # torso_mask
-        self._mask_cache_silh: np.ndarray | None = None   # body silhouette
-        self._mask_cache_cutoff: int = 0                  # face_cutoff_y
-        self._mask_cache_frame_count: int = 0
-        self._mask_cache_refresh_every: int = 3
-
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
         self._frame_buffer: list[np.ndarray] = []   # raw BGR frames waiting for batch processing
@@ -178,9 +160,6 @@ class TryOnModel:
         # ── Phase 3: DWPose body-pose detector ───────────────────────────────
         self._dwpose = None   # loaded by _load_dwpose() when controlnet_aux available
 
-        # ── Phase E: SDXL img2img refiner (lazy, env-gated) ──────────────────
-        self._sdxl_refiner = None  # set by _try_load_sdxl_refiner() when TRYON_SDXL_REFINER=1
-
         log.info(f"Device: {self.device} | TRT: {bool(TRT_ENGINE_PATH)} | "
                  f"LoRA: {bool(VTON_LORA_CHECKPOINT)} | "
                  f"AnimateDiff: {bool(ANIMATEDIFF_ADAPTER_PATH)}")
@@ -191,57 +170,23 @@ class TryOnModel:
         if self.device != "cuda":
             self._load_tier3()
             self._try_load_dwpose()
-            self._try_load_sdxl_refiner()
             return
         if TRT_ENGINE_PATH and Path(TRT_ENGINE_PATH).exists():
-            try: self._load_tier1(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
+            try: self._load_tier1(); self._try_load_dwpose(); return
             except Exception as e: log.warning(f"Tier 1 failed: {e}")
         if VTON_LORA_CHECKPOINT and Path(VTON_LORA_CHECKPOINT).exists():
-            try: self._load_tier2(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
+            try: self._load_tier2(); self._try_load_dwpose(); return
             except Exception as e: log.warning(f"Tier 2 failed: {e}")
         if ANIMATEDIFF_ADAPTER_PATH and Path(ANIMATEDIFF_ADAPTER_PATH).exists():
-            try: self._load_tier4_animatediff(); self._try_load_dwpose(); self._try_load_sdxl_refiner(); return
+            try: self._load_tier4_animatediff(); self._try_load_dwpose(); return
             except Exception as e: log.warning(f"Tier 4 AnimateDiff failed: {e}")
         self._load_tier3()
         self._try_load_dwpose()
-        self._try_load_sdxl_refiner()
-
-    def _try_load_sdxl_refiner(self):
-        """
-        Load SDXL img2img pipeline for the optional Phase E refiner pass.
-        Gated by TRYON_SDXL_REFINER env var because it costs ~7 GB extra
-        VRAM and ~1.5 s/frame. If load fails, we silently skip — the
-        CatVTON output is still usable on its own.
-        """
-        if not TRYON_SDXL_REFINER:
-            log.info("SDXL refiner disabled (set TRYON_SDXL_REFINER=1 to enable).")
-            return
-        try:
-            from diffusers import StableDiffusionXLImg2ImgPipeline
-            log.info("Loading SDXL img2img refiner (stabilityai/sdxl-turbo)…")
-            self._sdxl_refiner = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-                "stabilityai/sdxl-turbo",
-                torch_dtype=self.dtype,
-                variant="fp16" if self.dtype == torch.float16 else None,
-                use_safetensors=True,
-            ).to(self.device)
-            try:
-                self._sdxl_refiner.enable_xformers_memory_efficient_attention()
-            except Exception:
-                pass
-            try:
-                self._sdxl_refiner.unet.to(memory_format=torch.channels_last)
-            except Exception:
-                pass
-            log.info("SDXL refiner ready (Phase E enabled).")
-        except Exception as e:
-            log.warning(f"SDXL refiner load failed, skipping Phase E: {e}")
-            self._sdxl_refiner = None
 
     def _load_tier1(self):
         from diffusers import AutoencoderKL, DDIMScheduler
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zhengchong/CatVTON"
+        base = "zheng-chong/CatVTON"
         self._vae = AutoencoderKL.from_pretrained(base, subfolder="vae", torch_dtype=self.dtype).to(self.device)
         self._vae.requires_grad_(False)
         tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
@@ -257,13 +202,13 @@ class TryOnModel:
     def _load_tier2(self):
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zhengchong/CatVTON"
+        base = "zheng-chong/CatVTON"
 
         # VTON_LORA_CHECKPOINT can be either:
         #   (a) A full UNet directory (config.json + diffusion_pytorch_model.safetensors)
         #       → load as a complete model.
         #   (b) A PEFT LoRA adapter directory (adapter_config.json + adapter_model.safetensors)
-        #       → load base UNet from zhengchong/CatVTON, attach LoRA on top.
+        #       → load base UNet from zheng-chong/CatVTON, attach LoRA on top.
         # Our Kaggle training notebook produces (b).
         ckpt_path = Path(VTON_LORA_CHECKPOINT)
         is_peft_adapter = (ckpt_path / "adapter_config.json").exists()
@@ -303,7 +248,7 @@ class TryOnModel:
 
     def _load_catvton_direct(self):
         """
-        Load CatVTON (zhengchong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
+        Load CatVTON (zheng-chong/CatVTON) UNet directly — no diffusers Pipeline wrapper.
         The UNet expects 12-channel input: [noise(4), person_lat(4), garment_lat(4)].
         Single DDIM step at inference time → ~1-2 s/frame on A10G, GPU-quality try-on.
 
@@ -320,7 +265,7 @@ class TryOnModel:
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
-        base = "zhengchong/CatVTON"
+        base = "zheng-chong/CatVTON"
         log.info(f"Loading CatVTON model from {base} …")
 
         self._vae = AutoencoderKL.from_pretrained(
@@ -424,12 +369,15 @@ class TryOnModel:
 
     def _load_tier3(self):
         """
-        Primary: SD Inpainting + IP-Adapter + (optional) CatVTON-MaskFree
-        attention overlay. zhengchong/CatVTON ships attention-only weights,
-        not a full UNet, so the "direct" path was a wrong design and is
-        skipped now. The MaskFree overlay still runs inside _load_catvton.
-        Fallback: geometric warp (always works, no model required).
+        Primary: CatVTON direct (zheng-chong/CatVTON) — concatenates garment+person in latent.
+        Fallback 1: SD Inpainting + IP-Adapter.
+        Fallback 2: geometric warp (always works, no model required).
         """
+        try:
+            self._load_catvton_direct()
+            return
+        except Exception as e:
+            log.warning(f"CatVTON direct load failed ({e}), trying SD+IP-Adapter…")
         try:
             self._load_catvton()
         except Exception as e:
@@ -479,20 +427,6 @@ class TryOnModel:
         # IP at this CFG was over-saturating the result with the garment's
         # mid-tones, giving a slight purple tint to grey shirts.
         self.pipeline.set_ip_adapter_scale(1.2)
-
-        # ── CatVTON-MaskFree attention overlay (optional) ───────────────────
-        # zhengchong/CatVTON ships attention-only weights, NOT a full UNet.
-        # Those attention layers are designed to overwrite matching keys on
-        # an SD 1.5 inpaint UNet (this one), turning generic inpaint into
-        # try-on aware inpaint. Only keys whose shapes match get applied.
-        maskfree_variant = os.environ.get("CATVTON_MASKFREE_VARIANT", "").strip()
-        if maskfree_variant:
-            try:
-                self._catvton_unet = self.pipeline.unet  # so the helper finds it
-                self._overlay_maskfree_weights(maskfree_variant)
-                self._catvton_unet = None
-            except Exception as e:
-                log.warning(f"CatVTON-MaskFree overlay skipped on SD inpaint UNet: {e}")
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -643,26 +577,13 @@ class TryOnModel:
 
     def _load_dwpose(self):
         """
-        Load a body-pose estimator from controlnet_aux. Prefers DWPose
-        (best quality, but mediapipe.solutions dependency breaks on
-        Python 3.13). Falls back to OpenposeDetector, which uses its own
-        torch-only model and is unaffected by the mediapipe drop.
-
-        After load, self._dwpose is callable with (pil_image, output_type,
-        detect_resolution, image_resolution) and returns a PIL pose drawing.
+        Load DWPose full-body pose estimator from controlnet_aux.
+        Called unconditionally on startup; if the package is missing we log a warning
+        and continue without pose conditioning (graceful degradation).
         """
-        try:
-            from controlnet_aux import DWposeDetector
-            self._dwpose = DWposeDetector.from_pretrained("lllyasviel/Annotators")
-            log.info("DWPose detector loaded — pose conditioning active.")
-            return
-        except Exception as e:
-            log.warning(
-                f"DWPose unavailable ({e}); falling back to OpenposeDetector."
-            )
-        from controlnet_aux import OpenposeDetector
-        self._dwpose = OpenposeDetector.from_pretrained("lllyasviel/Annotators")
-        log.info("OpenposeDetector loaded — pose conditioning active.")
+        from controlnet_aux import DWposeDetector
+        self._dwpose = DWposeDetector.from_pretrained("lllyasviel/Annotators")
+        log.info("DWPose detector loaded — pose conditioning active.")
 
     def _try_load_dwpose(self):
         """Silently skip DWPose if controlnet_aux is not installed."""
@@ -1062,10 +983,7 @@ class TryOnModel:
         """
         Multi-step DDIM denoising with the direct CatVTON UNet.
         Input concat: [x_t(4), person_lat(4), garment_lat(4)] → 12 channels.
-        Post-process: histogram-match the painted torso to the garment so the
-        colour matches the input exactly (CatVTON drifts ±5% on hue), then
-        optionally run an SDXL img2img refiner at 1024² for fabric detail.
-        Finally restore the face region from the original frame.
+        After generation, face region is restored from original frame.
         """
         import torchvision.transforms.functional as TF
         to_lat = lambda img: TF.normalize(
@@ -1090,32 +1008,8 @@ class TryOnModel:
 
         result_arr = np.array(TF.to_pil_image(out[0].float().cpu()))
 
-        # ── Phase D: histogram colour match (torso only) ─────────────────────
-        # Lock the painted torso's colour distribution to the garment's so
-        # any CatVTON hue drift disappears. We compute a torso-only mask
-        # (silhouette ∩ band below face) and match histograms inside it.
-        sz = result_arr.shape[0]
-        try:
-            torso_mask, _silh, fc_y = self._build_body_mask(orig_arr)
-            torso_bool = torso_mask > 0.5
-            if torso_bool.sum() > 1000:
-                result_arr = self._histogram_match_torso(
-                    result_arr, np.array(garment), torso_bool
-                )
-        except Exception as e:
-            log.debug(f"histogram match skipped: {e}")
-            fc_y = None
-
-        # ── Phase E: SDXL refiner pass (optional, env-controlled) ─────────────
-        # Adds realistic fabric weave + sharper folds. Skipped by default
-        # because it adds ~1.5 s/frame and 7 GB VRAM.
-        if self._sdxl_refiner is not None:
-            try:
-                result_arr = self._sdxl_refine(result_arr)
-            except Exception as e:
-                log.debug(f"SDXL refiner skipped: {e}")
-
         # Restore face — CatVTON may alter the upper portion
+        sz    = result_arr.shape[0]
         gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
             cv2.equalizeHist(gray), scaleFactor=1.1,
@@ -1129,86 +1023,6 @@ class TryOnModel:
         result_arr[:cutoff] = orig_arr[:cutoff]
         self._prev_result = result_arr.copy()
         return Image.fromarray(result_arr)
-
-    # ── Phase D helper: histogram match the painted torso to the garment ─────
-
-    @staticmethod
-    def _histogram_match_torso(
-        result_arr: np.ndarray, garment_arr: np.ndarray, torso_mask: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Match the colour histogram of the torso region in `result_arr` to
-        the garment's central region (where the actual cloth pixels are,
-        not white background). Operates in LAB space and only on the
-        L and a/b channels' distributions so lighting structure survives.
-        Works WITHOUT skimage — does a per-channel CDF lookup directly.
-        """
-        # Source: the painted torso pixels
-        src = result_arr[torso_mask]  # (N, 3) RGB
-        # Target: garment centre (drop white edges)
-        gh, gw = garment_arr.shape[:2]
-        cx0, cx1 = int(gw * 0.25), int(gw * 0.75)
-        cy0, cy1 = int(gh * 0.25), int(gh * 0.75)
-        centre = garment_arr[cy0:cy1, cx0:cx1].reshape(-1, 3)
-        mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
-        tgt = centre[mk] if mk.sum() > 500 else centre
-        if src.size == 0 or tgt.size == 0:
-            return result_arr
-
-        # Convert to LAB so we can match colour (a/b) without crushing
-        # luminance (which carries fabric folds + lighting).
-        src_lab = cv2.cvtColor(src.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3)
-        tgt_lab = cv2.cvtColor(tgt.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3)
-
-        matched_lab = src_lab.copy()
-        # Match a and b channels (colour); leave L (lightness) mostly alone
-        # — we only nudge it gently toward the target mean so the shirt's
-        # overall brightness aligns without erasing folds.
-        for ch in (1, 2):
-            src_vals = src_lab[:, ch]
-            tgt_vals = tgt_lab[:, ch]
-            src_hist, src_bins = np.histogram(src_vals, 256, [0, 256], density=True)
-            tgt_hist, _        = np.histogram(tgt_vals, 256, [0, 256], density=True)
-            src_cdf = src_hist.cumsum()
-            tgt_cdf = tgt_hist.cumsum()
-            lut = np.interp(src_cdf, tgt_cdf, np.arange(256)).astype(np.uint8)
-            matched_lab[:, ch] = lut[src_vals]
-        # Gentle L nudge
-        l_shift = float(tgt_lab[:, 0].mean() - src_lab[:, 0].mean()) * 0.35
-        matched_lab[:, 0] = np.clip(
-            matched_lab[:, 0].astype(np.float32) + l_shift, 0, 255
-        ).astype(np.uint8)
-
-        matched_rgb = cv2.cvtColor(matched_lab.reshape(-1, 1, 3), cv2.COLOR_LAB2RGB).reshape(-1, 3)
-        out = result_arr.copy()
-        out[torso_mask] = matched_rgb
-        return out
-
-    # ── Phase E helper: SDXL img2img refiner pass ────────────────────────────
-
-    def _sdxl_refine(self, result_arr: np.ndarray) -> np.ndarray:
-        """
-        Take the 512² CatVTON result, upscale to 1024², run SDXL img2img at
-        a low strength (0.22) with a fabric-texture prompt, then downscale
-        back to 512². Adds realistic woven texture that SD 1.5 / CatVTON
-        cannot produce. Only runs when self._sdxl_refiner is loaded.
-        """
-        from PIL import Image as _PI
-        pil = _PI.fromarray(result_arr).resize((1024, 1024), _PI.LANCZOS)
-        with torch.inference_mode():
-            refined = self._sdxl_refiner(
-                prompt=(
-                    "high quality photograph, realistic woven cotton fabric, "
-                    "natural shirt folds, sharp focus, studio lighting"
-                ),
-                negative_prompt="blurry, soft, plastic, painted, cartoon",
-                image=pil,
-                strength=0.22,
-                num_inference_steps=8,
-                guidance_scale=4.0,
-            ).images[0]
-        refined = refined.resize((result_arr.shape[1], result_arr.shape[0]), _PI.LANCZOS)
-        return np.array(refined)
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
@@ -1262,42 +1076,25 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff at chin + ~20% face-height so the collar still has
-                # room to land on the neck without eating into the jaw. The
-                # earlier 35% gap was pushing the cutoff so low that the
-                # collar got trimmed off by face protection.
-                face_cutoff_y = int(np.clip(fy + fh + fh * 0.20,
-                                            h * 0.26, h * 0.50))
+                # Cutoff at chin + a real neck gap (~35% of face height) so
+                # the collar lands on the neck, not on the chin. This is the
+                # main "worn on" tweak — without the gap, the jacket sits
+                # like a sticker pressed against the face.
+                face_cutoff_y = int(np.clip(fy + fh + fh * 0.35,
+                                            h * 0.28, h * 0.55))
         except Exception:
             pass
 
-        # 3. Torso band — a wide rectangle from the neck gap down to the
-        # frame bottom. We deliberately DON'T intersect with the body
-        # silhouette here, because MediaPipe's confidence drops below the
-        # chest and was leaving the lower torso unmasked → SD wouldn't
-        # paint a shirt there. The body silhouette is used later when
-        # compositing to keep paint inside the actual body.
-        band_l = max(0, w // 2 - int(w * 0.42))
-        band_r = min(w, w // 2 + int(w * 0.42))
+        # 3. Torso band — restrict mask vertically. Jacket reaches from just
+        # below the chin to mid-thigh.
         band = np.zeros((h, w), dtype=np.float32)
-        band[face_cutoff_y:h, band_l:band_r] = 1.0
-        band = cv2.GaussianBlur(band, (9, 9), 0)
+        band[face_cutoff_y:int(h * 0.92), :] = 1.0
+        band = cv2.GaussianBlur(band, (15, 15), 0)
 
-        # 4. torso_mask = band ∩ generously-dilated silhouette. We give
-        # MediaPipe's silhouette a wide skirt of dilation so the lower
-        # torso (where confidence drops) still gets included, but we DO
-        # multiply by the silhouette directly — no constant floor — so
-        # the rectangle's left/right corners over background don't get
-        # painted. That was the source of the rectangular halo behind
-        # the body in the result.
-        loose_silhouette = cv2.dilate(
-            silhouette,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)),
-            iterations=3,
-        ).clip(0, 1)
-        loose_silhouette = cv2.GaussianBlur(loose_silhouette, (15, 15), 0).clip(0, 1)
-        torso_mask = (band * loose_silhouette).clip(0, 1)
-        torso_mask = cv2.GaussianBlur(torso_mask, (5, 5), 0)
+        # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
+        torso_mask = (silhouette * band).clip(0, 1)
+        # Gentle feather so SD has a smooth boundary to denoise into.
+        torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
 
         return torso_mask, silhouette, face_cutoff_y
 
@@ -1317,10 +1114,6 @@ class TryOnModel:
 
         When DWPose is not available, falls back to vanilla img2img (original behaviour).
         """
-        # ── Stage timings (logged at end of _infer_tier3) ─────────────────────
-        _t_start = time.perf_counter()
-        _stage = {}
-
         # person_image is already center-cropped + blended by tryon() when _prev_result exists
         pw, ph = person_image.size
         sq = min(pw, ph)
@@ -1328,7 +1121,6 @@ class TryOnModel:
                                     (pw + sq) // 2, (ph + sq) // 2))
         person = person.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         orig_arr = np.array(person)
-        _stage["prep"] = (time.perf_counter() - _t_start) * 1000
 
         ip_kwargs = (
             {"ip_adapter_image_embeds": self._ip_embeds}
@@ -1356,27 +1148,7 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        #
-        # Optimisation: cache the mask for N frames. The subject moves
-        # slowly relative to the 3-second inference cycle, and the EMA
-        # blend smooths the result, so a stale mask is acceptable.
-        _t = time.perf_counter()
-        self._mask_cache_frame_count += 1
-        cache_valid = (
-            self._mask_cache_torso is not None
-            and self._mask_cache_torso.shape == orig_arr.shape[:2]
-            and (self._mask_cache_frame_count % self._mask_cache_refresh_every) != 0
-        )
-        if cache_valid:
-            torso_mask     = self._mask_cache_torso
-            body_silhouette = self._mask_cache_silh
-            face_cutoff_y  = self._mask_cache_cutoff
-        else:
-            torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
-            self._mask_cache_torso  = torso_mask
-            self._mask_cache_silh   = body_silhouette
-            self._mask_cache_cutoff = face_cutoff_y
-        _stage["mask"] = (time.perf_counter() - _t) * 1000
+        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -1419,23 +1191,22 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            # Prompt kept under the 77-CLIP-token limit; the longer version
-            # was being silently truncated, so the tail words ("high detail")
-            # never reached the model.
             prompt = (
-                f"photo of a man wearing a tailored {color} button-up shirt, "
-                f"shirt fits naturally, collar around the neck, buttons "
-                f"down the centre, sleeves on the arms, fabric folds, "
-                f"sharp focus, photorealistic"
+                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"solid {color} fabric, neutral {color} colour, "
+                f"the shirt fits naturally on the body, visible collar around the neck, "
+                f"long sleeves following the arms down to the wrists, "
+                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
-            # Keep negatives minimal — listing specific colours pushes SD
-            # toward complementary colours (purple→green halo). Only call
-            # out structural problems, let the colour-anchor prefill and
-            # IP-Adapter handle the actual colour.
+            # Anti-drift negatives. Includes purple/violet because at higher
+            # IP-Adapter scales grey shirts pick up a mauve tint from the
+            # mid-tone bias of the embedding.
             neg = (
-                "bare chest, naked, t-shirt, tank top, sleeveless, "
-                "floating clothes, shirt outline, neon glow, "
-                "deformed body, blurry, low quality, cartoon"
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
+                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "floating clothes, shirt on background, shirt outline, "
+                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
@@ -1443,22 +1214,17 @@ class TryOnModel:
             # masked region is pre-seeded with the garment's mean colour
             # (see colour-anchor block above) which is the other half of
             # the fix.
-            _t = time.perf_counter()
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    # Honour VTON_STEPS env var (= self._steps). Hardcoded
-                    # 8 was the reason every frame cost ~800 ms regardless
-                    # of the env override.
-                    num_inference_steps=self._steps,
+                    num_inference_steps=6,
                     guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
-            _stage["sd"] = (time.perf_counter() - _t) * 1000
 
             # ── Composite result back onto original via body silhouette ──────
             # SD output can bleed slightly past the mask edge. We blend the
@@ -1468,91 +1234,18 @@ class TryOnModel:
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
             orig_f     = orig_arr.astype(np.float32)
-
-            # Subtle shadow under the collar — multiply a narrow horizontal
-            # band just below face_cutoff by 0.88 so the shirt looks like
-            # it's catching the natural shadow of the neck overhang. This
-            # is the cheap-and-good way to fake depth.
-            shadow_top = face_cutoff_y
-            shadow_bot = min(face_cutoff_y + 12, result_arr.shape[0])
-            result_arr[shadow_top:shadow_bot] *= 0.88
             # Compose ONLY inside the torso_mask (the same region SD was
             # actually told to paint). Using body_silhouette here was
             # letting the inpaint bleed out below the chest band, leaving
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            # Hard binary mask intersected with the body silhouette as a
-            # final safety net so SD output never leaks onto the actual
-            # camera background (the rectangular halo we kept seeing).
-            blend_mask = (torso_mask > 0.4).astype(np.float32)
+            blend_mask = torso_mask.copy()
             blend_mask[:face_cutoff_y] = 0.0
-            blend_mask = blend_mask * (body_silhouette > 0.5).astype(np.float32)
-            blend_mask = cv2.GaussianBlur(blend_mask, (3, 3), 0)
-
-            # ── Phase D: histogram colour match on the painted torso ─────
-            # Lock the SD output's a/b channels to the garment's central
-            # pixels so the colour matches the input garment exactly.
-            _t = time.perf_counter()
-            try:
-                torso_bool = blend_mask > 0.5
-                if torso_bool.sum() > 1000:
-                    result_arr_u8 = np.clip(result_arr, 0, 255).astype(np.uint8)
-                    matched = self._histogram_match_torso(
-                        result_arr_u8, np.array(garment.convert("RGB")), torso_bool,
-                    )
-                    result_arr = matched.astype(np.float32)
-            except Exception as e:
-                log.debug(f"histogram match skipped: {e}")
-            _stage["hist"] = (time.perf_counter() - _t) * 1000
-
-            # ── Phase E: optional SDXL refiner pass ──────────────────────
-            if self._sdxl_refiner is not None:
-                try:
-                    refined = self._sdxl_refine(
-                        np.clip(result_arr, 0, 255).astype(np.uint8),
-                    )
-                    result_arr = refined.astype(np.float32)
-                except Exception as e:
-                    log.debug(f"SDXL refiner skipped: {e}")
-
+            blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), 0)
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
-
-            # ── Temporal stabilisation: EMA against previous frame so the
-            # shirt doesn't flicker when the body moves between inference
-            # cycles. Critical detail: EMA is DISABLED in the collar zone
-            # (top ~15% of the torso mask). Otherwise the previous frame's
-            # neck pixels keep getting averaged in and the collar fades
-            # out over time.
-            if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                # Weight of new frame; lower = stickier/smoother but laggier.
-                # 0.4 = "more responsive" sweet spot — fresh detail bleeds
-                # in faster, flicker still suppressed by the 60% prev term.
-                alpha_ema = 0.4
-                ema = (
-                    composed.astype(np.float32) * alpha_ema
-                    + self._prev_result.astype(np.float32) * (1.0 - alpha_ema)
-                ).astype(np.uint8)
-                # Collar protection zone: top 18% of the band below the
-                # face cutoff. Use fresh `composed` there, EMA elsewhere.
-                band_top = face_cutoff_y
-                band_bot = composed.shape[0]
-                collar_end = band_top + int((band_bot - band_top) * 0.18)
-                stable_region = (a > 0.05).copy()
-                stable_region[:collar_end] = False
-                composed = np.where(stable_region, ema, composed)
             self._prev_result = composed.copy()
-
-            # ── Stage timing summary ─────────────────────────────────────
-            _total = (time.perf_counter() - _t_start) * 1000
-            log.info(
-                f"[tier3] prep={_stage.get('prep',0):.0f}ms "
-                f"mask={_stage.get('mask',0):.0f}ms "
-                f"sd={_stage.get('sd',0):.0f}ms "
-                f"hist={_stage.get('hist',0):.0f}ms "
-                f"total={_total:.0f}ms"
-            )
             return Image.fromarray(composed)
 
         # ── SD img2img + IP-Adapter fallback ─────────────────────────────────
