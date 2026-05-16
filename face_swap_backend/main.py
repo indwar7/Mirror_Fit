@@ -468,19 +468,31 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     lmk = getattr(tgt_face, "landmark_2d_106", None)
     blend_mask = np.zeros((ih, iw), np.uint8)
     if lmk is not None and len(lmk) > 10:
-        pts = lmk.astype(np.int32)
-        # Extend each landmark slightly outward from the face centroid so the
-        # hull covers a tiny bit of background — Poisson softens the rest.
+        pts_f = lmk.astype(np.float32)
         center = np.array([cx, cy], dtype=np.float32)
-        expanded = (pts.astype(np.float32) - center) * 1.06 + center
+        # Expand the hull more aggressively (1.06 -> 1.15) so the mask
+        # covers full jaw + chin instead of stopping right at the
+        # landmark line. User reported chin area was not fully covered
+        # and looked unstable frame-to-frame because the boundary was
+        # sitting exactly on the jaw landmarks (which jitter with
+        # detection noise).
+        expanded = (pts_f - center) * 1.15 + center
+
+        # Additional downward bias on the LOWER half of the hull so the
+        # mask extends a bit below the chin landmarks specifically.
+        # Upper half (forehead area) stays at the expanded position so
+        # we don't paint over hair.
+        for i in range(len(expanded)):
+            if expanded[i, 1] > cy:   # point is below face centre
+                expanded[i, 1] += fh * 0.08   # ~8% face-height downward
+
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
-        # Tight hull only. Hair-area extension was producing a visible
-        # patch outline. Hair is dropped from scope; this is the clean
-        # face-only mask that gives the best soul-of-the-photo blend.
-        blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
+        # Wider Gaussian (15 -> 25) so the mask boundary is more
+        # feathered. A wider feather absorbs the 1-2 px per-frame
+        # landmark jitter so the user no longer sees the edge shaking.
+        blend_mask = cv2.GaussianBlur(blend_mask, (25, 25), 0)
         _, blend_mask = cv2.threshold(blend_mask, 100, 255, cv2.THRESH_BINARY)
-        # Centre of mass for Poisson
         M_m = cv2.moments(blend_mask)
         if M_m["m00"] > 0:
             poisson_cx = int(M_m["m10"] / M_m["m00"])

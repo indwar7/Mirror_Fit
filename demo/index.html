@@ -1082,12 +1082,11 @@ function stopLiveSwap() {
 }
 function _startLsTimer() {
   if (liveSendTimer) clearInterval(liveSendTimer);
-  // 120 ms = ~8 fps target. Server frame-drop gate auto-throttles to whatever
-  // it can do (full LAB + Poisson + GFPGAN ~120-150 ms). User sees the latest
-  // accurate result as soon as the GPU can produce one.
-  // 100 ms = ~10 fps target. Matches server pipeline (~80-100 ms per
-  // frame at 384 px) so we don't queue dropped frames.
-  liveSendTimer=setInterval(sendLiveFrame,100);
+  // 60 ms = ~16 fps target. Server frame-drop gate ('dropped' message)
+  // auto-throttles when the pipeline can't keep up; pushing the cap up
+  // means motion (blinks, smiles) reads faster on the user end because
+  // every successful frame is the latest possible.
+  liveSendTimer=setInterval(sendLiveFrame,60);
 }
 function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
 function _startLsRender() {
