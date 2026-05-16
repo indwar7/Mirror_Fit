@@ -643,13 +643,14 @@ header {
 <script>
 const FACE_API = 'http://13.203.75.149:7860';
 const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
-// Restored to the proven face_swap_backend on port 7860 (commit 8de2dc2
-// pipeline: inswapper-128 + LAB colour match + tight landmark hull
-// seamlessClone). InstantID experiment removed from the live demo path —
-// it produced full-frame regenerations that drifted from "skin over
-// my face" requirement. To re-enable later, point this back to
-// ws://...:7861/ws/instantid-swap.
-const SWAP_WS = 'ws://13.203.75.149:7860/ws/live-swap';
+// Swap backend = LivePortrait on port 7862. LivePortrait is a video-native
+// model that explicitly carries the driving frame's expression (blinks,
+// smiles, brow raises) onto the source identity — the architectural fix
+// for the "static swap face" problem that inswapper-128 and InstantID had.
+// Fallback options if 7862 is down (operator can manually point here):
+//   ws://...:7861/ws/instantid-swap   (InstantID, slow but identity-locked)
+//   ws://...:7860/ws/live-swap        (inswapper-128, fast baseline)
+const SWAP_WS = 'ws://13.203.75.149:7862/ws/liveportrait-swap';
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
