@@ -143,6 +143,7 @@ class TryOnModel:
             self._mp_face = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
+        self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
@@ -657,6 +658,7 @@ class TryOnModel:
         self._ip_embeds        = None
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
+        self._prev_silhouette  = None
 
         # Store alpha mask if original had transparency — used by geometric warp
         if garment_image.mode == 'RGBA':
@@ -960,6 +962,7 @@ class TryOnModel:
 
     def reset_temporal(self):
         self._prev_result      = None
+        self._prev_silhouette  = None
         self._frame_buffer     = []
         self._video_results    = []
         self._video_result_idx = 0
@@ -1053,7 +1056,18 @@ class TryOnModel:
                     bm = (s > 0.6).astype(np.float32)
                     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
                     bm = cv2.dilate(bm, kernel, iterations=1)
-                    silhouette = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
+                    bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
+                    # Per-pixel temporal EMA: damps the 1-2 px shimmer
+                    # MediaPipe produces per frame. alpha=0.6 on the new
+                    # frame is faster than the result EMA (0.45) so the
+                    # mask still tracks body motion; the 40% prev term
+                    # eliminates edge wobble that would otherwise show
+                    # once the final alpha is tightened to (3,3).
+                    if (self._prev_silhouette is not None
+                            and self._prev_silhouette.shape == bm.shape):
+                        bm = (0.6 * bm + 0.4 * self._prev_silhouette).clip(0, 1)
+                    self._prev_silhouette = bm
+                    silhouette = bm
             except Exception as e:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
@@ -1244,9 +1258,31 @@ class TryOnModel:
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            blend_mask = torso_mask.copy()
+            # Tight final alpha — blur FIRST with a small (3,3) kernel
+            # for just enough antialiasing to avoid jaggies, then zero
+            # the face region. Old order (zero, then blur 7x7) was
+            # smearing the chin row by 7 px and making the collar look
+            # half-transparent.
+            blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
             blend_mask[:face_cutoff_y] = 0.0
-            blend_mask = cv2.GaussianBlur(blend_mask, (7, 7), 0)
+
+            # Edge contact shadow — narrow ring just INSIDE the alpha
+            # gets darkened to 85% in the SD result. Fakes the depth
+            # cue of fabric sitting proud of the shoulder/sleeve. Set
+            # SHADOW_STRENGTH = 0.0 to disable as a kill-switch.
+            SHADOW_STRENGTH = 0.15
+            mask_hard = (blend_mask > 0.5).astype(np.float32)
+            inner = cv2.erode(
+                mask_hard,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+                iterations=1,
+            )
+            edge_ring = cv2.GaussianBlur(
+                (mask_hard - inner).clip(0, 1), (3, 3), 0,
+            ).clip(0, 1)
+            shadow = 1.0 - SHADOW_STRENGTH * edge_ring
+            result_arr = result_arr * shadow[:, :, np.newaxis]
+
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
