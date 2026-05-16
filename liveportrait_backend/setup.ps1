@@ -26,26 +26,18 @@ if (-not (Test-Path $lpRoot)) {
 
 Write-Host "[setup] downloading LivePortrait model weights (~2.2 GB)" -ForegroundColor Cyan
 $weights = Join-Path $lpRoot "pretrained_weights"
-# Use `hf` (new HuggingFace CLI). `huggingface-cli` is deprecated and
-# returns 0 exit code with only a warning, causing silent download failure.
+# NB: `huggingface-cli` is deprecated in huggingface_hub 0.26+ — it
+# prints a warning and exits 0 WITHOUT downloading anything. The new
+# entrypoint is `hf`. Using `hf download` so the setup actually fetches
+# the weights instead of silently no-op'ing.
 hf download KwaiVGI/LivePortrait --local-dir $weights
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[setup] ERROR: HuggingFace download failed (exit $LASTEXITCODE)" -ForegroundColor Red
+
+# Verify the appearance feature extractor actually landed on disk
+$probe = Join-Path $weights "liveportrait\base_models\appearance_feature_extractor.pth"
+if (-not (Test-Path $probe)) {
+    Write-Host "[setup] ERROR: weights did not download to $probe" -ForegroundColor Red
+    Write-Host "[setup] Try manually: hf download KwaiVGI/LivePortrait --local-dir $weights" -ForegroundColor Yellow
     exit 1
-}
-# Sanity check: verify the 4 critical .pth files actually exist.
-$required = @(
-    "liveportrait\base_models\appearance_feature_extractor.pth",
-    "liveportrait\base_models\motion_extractor.pth",
-    "liveportrait\base_models\warping_module.pth",
-    "liveportrait\base_models\spade_generator.pth"
-)
-foreach ($f in $required) {
-    $full = Join-Path $weights $f
-    if (-not (Test-Path $full)) {
-        Write-Host "[setup] ERROR: required file missing after download: $f" -ForegroundColor Red
-        exit 1
-    }
 }
 
 Write-Host "[setup] DONE. Run: powershell .\start.ps1" -ForegroundColor Green
