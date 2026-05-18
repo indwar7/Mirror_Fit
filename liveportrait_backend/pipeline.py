@@ -279,7 +279,11 @@ class LivePortraitEngine:
             x_d_new = self.wrap.stitching(sess["x_s"], x_d_new)
 
         out = self.wrap.warp_decode(sess["f_s"], sess["x_s"], x_d_new)
-        I_p = self.wrap.parse_output(out["out"])   # HxWx3 RGB uint8
+        # parse_output returns 1xHxWx3 (batch-prefixed) per upstream
+        # docstring. Squeeze the batch dim so I_p is HxWx3 RGB uint8.
+        I_p = self.wrap.parse_output(out["out"])
+        if I_p.ndim == 4:
+            I_p = I_p[0]
 
         if self._cfg.flag_pasteback and sess["mask_crop"] is not None:
             try:
