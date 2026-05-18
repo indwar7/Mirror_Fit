@@ -1266,7 +1266,7 @@ function stopLp() {
   }
 }
 let _lpCvs=document.createElement('canvas'), _lpCtx=_lpCvs.getContext('2d');
-function _startLpTimer(){ if(lpSendTimer)clearInterval(lpSendTimer); lpSendTimer=setInterval(sendLpFrame,60); }
+function _startLpTimer(){ if(lpSendTimer)clearInterval(lpSendTimer); lpSendTimer=setInterval(sendLpFrame,80); }
 function _stopLpTimer(){ if(lpSendTimer){clearInterval(lpSendTimer);lpSendTimer=null;} }
 function _startLpRender(){
   const cv=document.getElementById('lpCanvas'), ctx=cv.getContext('2d');
@@ -1295,7 +1295,7 @@ function sendLpFrame(){
   const sz=Math.min(vw,vh,384);
   if(_lpCvs.width!==sz){_lpCvs.width=sz;_lpCvs.height=sz;}
   _lpCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
-  lpWs.send(JSON.stringify({type:'frame',image:_lpCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
+  lpWs.send(JSON.stringify({type:'frame',image:_lpCvs.toDataURL('image/jpeg',0.70).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────
