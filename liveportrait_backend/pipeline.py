@@ -183,7 +183,15 @@ class LivePortraitEngine:
         if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
                 crop_d = self.cropper.crop_driving_image(driving_bgr)
-            except Exception:
+            except Exception as e:
+                # Log every 30th failure so we see the root cause without
+                # flooding logs. Frame shape included to spot decode bugs
+                # (wrong dtype, zero-sized array, etc.).
+                if sess["frame_n"] % 30 == 1:
+                    log.warning(
+                        "[LP] crop_driving_image failed (frame=%d shape=%s): %s",
+                        sess["frame_n"], driving_bgr.shape, e,
+                    )
                 crop_d = None
             if crop_d is not None:
                 sess["last_bbox"] = crop_d.get("bbox")
