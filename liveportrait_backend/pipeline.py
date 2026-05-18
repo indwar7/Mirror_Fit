@@ -176,25 +176,52 @@ class LivePortraitEngine:
     def _drive_locked(self, sess: dict, driving_bgr: np.ndarray) -> Optional[np.ndarray]:
         torch = self._torch
 
-        # Crop the driving frame. To save ~10 ms, only re-run the full
-        # Cropper every 10th frame; in between, reuse the previous bbox.
+        # Crop the driving frame using the upstream cropper. The newer
+        # KwaiVGI/LivePortrait code dropped the convenience method
+        # `crop_driving_image` and only ships `crop_driving_video` which
+        # takes a list of RGB frames. We adapt by passing a 1-element
+        # list per call; on success we reuse the bbox for ~10 frames to
+        # save the ~30 ms face_analysis call on every frame.
+        #
+        # Returned dict (new schema):
+        #   frame_crop_lst[i] : 512×512 RGB ndarray
+        #   lmk_crop_lst[i]   : (203, 2) landmark array
+        # We resize the crop to 256×256 BGR for compatibility with the
+        # rest of the pipeline (wrap.prepare_source expects this shape).
         sess["frame_n"] += 1
         crop_d = None
         if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
-                crop_d = self.cropper.crop_driving_image(driving_bgr)
+                # cv2 BGR → RGB for upstream cropper
+                driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
+                out = self.cropper.crop_driving_video([driving_rgb])
+                if out and out.get("frame_crop_lst"):
+                    crop512_rgb = out["frame_crop_lst"][0]
+                    crop256_bgr = cv2.resize(
+                        cv2.cvtColor(crop512_rgb, cv2.COLOR_RGB2BGR),
+                        (256, 256),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                    crop_d = {"img_crop_256x256": crop256_bgr}
+                    # Stash the original-frame bbox so we can fast-path
+                    # the next 9 frames without re-running face_analysis.
+                    # crop_driving_video doesn't return a bbox directly,
+                    # so derive it from the landmarks.
+                    lmks = out["lmk_crop_lst"][0]
+                    if lmks is not None and len(lmks) > 0:
+                        x1, y1 = lmks[:, 0].min(), lmks[:, 1].min()
+                        x2, y2 = lmks[:, 0].max(), lmks[:, 1].max()
+                        # Pad ~40% so we capture the full head, not just the
+                        # tight face box.
+                        pw, ph = (x2 - x1) * 0.4, (y2 - y1) * 0.4
+                        sess["last_bbox"] = (x1 - pw, y1 - ph, x2 + pw, y2 + ph)
             except Exception as e:
-                # Log every 30th failure so we see the root cause without
-                # flooding logs. Frame shape included to spot decode bugs
-                # (wrong dtype, zero-sized array, etc.).
                 if sess["frame_n"] % 30 == 1:
                     log.warning(
-                        "[LP] crop_driving_image failed (frame=%d shape=%s): %s",
+                        "[LP] crop_driving_video failed (frame=%d shape=%s): %s",
                         sess["frame_n"], driving_bgr.shape, e,
                     )
                 crop_d = None
-            if crop_d is not None:
-                sess["last_bbox"] = crop_d.get("bbox")
         if crop_d is None and sess["last_bbox"] is not None:
             # Fast path: cv2 crop using last bbox, then resize to 256
             x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
