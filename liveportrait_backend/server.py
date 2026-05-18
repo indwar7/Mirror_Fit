@@ -201,7 +201,11 @@ async def ws_liveportrait_swap(ws: WebSocket):
                         log.info(f"[LP] drive no_face   ({_dt:.0f} ms)")
                         await send({"type": "no_face"})
                     else:
-                        log.info(f"[LP] drive ok        ({_dt:.0f} ms)")
+                        log.info(
+                            f"[LP] drive ok        ({_dt:.0f} ms) "
+                            f"shape={result.shape} dtype={result.dtype} "
+                            f"min={result.min()} max={result.max()}"
+                        )
                         ok, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         if ok:
                             await send({
