@@ -192,12 +192,16 @@ async def ws_liveportrait_swap(ws: WebSocket):
                         await send({"type": "error", "message": "bad jpeg"})
                         continue
                     engine = _get_engine()
+                    _t0 = time.perf_counter()
                     result = await loop.run_in_executor(
                         None, engine.drive, session_id, frame
                     )
+                    _dt = (time.perf_counter() - _t0) * 1000
                     if result is None:
+                        log.info(f"[LP] drive no_face   ({_dt:.0f} ms)")
                         await send({"type": "no_face"})
                     else:
+                        log.info(f"[LP] drive ok        ({_dt:.0f} ms)")
                         ok, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 85])
                         if ok:
                             await send({
