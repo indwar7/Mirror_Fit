@@ -1230,6 +1230,18 @@ function startLp() {
     document.getElementById('lpStartBtn').textContent='⏹ Stop';
     document.getElementById('lpStartBtn').className='btn btn-stop';
     lpRunning=true;
+
+    // Auto-start streaming voice — same UX as Live Face Swap. The
+    // voice WS (port 7860 /ws/voice-stream) and the LP WS (port 7862)
+    // are independent but the demo treats them as a single feature:
+    // start them together so the user sees pitch-shifted speech +
+    // animated portrait without an extra button.
+    if (typeof _startStreamingVoice === 'function' && !_vsActive) {
+      // Pick a default voice profile (male pitch shift) so users
+      // uploading a custom portrait still get a transformed voice.
+      if (!_selectedAvatar) _selectedAvatar = 'gen_m_01';
+      _startStreamingVoice().catch(err => console.warn('[lp+voice] auto-start failed', err));
+    }
   };
   lpWs.onmessage=e=>{
     const msg=JSON.parse(e.data);
@@ -1248,6 +1260,10 @@ function stopLp() {
   _stopLpTimer(); _stopLpRender(); lpRunning=false;
   document.getElementById('lpStartBtn').textContent='Start Live Portrait';
   document.getElementById('lpStartBtn').className='btn btn-primary';
+  // Auto-stop streaming voice alongside the portrait swap.
+  if (typeof _stopStreamingVoice === 'function' && _vsActive) {
+    _stopStreamingVoice();
+  }
 }
 let _lpCvs=document.createElement('canvas'), _lpCtx=_lpCvs.getContext('2d');
 function _startLpTimer(){ if(lpSendTimer)clearInterval(lpSendTimer); lpSendTimer=setInterval(sendLpFrame,60); }
