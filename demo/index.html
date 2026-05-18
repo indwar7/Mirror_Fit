@@ -481,6 +481,7 @@ header {
   </div>
   <div class="tabs">
     <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
+    <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
   </div>
   <div style="width:120px"></div>
@@ -538,6 +539,40 @@ header {
         </div>
         <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
         <div id="liveStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- LIVE PORTRAIT (expression-driven swap, port 7862) -->
+    <div class="panel" id="panel-liveportrait">
+      <!-- Step 1: Camera -->
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="lpCamBtn" onclick="startLpCamera()">📷 Start Camera</button>
+      </div>
+
+      <!-- Step 2: Source face upload -->
+      <div class="card">
+        <div class="card-label">Step 2 · Source face</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          Upload any front-facing portrait. Your expression drives this face in real-time.
+        </div>
+        <div class="upload-zone" style="min-height:56px">
+          <input type="file" accept="image/*" onchange="previewFile(this,'lpp','lpph');setLpSourceFile(this)">
+          <img id="lpp" style="display:none;max-height:50px">
+          <span class="upload-hint" id="lpph">📁 Upload portrait</span>
+        </div>
+      </div>
+
+      <!-- Step 3: Start -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="lpDot"></div>
+            <span id="lpStatusText" style="font-size:12px">Not connected</span>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="lpStartBtn" onclick="toggleLp()" disabled>Start Live Portrait</button>
+        <div id="lpStatus" class="status-msg"></div>
       </div>
     </div>
 
@@ -603,6 +638,27 @@ header {
       </div>
     </div>
 
+    <!-- Live Portrait: expression-driven swap (port 7862) -->
+    <div id="lpWrap" style="display:none;width:100%">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" style="max-width:100%">
+          <video id="lpVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">📷 Your Camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <canvas id="lpCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="lpDot2"></div>
+              <span>Live Portrait</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Live try-on: camera + result side by side -->
     <div id="tryonWrap" style="display:none;width:100%;display:none">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
@@ -647,14 +703,13 @@ header {
 <script>
 const FACE_API = 'http://13.203.75.149:7860';
 const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
-// Swap backend = LivePortrait on port 7862. LivePortrait is a video-native
-// model that explicitly carries the driving frame's expression (blinks,
-// smiles, brow raises) onto the source identity — the architectural fix
-// for the "static swap face" problem that inswapper-128 and InstantID had.
-// Fallback options if 7862 is down (operator can manually point here):
-//   ws://...:7861/ws/instantid-swap   (InstantID, slow but identity-locked)
-//   ws://...:7860/ws/live-swap        (inswapper-128, fast baseline)
-const SWAP_WS = 'ws://13.203.75.149:7862/ws/liveportrait-swap';
+// Live Face Swap tab uses inswapper-128 on port 7860 — fast, identity-stable,
+// ~5 fps. Live Portrait tab uses the new LivePortrait pipeline on port 7862
+// which actively drives the source's expression from the camera frame
+// (blinks, smiles, brow raises). They are independent backends with
+// independent UI so operator can demo either without touching the other.
+const SWAP_WS         = 'ws://13.203.75.149:7860/ws/live-swap';
+const LIVEPORTRAIT_WS = 'ws://13.203.75.149:7862/ws/liveportrait-swap';
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
@@ -662,12 +717,13 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','tryon'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
-  document.getElementById('liveWrap').style.display    = t==='liveswap' ? 'grid' : 'none';
-  document.getElementById('tryonWrap').style.display   = t==='tryon'    ? 'grid' : 'none';
+  document.getElementById('liveWrap').style.display    = t==='liveswap'     ? 'grid' : 'none';
+  document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
+  document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('placeholder').style.display = 'none';
 }
 
@@ -1134,6 +1190,96 @@ function sendLiveFrame() {
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
   _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
   liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
+}
+
+// ── Live Portrait (expression-driven swap, port 7862) ─────────────────────────
+// Completely independent of liveswap above — own stream, own WebSocket, own
+// canvas. Switching tabs does NOT stop the other backend, so the operator
+// can flip back and forth without re-init.
+let lpStream=null,lpWs=null,lpSource=null,lpRunning=false;
+let lpLatestResult=null,lpRafId=null,lpSendTimer=null;
+
+function _checkLpReady(){
+  if (lpSource && lpStream) document.getElementById('lpStartBtn').disabled=false;
+}
+async function startLpCamera() {
+  try {
+    lpStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+    document.getElementById('lpVideo').srcObject = lpStream;
+    document.getElementById('lpCamBtn').textContent='✅ Camera On';
+    document.getElementById('lpCamBtn').className='btn btn-success';
+    _checkLpReady();
+  } catch(e) { setStatus('lpStatus','error','Camera blocked: '+e.message); }
+}
+function setLpSourceFile(inp) {
+  const f=inp.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=e=>{ lpSource={src:e.target.result}; _checkLpReady(); };
+  r.readAsDataURL(f);
+}
+function toggleLp(){ lpRunning ? stopLp() : startLp(); }
+function startLp() {
+  setStatus('lpStatus','info','Connecting…');
+  lpLatestResult=null;
+  lpWs = new WebSocket(LIVEPORTRAIT_WS);
+  lpWs.onopen=()=>{
+    setDot('lp',true); document.getElementById('lpStatusText').textContent='Connected';
+    const src_b64 = lpSource.src.split(',')[1];
+    lpWs.send(JSON.stringify({type:'init', source_image: src_b64,
+                              session_id: LUCY_SESSION_ID + '_lp'}));
+    document.getElementById('lpStartBtn').textContent='⏹ Stop';
+    document.getElementById('lpStartBtn').className='btn btn-stop';
+    lpRunning=true;
+  };
+  lpWs.onmessage=e=>{
+    const msg=JSON.parse(e.data);
+    if (msg.type==='ping') { try{ lpWs.send(JSON.stringify({type:'pong',t:msg.t})); }catch(_){} return; }
+    if (msg.type==='ready')  { setStatus('lpStatus','success','Live portrait active'); _startLpRender(); _startLpTimer(); sendLpFrame(); }
+    if (msg.type==='result') { const img=new Image(); img.src='data:image/jpeg;base64,'+msg.image; img.onload=()=>{lpLatestResult=img;}; sendLpFrame(); }
+    if (msg.type==='dropped'){ sendLpFrame(); }
+    if (msg.type==='no_face'){ /* keep camera underneath */ }
+    if (msg.type==='error')  { setStatus('lpStatus','error',msg.message); }
+  };
+  lpWs.onclose=()=>{ setDot('lp',false); _stopLpTimer(); _stopLpRender(); lpRunning=false; };
+  lpWs.onerror=()=>{ setStatus('lpStatus','error','Connection error — is port 7862 running?'); stopLp(); };
+}
+function stopLp() {
+  if (lpWs) lpWs.close();
+  _stopLpTimer(); _stopLpRender(); lpRunning=false;
+  document.getElementById('lpStartBtn').textContent='Start Live Portrait';
+  document.getElementById('lpStartBtn').className='btn btn-primary';
+}
+let _lpCvs=document.createElement('canvas'), _lpCtx=_lpCvs.getContext('2d');
+function _startLpTimer(){ if(lpSendTimer)clearInterval(lpSendTimer); lpSendTimer=setInterval(sendLpFrame,60); }
+function _stopLpTimer(){ if(lpSendTimer){clearInterval(lpSendTimer);lpSendTimer=null;} }
+function _startLpRender(){
+  const cv=document.getElementById('lpCanvas'), ctx=cv.getContext('2d');
+  const video=document.getElementById('lpVideo');
+  (function render(){
+    if(!lpRunning) return;
+    if(video.videoWidth>0){
+      const vw=video.videoWidth, vh=video.videoHeight, sz=Math.min(vw,vh);
+      if(cv.width!==sz){cv.width=sz;cv.height=sz;}
+      ctx.save(); ctx.scale(-1,1);
+      ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,-sz,0,sz,sz);
+      ctx.restore();
+    }
+    if(lpLatestResult){
+      ctx.globalAlpha=1.0;
+      ctx.drawImage(lpLatestResult,0,0,cv.width,cv.height);
+    }
+    if(lpRunning) lpRafId=requestAnimationFrame(render);
+  })();
+}
+function _stopLpRender(){ if(lpRafId){cancelAnimationFrame(lpRafId);lpRafId=null;} }
+function sendLpFrame(){
+  if(!lpWs||lpWs.readyState!==WebSocket.OPEN) return;
+  const video=document.getElementById('lpVideo');
+  const vw=video.videoWidth||640, vh=video.videoHeight||480;
+  const sz=Math.min(vw,vh,384);
+  if(_lpCvs.width!==sz){_lpCvs.width=sz;_lpCvs.height=sz;}
+  _lpCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  lpWs.send(JSON.stringify({type:'frame',image:_lpCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────
