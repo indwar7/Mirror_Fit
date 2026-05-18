@@ -123,24 +123,38 @@ class TryOnModel:
         self._haar = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
-        # MediaPipe selfie segmentation — separates person from background precisely
+        # MediaPipe selfie segmentation — separates person from background precisely.
+        # Also load Hands detector so we can carve hand regions OUT of the garment
+        # mask. Without this, a hand crossing in front of the camera gets painted
+        # over with the garment (user-reported "hand crosses → painted as jacket").
         try:
             import mediapipe as mp
-            # Support both old (solutions) and new (tasks) mediapipe APIs
             if hasattr(mp, 'solutions'):
                 self._mp_seg  = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
                 self._mp_face = mp.solutions.face_detection.FaceDetection(
                     model_selection=0, min_detection_confidence=0.5
                 )
+                # Hands: detect up to 2 hands, lower confidence so a partial /
+                # blurry hand crossing still gets picked up. Performance-mode
+                # model (model_complexity=0) is ~5-7 ms / frame on CPU.
+                self._mp_hands = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    model_complexity=0,
+                    min_detection_confidence=0.4,
+                    min_tracking_confidence=0.4,
+                )
             else:
-                self._mp_seg  = None
-                self._mp_face = None
+                self._mp_seg   = None
+                self._mp_face  = None
+                self._mp_hands = None
                 log.warning("MediaPipe solutions API not available, using fixed mask fallback.")
             if self._mp_seg:
-                log.info("MediaPipe loaded.")
+                log.info("MediaPipe loaded (seg + face + hands).")
         except Exception as e:
-            self._mp_seg  = None
-            self._mp_face = None
+            self._mp_seg   = None
+            self._mp_face  = None
+            self._mp_hands = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
@@ -729,6 +743,73 @@ class TryOnModel:
         # ── Geometric warp fallback — no model required ───────────────────────
         return self._infer_live_geometric(person_image)
 
+    # ── Helpers: hand + skin exclusion ────────────────────────────────────────
+
+    def _hand_exclusion_mask(self, frame_rgb: np.ndarray) -> np.ndarray | None:
+        """Build a soft mask where hands are present so we can KEEP the user's
+        skin pixels (not paint garment over them).
+
+        Combines two signals:
+          1. MediaPipe Hands landmarks → bounding polygon for each detected hand,
+             dilated so it covers the full hand silhouette + a bit of wrist.
+          2. YCrCb skin-tone detection inside the same ROI (catches forearm
+             skin that MediaPipe's landmarks don't cover).
+
+        Returns: float32 mask of shape (H, W), values in [0, 1] where 1 means
+        "this is a hand/arm, KEEP original". Or None if MediaPipe is unavailable
+        and skin detection finds nothing meaningful.
+        """
+        H, W = frame_rgb.shape[:2]
+        hand_mask = np.zeros((H, W), np.float32)
+
+        # 1. MediaPipe hand landmarks → convex hull per hand
+        if self._mp_hands is not None:
+            try:
+                res = self._mp_hands.process(frame_rgb)
+                if res.multi_hand_landmarks:
+                    for hand_lmk in res.multi_hand_landmarks:
+                        pts = np.array(
+                            [[int(lm.x * W), int(lm.y * H)] for lm in hand_lmk.landmark],
+                            dtype=np.int32,
+                        )
+                        if len(pts) >= 3:
+                            hull = cv2.convexHull(pts)
+                            cv2.fillPoly(hand_mask, [hull], 1.0)
+            except Exception:
+                pass
+
+        # 2. YCrCb skin-tone secondary signal. Restricted to the lower body
+        # half so we don't accidentally pull face skin into the exclusion.
+        try:
+            ycrcb = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2YCrCb)
+            # Standard skin gamut on YCrCb
+            lower = np.array([0, 133, 77], dtype=np.uint8)
+            upper = np.array([255, 173, 127], dtype=np.uint8)
+            skin = cv2.inRange(ycrcb, lower, upper).astype(np.float32) / 255.0
+            # Cut the top 40% of the frame (face area) — we never want to
+            # exclude face skin from the garment region, only arms/hands.
+            skin[: int(H * 0.40)] = 0.0
+            # Dilate hand_mask region a bit, then OR with skin signal LIMITED
+            # to inside the dilated hand neighborhood. This keeps the skin
+            # signal scoped — random skin-colored objects elsewhere in the
+            # frame won't trigger.
+            if hand_mask.max() > 0:
+                hand_dil = cv2.dilate(
+                    hand_mask, np.ones((45, 45), np.uint8), iterations=2
+                )
+                hand_mask = np.maximum(hand_mask, skin * (hand_dil > 0))
+        except Exception:
+            pass
+
+        if hand_mask.max() < 0.05:
+            return None
+
+        # Dilate so the mask covers the full hand thickness, then soften
+        hand_mask = cv2.dilate(hand_mask, np.ones((15, 15), np.uint8), iterations=1)
+        hand_mask = cv2.GaussianBlur(hand_mask, (31, 31), 0)
+        return np.clip(hand_mask, 0.0, 1.0)
+
+
     # ── Live geometric warp ───────────────────────────────────────────────────
 
     def _infer_live_geometric(self, person_image: Image.Image) -> Image.Image:
@@ -844,6 +925,16 @@ class TryOnModel:
 
         if body_mask_roi.shape == (th, tw):
             alpha = alpha * body_mask_roi
+
+        # ── Hand / arm exclusion ─────────────────────────────────────────────
+        # If a hand crosses in front of the user's torso, we want the original
+        # hand to stay visible (not get painted with garment). The exclusion
+        # mask multiplies (1 - hand) into the alpha so hand pixels go alpha=0.
+        hand_full = self._hand_exclusion_mask(frame)
+        if hand_full is not None:
+            hand_roi = hand_full[top:top + th, left:left + tw]
+            if hand_roi.shape == (th, tw):
+                alpha = alpha * (1.0 - hand_roi)
 
         # ── Edge shadow — depth cue ───────────────────────────────────────────
         edge_w = max(1, int(tw * 0.07))
@@ -1109,6 +1200,17 @@ class TryOnModel:
         torso_mask = (silhouette * band).clip(0, 1)
         # Gentle feather so SD has a smooth boundary to denoise into.
         torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
+
+        # 5. Hand / arm exclusion. When a hand crosses in front of the
+        # torso, we KEEP the user's hand visible — so subtract the hand
+        # mask from torso_mask. SD inpaint will then not paint garment
+        # over those pixels.
+        try:
+            hand_mask = self._hand_exclusion_mask(frame_rgb)
+            if hand_mask is not None and hand_mask.shape == torso_mask.shape:
+                torso_mask = (torso_mask * (1.0 - hand_mask)).clip(0, 1)
+        except Exception as e:
+            log.debug(f"hand exclusion failed: {e}")
 
         return torso_mask, silhouette, face_cutoff_y
 
