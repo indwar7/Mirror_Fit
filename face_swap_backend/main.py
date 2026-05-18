@@ -446,16 +446,14 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     result_patch = result_patch.transpose(1, 2, 0)[:, :, ::-1]  # RGB→BGR
     result_patch = (np.clip(result_patch, 0, 1) * 255).astype(np.uint8)
 
-    # Skip the unsharp mask in the live path — adds ~5 ms per frame and
-    # at 128 px the gain is barely visible after JPEG q=80 encode anyway.
-    # The seamlessClone MIXED_CLONE downstream picks up the target's
-    # natural sharpness from the surrounding skin.
+    # Unsharp + cubic upscale — back to quality settings. Counters
+    # inswapper's soft 128px output for sharper face details.
+    gauss = cv2.GaussianBlur(result_patch, (0, 0), sigmaX=1.2)
+    result_patch = cv2.addWeighted(result_patch, 1.5, gauss, -0.5, 0)
 
     M_inv = cv2.invertAffineTransform(M)
-    # INTER_LINEAR instead of INTER_CUBIC — ~2 ms saving, indistinguishable
-    # at this scale because the inswapper output is already 128 px soft.
     patch_back = cv2.warpAffine(result_patch, M_inv, (tgt_img.shape[1], tgt_img.shape[0]),
-                                flags=cv2.INTER_LINEAR)
+                                flags=cv2.INTER_CUBIC)
 
     ih, iw = tgt_img.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
@@ -471,26 +469,15 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     blend_mask = np.zeros((ih, iw), np.uint8)
     if lmk is not None and len(lmk) > 10:
         pts = lmk.astype(np.int32)
-        # Tight hull (1.06 horizontal, 1.12 vertical-downward). Earlier a
-        # uniform 1.15 + 25 px feather created a wide blur halo ("vovel")
-        # around the lower face. The fix is asymmetric: leave horizontal
-        # cheek line at 1.06 (no halo on the sides), but push the chin
-        # vertex further DOWN so the user's natural chin is fully covered
-        # by the swap. Without the downward bias, the swap stops at the
-        # 106-landmark chin point — which sits a few pixels above the
-        # user's real chin — and the original chin pokes out under the
-        # swap (the "double chin" artifact in the screenshot).
-        center  = np.array([cx, cy], dtype=np.float32)
-        delta   = pts.astype(np.float32) - center
-        # Per-point scale: stronger vertical scale for points BELOW
-        # centre (chin/jawline), tighter scale for points above (forehead
-        # already capped by hairline).
-        below   = (delta[:, 1] > 0).astype(np.float32)
-        scale_x = 1.06
-        scale_y = 1.06 + 0.08 * below   # 1.14 for chin points, 1.06 otherwise
-        delta[:, 0] *= scale_x
-        delta[:, 1] *= scale_y
-        expanded = (delta + center)
+        # Tight hull (1.06). Larger expansions tried earlier (1.15 +
+        # chin-downward bias + 25 px feather) created a visible blur
+        # halo around the lower face because the wide soft mask
+        # blended swap+original pixels over a large strip - the user
+        # called it "vovel" (oval). Tight hull + small feather +
+        # MIXED_CLONE (below) gives an invisible mask boundary the
+        # way wearing a real mask does.
+        center = np.array([cx, cy], dtype=np.float32)
+        expanded = (pts.astype(np.float32) - center) * 1.06 + center
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
         blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
@@ -1494,11 +1481,8 @@ async def ws_live_swap(ws: WebSocket):
     session_id    = None
     session       = None
     frame_counter = 0
-    # Wav2Lip runs every Nth swap frame. Bumped 2 → 3 so two-thirds of
-    # frames skip the lip-sync inference — saves ~25 ms per skipped frame.
-    # Mouth still moves with audio, just one frame less often, which is
-    # imperceptible at the >=10 fps the rest of the pipeline now hits.
-    LIPSYNC_EVERY = 3
+    # Wav2Lip runs every Nth swap frame so the pipeline still hits 6+ fps.
+    LIPSYNC_EVERY = 2
 
     async def send(obj):
         await ws.send_text(json.dumps(obj))
@@ -1613,14 +1597,9 @@ async def ws_live_swap(ws: WebSocket):
                             session["last_frame"] = result
                             session["last_face"]  = tgt_face
 
-                        # JPEG q=72 — additional ~25% size reduction over q=80.
-                        # On a 720p frame this is the difference between
-                        # ~90 KB and ~65 KB per WS message, which at 10 fps
-                        # equals ~250 KB/s saved on the camera→server path.
-                        # Detail loss is invisible at face_swap viewing
-                        # distance because inswapper output is already
-                        # 128 px soft.
-                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 72])
+                        # JPEG q=80 keeps face detail readable while shaving
+                        # ~30 % off response size = lower transit + decode time.
+                        _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 80])
                         # `audio_t_ms` lets the client align playback if it
                         # wants — for now it just sees the latest frame.
                         payload = {"type":"result","image": base64.b64encode(buf).decode()}
