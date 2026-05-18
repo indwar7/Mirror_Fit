@@ -1071,6 +1071,81 @@ async def health():
     return {"status": "ok", "models_loaded": _inswapper is not None}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  fashn.ai try-on proxy
+#
+#  Demo path for manager presentations. Browser POSTs {model_image, garment_image,
+#  category} as base64 strings. We forward to fashn.ai with the server-held
+#  API key (read from FASHN_API_KEY env var so the key never reaches the
+#  browser), poll /status until completion, and return {output: [url]} to
+#  the browser. Total latency 10-25s — NOT live video, one-shot HD try-on.
+# ─────────────────────────────────────────────────────────────────────────────
+_FASHN_BASE = "https://api.fashn.ai/v1"
+
+
+@app.post("/fashn/run")
+async def fashn_run(payload: dict):
+    api_key = os.environ.get("FASHN_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="FASHN_API_KEY env var not set on the server.",
+        )
+    model_image   = payload.get("model_image")
+    garment_image = payload.get("garment_image")
+    category      = payload.get("category", "auto")
+    if not model_image or not garment_image:
+        raise HTTPException(status_code=400, detail="model_image and garment_image required")
+
+    def _as_data_uri(b64: str) -> str:
+        if b64.startswith("data:") or b64.startswith("http"):
+            return b64
+        return f"data:image/jpeg;base64,{b64}"
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = {
+        "model_image":   _as_data_uri(model_image),
+        "garment_image": _as_data_uri(garment_image),
+        "category":      category,
+        "mode":          "balanced",
+        "num_samples":   1,
+        "output_format": "jpeg",
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.post(f"{_FASHN_BASE}/run", json=body, headers=headers)
+            r.raise_for_status()
+            run_data = r.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"fashn.ai /run failed {e.response.status_code}: {e.response.text}",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"fashn.ai unreachable: {e}")
+
+        prediction_id = run_data.get("id")
+        if not prediction_id:
+            raise HTTPException(status_code=502, detail=f"no id in /run response: {run_data}")
+
+        # Poll /status every 2s, max 90s total. fashn.ai usually completes in 10-25s.
+        for _ in range(45):
+            await asyncio.sleep(2)
+            try:
+                s = await client.get(f"{_FASHN_BASE}/status/{prediction_id}", headers=headers)
+                s.raise_for_status()
+                sd = s.json()
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"fashn.ai /status failed: {e}")
+            status = sd.get("status")
+            if status == "completed":
+                return {"output": sd.get("output", []), "error": None}
+            if status == "failed":
+                return {"output": [], "error": sd.get("error") or "fashn.ai job failed"}
+        raise HTTPException(status_code=504, detail="fashn.ai timed out after 90s")
+
+
 @app.post("/face-swap")
 async def face_swap(
     source: UploadFile = File(...),
