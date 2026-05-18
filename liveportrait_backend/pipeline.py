@@ -268,14 +268,14 @@ class LivePortraitEngine:
         R_d_0 = sess["R_d_0"]
 
         # Relative-motion driving: drive by delta from neutral.
-        # Amplify expression delta 1.6x — without this, eye blinks and
-        # brow raises register only as tiny pixel shifts and the demo
-        # reads as "mouth-only sync". 1.6x stays under the
-        # over-driven-look-creepy threshold.
+        # Expression amp 1.15 — just enough that blinks/brow raises read
+        # but the face doesn't over-react. 1.6 was cartoony (the source
+        # looked angry/shocked with every small movement).
+        # Head trans 1.0 (no amp) — natural head turn already correct.
         R_new = (R_d @ R_d_0.permute(0, 2, 1)) @ sess["R_s"]
-        delta_exp = 1.6 * (x_d_info["exp"] - x_d_0["exp"]) + sess["x_s_info"]["exp"]
+        delta_exp = 1.15 * (x_d_info["exp"] - x_d_0["exp"]) + sess["x_s_info"]["exp"]
         scale_new = sess["x_s_info"]["scale"] * (x_d_info["scale"] / x_d_0["scale"])
-        t_new = sess["x_s_info"]["t"] + 1.4 * (x_d_info["t"] - x_d_0["t"])
+        t_new = sess["x_s_info"]["t"] + (x_d_info["t"] - x_d_0["t"])
         t_new[..., 2] = 0  # zero out z translation — convention
 
         x_d_new = scale_new * (sess["x_s_info"]["kp"] @ R_new + delta_exp) + t_new
