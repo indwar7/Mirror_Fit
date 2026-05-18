@@ -114,9 +114,15 @@ class LivePortraitEngine:
     def prepare_source(self, session_id: str, source_bgr: np.ndarray) -> bool:
         """Crop the source face, extract appearance features and source
         keypoints. Caches everything needed for the per-frame drive call.
-        Returns True on success, False if no face detected."""
+        Returns True on success, False if no face detected.
+
+        Upstream cropper takes RGB (it converts internally). Passing BGR
+        produces double-conversion and the model outputs scrambled colour
+        noise — which is exactly what we saw before this fix.
+        """
+        source_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
         try:
-            crop = self.cropper.crop_source_image(source_bgr, self.cropper.crop_cfg)
+            crop = self.cropper.crop_source_image(source_rgb, self.cropper.crop_cfg)
         except Exception as e:
             log.warning("[LP] source crop failed: %s", e)
             return False
@@ -139,7 +145,9 @@ class LivePortraitEngine:
             "x_s":        x_s,
             "R_s":        R_s,
             "M_c2o":      crop["M_c2o"],
-            "src_full":   source_bgr,
+            # paste_back operates on the RGB result `I_p` so it needs an
+            # RGB canvas; store the source as RGB to match.
+            "src_full":   source_rgb,
             "mask_crop":  crop.get("mask_crop"),
             # Filled on the first drive() call. Without a neutral driving
             # baseline relative-motion produces a garbage frame.
@@ -197,12 +205,15 @@ class LivePortraitEngine:
                 out = self.cropper.crop_driving_video([driving_rgb])
                 if out and out.get("frame_crop_lst"):
                     crop512_rgb = out["frame_crop_lst"][0]
-                    crop256_bgr = cv2.resize(
-                        cv2.cvtColor(crop512_rgb, cv2.COLOR_RGB2BGR),
+                    # Keep RGB — upstream wrap.prepare_source expects
+                    # RGB (model was trained on RGB; passing BGR produces
+                    # scrambled colour-bar noise).
+                    crop256_rgb = cv2.resize(
+                        crop512_rgb,
                         (256, 256),
                         interpolation=cv2.INTER_LINEAR,
                     )
-                    crop_d = {"img_crop_256x256": crop256_bgr}
+                    crop_d = {"img_crop_256x256": crop256_rgb}
                     # Stash the original-frame bbox so we can fast-path
                     # the next 9 frames without re-running face_analysis.
                     # crop_driving_video doesn't return a bbox directly,
@@ -223,15 +234,17 @@ class LivePortraitEngine:
                     )
                 crop_d = None
         if crop_d is None and sess["last_bbox"] is not None:
-            # Fast path: cv2 crop using last bbox, then resize to 256
+            # Fast path: cv2 crop using last bbox, then resize to 256.
+            # Convert BGR → RGB to match the slow-path (RGB everywhere).
             x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
             if x2 - x1 < 16 or y2 - y1 < 16:
                 return None
-            patch = driving_bgr[y1:y2, x1:x2]
-            patch = cv2.resize(patch, (256, 256), interpolation=cv2.INTER_LINEAR)
-            crop_d = {"img_crop_256x256": patch}
+            patch_bgr = driving_bgr[y1:y2, x1:x2]
+            patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
+            patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
+            crop_d = {"img_crop_256x256": patch_rgb}
         if crop_d is None:
             return None
 
