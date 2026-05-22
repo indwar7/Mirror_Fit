@@ -1228,24 +1228,12 @@ class TryOnModel:
         v_centre_drop = int(h * 0.05)   # how much lower the V dips at centre
         v_half_width  = int(w * 0.12)   # how wide the V opening is
 
-        # Polygon vertices (clockwise from top-left of band).
-        # Side waypoints (mid-left, mid-right) pull slightly INWARD at
-        # mid-torso to simulate a jacket wrapping around the body —
-        # real garments curve back at the waist, they do not have
-        # perfectly straight vertical sides. Wrap inset = 4 % of frame
-        # width; if MediaPipe Pose gave us a shoulder x, anchor the
-        # mid-side to that x minus the inset for left, plus for right.
+        # Polygon vertices (clockwise from top-left of band):
+        #   top-left -> L-shoulder -> V-left -> V-tip -> V-right ->
+        #   R-shoulder -> top-right -> bottom-right -> bottom-left
         cx = w // 2
+        # Average shoulder y for the V edges so V symmetry is maintained
         v_y = (l_y + r_y) // 2
-        wrap_inset    = int(w * 0.04)
-        mid_y         = (l_y + body_bottom_y) // 2
-        l_mid_x       = max(0, l_x + wrap_inset)
-        r_mid_x       = min(w, r_x - wrap_inset)
-        # Bottom corners also pulled in slightly so the hem reads
-        # narrower than the shoulders (natural body taper at the waist)
-        hem_inset     = int(w * 0.06)
-        bl_x          = max(0, l_x - 0 + hem_inset)
-        br_x          = min(w, r_x + 0 - hem_inset)
         poly = np.array([
             [0,                  l_y],                                  # top-left (over shoulder)
             [l_x,                l_y],                                  # L-shoulder
@@ -1254,12 +1242,8 @@ class TryOnModel:
             [cx + v_half_width,  v_y],                                  # V-right
             [r_x,                r_y],                                  # R-shoulder
             [w,                  r_y],                                  # top-right (over shoulder)
-            [w,                  mid_y],                                # right mid (frame edge)
-            [r_mid_x,            mid_y],                                # right wrap-in
-            [br_x,               body_bottom_y],                        # bottom-right (waist taper)
-            [bl_x,               body_bottom_y],                        # bottom-left (waist taper)
-            [l_mid_x,            mid_y],                                # left wrap-in
-            [0,                  mid_y],                                # left mid (frame edge)
+            [w,                  body_bottom_y],                        # bottom-right
+            [0,                  body_bottom_y],                        # bottom-left
         ], dtype=np.int32)
         cv2.fillPoly(band, [poly], 1.0)
         band = cv2.GaussianBlur(band, (15, 15), 0)
