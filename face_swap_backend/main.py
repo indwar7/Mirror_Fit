@@ -138,15 +138,40 @@ _LIPSYNC_BUFFER_SAMPLES = int(_LIPSYNC_BUFFER_SEC * 16000)
 
 # CodeFormer cadence — set via env LUCY_CODEFORMER_EVERY.
 #   1 = every frame (sharpest, ~30 ms/frame on A10G)
-#   2 = every other frame (default — face still looks sharp, fps higher)
+#   2 = every other frame (face still looks sharp, fps higher)
 #   0 = disabled
-# The skipped frames re-use the previous CodeFormer-restored result by
-# leaning on the detection-skip cycle: when DETECT_EVERY=2 we already
-# alternate detect/reuse, and pairing the two means CodeFormer fires on
-# the detect frame and the inswapper output sharpens the reused frame
-# by inheritance from the seamlessClone of the still-CodeFormer'd region.
 _CODEFORMER_EVERY = int(os.environ.get("LUCY_CODEFORMER_EVERY", "1"))
 _CODEFORMER_COUNTER = 0
+
+# ── Identity-strength knobs ──────────────────────────────────────────────────
+# These are the constants you tune when the swap "doesn't look enough like the
+# avatar". Each one trades a bit of natural-blend or fps for stronger identity.
+#
+#   IDENTITY_BOOST    multiplier on the source embedding magnitude. 1.0 = stock
+#                    inswapper; 1.3 = visibly stronger identity lock at the cost
+#                    of slightly cartoonish skin in extreme cross-ethnicity
+#                    swaps. Community trick — no model change required.
+#   HULL_EXPAND      convex-hull dilation factor around the 106 landmarks. 1.06
+#                    = inner face only (chin stays user's); 1.25 = jaw, temple,
+#                    forehead all become avatar's. Bigger = stronger avatar
+#                    look but more chance of skin tone mismatch at the boundary
+#                    (MIXED_CLONE handles most of it).
+#   COLOR_L / COLOR_AB   how much of the user's target lighting we blend INTO
+#                    the swap (Reinhard LAB transfer weights). Old defaults
+#                    (0.65, 0.95, 0.95) basically pulled all chroma back to
+#                    user → identity flat. New defaults (0.35, 0.25, 0.25)
+#                    keep most of the avatar's actual skin tone visible.
+#   CF_WEIGHT        CodeFormer fidelity. 0.0 = max restoration (smooths,
+#                    erases identity); 1.0 = pure pass-through. 0.9 = sharpen
+#                    detail but lock identity.
+#   HAIR_SWAP        set "1" to enable BiSeNet hair transfer in the live loop
+#                    (avatar's hairstyle pasted on user). Adds ~30-50 ms.
+_IDENTITY_BOOST = float(os.environ.get("LUCY_IDENTITY_BOOST", "1.3"))
+_HULL_EXPAND    = float(os.environ.get("LUCY_HULL_EXPAND",    "1.22"))
+_COLOR_L        = float(os.environ.get("LUCY_COLOR_L",        "0.35"))
+_COLOR_AB       = float(os.environ.get("LUCY_COLOR_AB",       "0.25"))
+_CF_WEIGHT      = float(os.environ.get("LUCY_CF_WEIGHT",      "0.9"))
+_HAIR_SWAP      = os.environ.get("LUCY_HAIR_SWAP", "1") == "1"
 
 
 async def _get_session(session_id: str) -> dict:
@@ -437,9 +462,18 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     # Source latent: embedding @ emap, then L2-normalize. This is the official
     # InsightFace inswapper recipe — without the emap projection the model
     # outputs ~the original face (effectively a no-op swap).
+    #
+    # IDENTITY BOOST: after normalization we scale the latent by
+    # _IDENTITY_BOOST. The inswapper conv stack treats the latent as a
+    # style vector; pushing its magnitude > 1 amplifies the identity
+    # signal so the output looks more like the source face (at the cost
+    # of slightly less natural skin in extreme cross-ethnicity swaps).
+    # This is the standard community trick for "stronger swap" without
+    # retraining the model.
     src_embed = src_face.normed_embedding.reshape(1, -1).astype(np.float32)
     latent    = src_embed @ _inswap_emap
     latent    = latent / (np.linalg.norm(latent) + 1e-9)
+    latent    = latent * _IDENTITY_BOOST
     blob      = latent.astype(np.float32)
 
     # Warp target face patch to 128×128 ArcFace template
@@ -484,7 +518,7 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         # MIXED_CLONE (below) gives an invisible mask boundary the
         # way wearing a real mask does.
         center = np.array([cx, cy], dtype=np.float32)
-        expanded = (pts.astype(np.float32) - center) * 1.06 + center
+        expanded = (pts.astype(np.float32) - center) * _HULL_EXPAND + center
         hull = cv2.convexHull(expanded.astype(np.int32))
         cv2.fillPoly(blend_mask, [hull], 255)
         blend_mask = cv2.GaussianBlur(blend_mask, (15, 15), 0)
@@ -569,7 +603,7 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
             and (_CODEFORMER_COUNTER % _CODEFORMER_EVERY) == 0):
         try:
             swapped = _codeformer.restore_face(
-                swapped, tgt_face.kps, weight=0.7,
+                swapped, tgt_face.kps, weight=_CF_WEIGHT,
             )
         except Exception:
             pass
@@ -710,11 +744,14 @@ def _color_correct_face(swapped: np.ndarray, target: np.ndarray, bbox) -> np.nda
     sw_lab  = cv2.cvtColor(sw_patch,  cv2.COLOR_BGR2LAB).astype(np.float32)
     tgt_lab = cv2.cvtColor(tgt_patch, cv2.COLOR_BGR2LAB).astype(np.float32)
     out = sw_lab.copy()
-    # Per-channel blend. Luminance (L) and chromaticity (a, b) are weighted
-    # differently — a strong 'a'/'b' transfer locks skin tone (cross-ethnicity
-    # swaps no longer look fair-on-dark); a softer 'L' transfer preserves
-    # the avatar's facial detail/shading.
-    blends = (0.65, 0.95, 0.95)
+    # Per-channel blend. Old defaults (0.65, 0.95, 0.95) pulled almost all
+    # chroma from the user back into the swap — that's what made cross-
+    # ethnicity swaps look like the user with a stranger's eyes. New defaults
+    # (LUCY_COLOR_L=0.35, LUCY_COLOR_AB=0.25) keep most of the AVATAR's skin
+    # tone visible so the swap actually looks like the avatar. The user can
+    # crank these back up via env if they want stronger blend into target
+    # lighting (e.g. if studio lights are weird).
+    blends = (_COLOR_L, _COLOR_AB, _COLOR_AB)
     for c in range(3):
         sm, ss = sw_lab[:, :, c].mean(),  sw_lab[:, :, c].std() + 1e-6
         tm, ts = tgt_lab[:, :, c].mean(), tgt_lab[:, :, c].std() + 1e-6
@@ -930,19 +967,21 @@ def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
 
 
 def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
-               tgt_face_hint=None):
+               tgt_face_hint=None,
+               src_hair_mask=None, tgt_hair_mask=None):
     """
     Fast live swap with cached src_detection.
-    Real faces: inswapper + color correction + feathered boundary.
+    Real faces: inswapper + color correction + (optional) BiSeNet hair swap.
     Cartoon:    geometric warp.
 
     `tgt_face_hint` lets the caller skip per-frame target detection by
-    passing the InsightFace Face object from a previous frame. The face
-    moves only a few pixels between adjacent video frames at 6+ fps, so
-    reusing the previous detection (kps + bbox + landmarks) on every
-    other frame trades ~25 ms of detection cost for sub-pixel kps drift
-    — invisible at this fps. On real-frames the WS loop alternates
-    detected/hinted so latency drops without identity wobble.
+    passing the InsightFace Face object from a previous frame.
+
+    `src_hair_mask` (pre-computed once per session) and `tgt_hair_mask`
+    (refreshed every few frames) enable HAIR TRANSFER — the avatar's
+    hairstyle is warped onto the user's head. Requires _face_parser
+    (BiSeNet) to be loaded; if either mask is None, hair swap is skipped
+    silently.
 
     Returns (result_img, tgt_face) — tgt_face is None for cartoon path or
     when no face was detected. Caller can use tgt_face for downstream
@@ -959,15 +998,52 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
         return None, None
 
     if src_real and tgt_face is not None:
-        # Single-pass inswapper + LAB colour match (proven 8de2dc2 path).
-        # Double-pass cascade was tried (commit 9637b8d) for stronger
-        # identity lock but introduced two regressions: (1) muscle
-        # motion got averaged-out by the second pass smoothing, and
-        # (2) the mouth/chin region developed a horizontal smear because
-        # pass-2 detection drifted slightly off pass-1's modified jaw.
-        # Reverted.
         result = _run_inswapper(src_face, tgt_face, target_img)
         result = _color_correct_face(result, target_img, tgt_face.bbox)
+
+        # ── Hair transfer (BiSeNet path) ─────────────────────────────────────
+        # Warps the avatar's hair onto the user's head using the cached
+        # source hair mask + a (refreshed every N frames) target hair mask.
+        # face_parser.transfer_hair does all the heavy lifting:
+        #   - pre-masks source so no background bleeds
+        #   - LAB colour-matches avatar hair to user scene lighting
+        #   - excludes the swap face region (so hair never overpaints face)
+        # Skipped silently if any input is missing.
+        if (_HAIR_SWAP and src_hair_mask is not None
+                and getattr(src_face, "kps", None) is not None
+                and getattr(tgt_face, "kps", None) is not None):
+            try:
+                from face_parser import transfer_hair
+                # Face exclusion = convex hull of target 106 landmarks
+                # (so the swapped face never gets overwritten by hair).
+                face_excl = None
+                lmk = getattr(tgt_face, "landmark_2d_106", None)
+                if lmk is not None and len(lmk) > 10:
+                    face_excl = np.zeros(target_img.shape[:2], np.uint8)
+                    cv2.fillPoly(face_excl, [cv2.convexHull(lmk.astype(np.int32))], 255)
+                # Head region = oval grown from the bbox (loose bound)
+                x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
+                fw, fh = x2 - x1, y2 - y1
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                head_region = np.zeros(target_img.shape[:2], np.uint8)
+                cv2.ellipse(head_region, (cx, cy - int(fh * 0.2)),
+                            (int(fw * 0.95), int(fh * 1.3)),
+                            0, 0, 360, 255, -1)
+                # tgt_hair_mask may be stale by ~3 frames; that's OK —
+                # it's only used for LAB colour matching of avatar hair
+                # tone toward user scene lighting.
+                _tgt_hair = tgt_hair_mask if tgt_hair_mask is not None \
+                    else np.zeros(target_img.shape[:2], np.uint8)
+                result = transfer_hair(
+                    src_img, src_hair_mask, src_face.kps,
+                    result, _tgt_hair, tgt_face.kps,
+                    tgt_face_exclusion_mask=face_excl,
+                    tgt_head_region_mask=head_region,
+                )
+            except Exception as e:
+                # Hair swap is best-effort. Any error → keep face-only result.
+                print(f"[hair-swap] skipped: {type(e).__name__}: {e}")
+
         return result, tgt_face
 
     # Cartoon source
@@ -1624,8 +1700,27 @@ async def ws_live_swap(ws: WebSocket):
                     use_hint = (last_tgt_face is not None
                                 and (frame_counter % DETECT_EVERY) != 0)
                     hint = last_tgt_face if use_hint else None
+
+                    # Target hair mask refresh — BiSeNet @ 512 is ~30 ms on
+                    # A10G, too expensive per frame. Refresh every N frames;
+                    # the stale mask is only used for LAB colour-matching
+                    # avatar hair tone to user lighting, so a few-frame lag
+                    # is invisible. Disabled when hair swap is off.
+                    if (_HAIR_SWAP and _face_parser is not None
+                            and src_hair_mask is not None
+                            and tgt_hair_cache_ttl <= 0):
+                        try:
+                            tgt_hair_cache = await loop.run_in_executor(
+                                None, _face_parser.hair_mask, frame
+                            )
+                            tgt_hair_cache_ttl = HAIR_REFRESH_FRAMES
+                        except Exception:
+                            tgt_hair_cache = None
+                    tgt_hair_cache_ttl -= 1
+
                     result, tgt_face = await loop.run_in_executor(
-                        None, _swap_live, src_img, src_detection, frame, hint
+                        None, _swap_live, src_img, src_detection, frame, hint,
+                        src_hair_mask, tgt_hair_cache,
                     )
                     if tgt_face is not None:
                         last_tgt_face = tgt_face
