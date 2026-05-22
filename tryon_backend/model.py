@@ -441,7 +441,11 @@ class TryOnModel:
         # IP-Adapter only needs to provide texture/structure detail. Higher
         # IP at this CFG was over-saturating the result with the garment's
         # mid-tones, giving a slight purple tint to grey shirts.
-        self.pipeline.set_ip_adapter_scale(1.2)
+        # Bumped 1.2 -> 1.5 for the manager demo: stronger IP-Adapter
+        # conditioning so the inpaint follows the uploaded garment's
+        # shape and texture more faithfully (was hallucinating wrong
+        # jacket shape at 1.2).
+        self.pipeline.set_ip_adapter_scale(1.5)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -479,7 +483,11 @@ class TryOnModel:
         self.pipeline.load_ip_adapter(
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
-        self.pipeline.set_ip_adapter_scale(1.2)
+        # Bumped 1.2 -> 1.5 for the manager demo: stronger IP-Adapter
+        # conditioning so the inpaint follows the uploaded garment's
+        # shape and texture more faithfully (was hallucinating wrong
+        # jacket shape at 1.2).
+        self.pipeline.set_ip_adapter_scale(1.5)
         self._ip_loaded = True
         self._catvton   = False
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
