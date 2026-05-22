@@ -1192,58 +1192,29 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band with V-collar AND shoulder-aligned top edge. The
-        # band's top edge ideally follows the user's actual shoulder line
-        # — left shoulder may be higher than right when tilted. Use
-        # MediaPipe Pose's L/R shoulder landmarks for the side anchors
-        # of the polygon. Fall back to a horizontal line at face_cutoff_y
-        # when pose is unavailable.
-        l_y = r_y = face_cutoff_y
-        l_x, r_x = 0, w
-        try:
-            if self._mp_pose is not None:
-                pose_res = self._mp_pose.process(frame_rgb)
-                if pose_res.pose_landmarks:
-                    lmk = pose_res.pose_landmarks.landmark
-                    L, R = lmk[11], lmk[12]
-                    if min(L.visibility, R.visibility) >= 0.5:
-                        # MediaPipe gives normalised coords. Pull the band's
-                        # top edge up to the shoulder line so the jacket
-                        # collar sits ON the shoulders, not floating mid-chest.
-                        l_y_raw = int(L.y * h)
-                        r_y_raw = int(R.y * h)
-                        # Clamp between chin gap and lower chest so a wild
-                        # detection cannot wreck the mask
-                        l_y = int(np.clip(l_y_raw, face_cutoff_y - int(h*0.05),
-                                          face_cutoff_y + int(h*0.15)))
-                        r_y = int(np.clip(r_y_raw, face_cutoff_y - int(h*0.05),
-                                          face_cutoff_y + int(h*0.15)))
-                        l_x = int(np.clip(L.x * w - int(w*0.05), 0, w//2))
-                        r_x = int(np.clip(R.x * w + int(w*0.05), w//2, w))
-        except Exception:
-            pass
-
+        # 3. Torso band with V-shaped collar cutout. Plain horizontal cutoff
+        # at face_cutoff_y produced a flat collar line that read as "scarf
+        # on neck". A real shirt collar has a V-opening below the chin —
+        # the band's TOP edge should drop lower in the centre than at the
+        # shoulders. We draw a filled polygon: bottom rectangle + V-cutout
+        # at the top centre.
         band = np.zeros((h, w), dtype=np.float32)
         body_bottom_y = int(h * 0.92)
         v_centre_drop = int(h * 0.05)   # how much lower the V dips at centre
         v_half_width  = int(w * 0.12)   # how wide the V opening is
 
         # Polygon vertices (clockwise from top-left of band):
-        #   top-left -> L-shoulder -> V-left -> V-tip -> V-right ->
-        #   R-shoulder -> top-right -> bottom-right -> bottom-left
+        #   top-left → V-left → V-bottom-centre → V-right → top-right →
+        #   bottom-right → bottom-left
         cx = w // 2
-        # Average shoulder y for the V edges so V symmetry is maintained
-        v_y = (l_y + r_y) // 2
         poly = np.array([
-            [0,                  l_y],                                  # top-left (over shoulder)
-            [l_x,                l_y],                                  # L-shoulder
-            [cx - v_half_width,  v_y],                                  # V-left
-            [cx,                 v_y + v_centre_drop],                  # V-tip (lowest)
-            [cx + v_half_width,  v_y],                                  # V-right
-            [r_x,                r_y],                                  # R-shoulder
-            [w,                  r_y],                                  # top-right (over shoulder)
-            [w,                  body_bottom_y],                        # bottom-right
-            [0,                  body_bottom_y],                        # bottom-left
+            [0,                  face_cutoff_y],                       # top-left
+            [cx - v_half_width,  face_cutoff_y],                       # V-left
+            [cx,                 face_cutoff_y + v_centre_drop],       # V-tip (lowest)
+            [cx + v_half_width,  face_cutoff_y],                       # V-right
+            [w,                  face_cutoff_y],                       # top-right
+            [w,                  body_bottom_y],                       # bottom-right
+            [0,                  body_bottom_y],                       # bottom-left
         ], dtype=np.int32)
         cv2.fillPoly(band, [poly], 1.0)
         band = cv2.GaussianBlur(band, (15, 15), 0)
