@@ -173,6 +173,22 @@ _COLOR_AB       = float(os.environ.get("LUCY_COLOR_AB",       "0.25"))
 _CF_WEIGHT      = float(os.environ.get("LUCY_CF_WEIGHT",      "0.9"))
 _HAIR_SWAP      = os.environ.get("LUCY_HAIR_SWAP", "1") == "1"
 
+# ── Mouth mask + smooth tracking (Deep-Live-Cam / iRoopDeepFaceCam inspired) ─
+#   MOUTH_MASK: overlay user's ACTUAL mouth/lip pixels onto the swap. Fixes
+#                "no lip sync" by preserving real-time mouth motion verbatim —
+#                no Wav2Lip needed for visual lip movement. The inswapper face
+#                still controls everything outside the mouth region.
+#   MOUTH_DILATE: how much to grow the mouth landmark hull (pixels). Larger
+#                preserves more of the user's chin/lower-face but reveals the
+#                identity gap.
+#   MOUTH_FEATHER: Gaussian sigma for soft blend edge. Larger = softer.
+#   TRACK_SMOOTH: weight for new kps when blending with prev frame (0-1).
+#                0.7 = 70% new, 30% prev → smooth but responsive. 1.0 = off.
+_MOUTH_MASK     = os.environ.get("LUCY_MOUTH_MASK", "1") == "1"
+_MOUTH_DILATE   = int(os.environ.get("LUCY_MOUTH_DILATE",   "8"))
+_MOUTH_FEATHER  = int(os.environ.get("LUCY_MOUTH_FEATHER",  "11"))
+_TRACK_SMOOTH   = float(os.environ.get("LUCY_TRACK_SMOOTH", "0.7"))
+
 
 async def _get_session(session_id: str) -> dict:
     """Return (creating if needed) the session struct for `session_id`."""
@@ -914,6 +930,93 @@ _LMK_LBROW = list(range(43, 52))
 _LMK_RBROW = list(range(97, 106))
 
 
+def _apply_mouth_mask(swapped: np.ndarray, original: np.ndarray, tgt_face) -> np.ndarray:
+    """Composite the user's ACTUAL mouth/lip pixels back onto the swap.
+
+    Deep-Live-Cam / iRoopDeepFaceCam technique. Inswapper normally replaces
+    the entire face including mouth, which means:
+      - Lip movement lags or is interpolated by the model
+      - Real-time talking looks "off" because the swap's mouth doesn't
+        match what the user is saying
+      - Wav2Lip is needed to drive the mouth from audio (laggy, ~30 ms/frame,
+        only updates every Nth frame)
+
+    Mouth-masking the original frame back over the swap fixes ALL of this:
+      - Lip movement is verbatim the user's, no model needed
+      - Real-time lip sync is automatic (frame-rate of the camera)
+      - The avatar identity stays everywhere else on the face
+
+    Pipeline:
+      1. Get the 20 mouth landmarks from the InsightFace 106-point detector.
+      2. Build a convex hull, dilate by _MOUTH_DILATE px so the mask covers
+         lips + a thin margin (chin won't be touched).
+      3. Gaussian-feather the mask edge so the user's mouth blends into
+         the swapped face without a visible seam.
+      4. Alpha-blend user's original frame pixels (inside the mask) into
+         the swapped frame.
+    """
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 72:
+        return swapped
+
+    pts = lmk[_LMK_MOUTH].astype(np.int32)
+    if len(pts) < 3:
+        return swapped
+
+    h, w = swapped.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    hull = cv2.convexHull(pts)
+    cv2.fillPoly(mask, [hull], 255)
+
+    # Dilate to cover lip border + slight margin so high-frequency lip
+    # edges blend with surrounding swapped cheek pixels.
+    if _MOUTH_DILATE > 0:
+        k = max(3, _MOUTH_DILATE | 1)
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
+    # Soft alpha — Gaussian sigma controls feather softness.
+    sigma = max(1, _MOUTH_FEATHER | 1)
+    mask = cv2.GaussianBlur(mask, (sigma * 2 + 1, sigma * 2 + 1), 0)
+    if int(mask.sum()) < 1000:
+        return swapped
+
+    alpha = mask.astype(np.float32) / 255.0
+    a3    = alpha[:, :, np.newaxis]
+    out   = (original.astype(np.float32) * a3 +
+             swapped.astype(np.float32)  * (1.0 - a3)).astype(np.uint8)
+    return out
+
+
+def _smooth_face_kps(prev_face, new_face, weight: float):
+    """Exponential moving-average smoothing on kps + landmark_2d_106.
+
+    Reduces inter-frame jitter without adding lag — `weight` is how much
+    of the NEW detection to use. weight=1.0 → no smoothing (raw new),
+    weight=0.7 → smooth but responsive, weight=0.3 → heavy smoothing
+    (laggy if user moves fast).
+
+    Only kps + landmark_2d_106 are blended — bbox and other attrs come
+    from the new face object directly (they're stable enough).
+    """
+    if prev_face is None or new_face is None or weight >= 0.999:
+        return new_face
+    try:
+        new_kps = np.asarray(new_face.kps, dtype=np.float32)
+        old_kps = np.asarray(prev_face.kps, dtype=np.float32)
+        if new_kps.shape == old_kps.shape:
+            new_face.kps = (weight * new_kps + (1 - weight) * old_kps).astype(np.float32)
+        new_lmk = getattr(new_face, "landmark_2d_106", None)
+        old_lmk = getattr(prev_face, "landmark_2d_106", None)
+        if new_lmk is not None and old_lmk is not None and new_lmk.shape == old_lmk.shape:
+            new_face.landmark_2d_106 = (
+                weight * new_lmk.astype(np.float32)
+                + (1 - weight) * old_lmk.astype(np.float32)
+            ).astype(np.float32)
+    except Exception:
+        pass  # smoothing is best-effort; raw new_face is fine on error
+    return new_face
+
+
 def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
     """Amplify mouth + brow contrast inside the face hull.
 
@@ -968,7 +1071,8 @@ def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
 
 def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
                tgt_face_hint=None,
-               src_hair_mask=None, tgt_hair_mask=None):
+               src_hair_mask=None, tgt_hair_mask=None,
+               smooth_prev=None):
     """
     Fast live swap with cached src_detection.
     Real faces: inswapper + color correction + (optional) BiSeNet hair swap.
@@ -994,6 +1098,14 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
         # Use the stripped-down detector for per-frame target — ~3x faster
         tgt_faces = _face_app_fast.get(target_img)
         tgt_face  = _largest_face(tgt_faces)
+        # Smooth kps + landmarks against previous frame to kill detection
+        # jitter. Detection runs every Nth frame; on those frames raw kps
+        # can jump 2-5 px even when the face is still, creating visible
+        # wobble. EMA smoothing eliminates the wobble at the cost of one
+        # frame of "catch-up" latency on fast head motion (invisible at
+        # ~6 fps). Tune via LUCY_TRACK_SMOOTH.
+        if tgt_face is not None and smooth_prev is not None and _TRACK_SMOOTH < 0.999:
+            tgt_face = _smooth_face_kps(smooth_prev, tgt_face, _TRACK_SMOOTH)
     if src_face is None or tgt_face is None:
         return None, None
 
@@ -1043,6 +1155,20 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
             except Exception as e:
                 # Hair swap is best-effort. Any error → keep face-only result.
                 print(f"[hair-swap] skipped: {type(e).__name__}: {e}")
+
+        # ── Mouth mask (Deep-Live-Cam technique) ─────────────────────────────
+        # Composite the user's actual mouth pixels back over the swap so
+        # lip movement is real-time and verbatim. This is what fixes the
+        # "lip sync is laggy / wrong" complaint — the user's real mouth
+        # is what gets shown, the inswapper face only controls everything
+        # ELSE on the face. Wav2Lip downstream can still drive lip-sync
+        # from audio when no real mouth is being recorded (eg silent
+        # avatar with TTS pipeline) but for live demo this is correct.
+        if _MOUTH_MASK:
+            try:
+                result = _apply_mouth_mask(result, target_img, tgt_face)
+            except Exception as e:
+                print(f"[mouth-mask] skipped: {type(e).__name__}: {e}")
 
         return result, tgt_face
 
@@ -1720,7 +1846,7 @@ async def ws_live_swap(ws: WebSocket):
 
                     result, tgt_face = await loop.run_in_executor(
                         None, _swap_live, src_img, src_detection, frame, hint,
-                        src_hair_mask, tgt_hair_cache,
+                        src_hair_mask, tgt_hair_cache, last_tgt_face,
                     )
                     if tgt_face is not None:
                         last_tgt_face = tgt_face
