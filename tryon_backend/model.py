@@ -129,28 +129,29 @@ class TryOnModel:
         # over with the garment (user-reported "hand crosses → painted as jacket").
         try:
             import mediapipe as mp
-            if hasattr(mp, 'solutions'):
-                self._mp_seg  = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
-                self._mp_face = mp.solutions.face_detection.FaceDetection(
-                    model_selection=0, min_detection_confidence=0.5
-                )
-                # Hands: detect up to 2 hands, lower confidence so a partial /
-                # blurry hand crossing still gets picked up. Performance-mode
-                # model (model_complexity=0) is ~5-7 ms / frame on CPU.
-                self._mp_hands = mp.solutions.hands.Hands(
-                    static_image_mode=False,
-                    max_num_hands=2,
-                    model_complexity=0,
-                    min_detection_confidence=0.4,
-                    min_tracking_confidence=0.4,
-                )
-            else:
-                self._mp_seg   = None
-                self._mp_face  = None
-                self._mp_hands = None
-                log.warning("MediaPipe solutions API not available, using fixed mask fallback.")
-            if self._mp_seg:
-                log.info("MediaPipe loaded (seg + face + hands).")
+            # MediaPipe 0.10.30+ on Python 3.14 makes `mp.solutions` lazy and
+            # `hasattr(mp, 'solutions')` returns False until the submodule
+            # is explicitly imported. Force-import each solution submodule
+            # so the namespace exists. If any of these imports fails, the
+            # whole block falls through to the fallback.
+            from mediapipe.python.solutions import selfie_segmentation as _mp_ss
+            from mediapipe.python.solutions import face_detection      as _mp_fd
+            from mediapipe.python.solutions import hands               as _mp_hd
+            self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
+            self._mp_face = _mp_fd.FaceDetection(
+                model_selection=0, min_detection_confidence=0.5
+            )
+            # Hands: detect up to 2 hands, lower confidence so a partial /
+            # blurry hand crossing still gets picked up. Performance-mode
+            # model (model_complexity=0) is ~5-7 ms / frame on CPU.
+            self._mp_hands = _mp_hd.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                model_complexity=0,
+                min_detection_confidence=0.4,
+                min_tracking_confidence=0.4,
+            )
+            log.info("MediaPipe loaded (seg + face + hands).")
         except Exception as e:
             self._mp_seg   = None
             self._mp_face  = None
