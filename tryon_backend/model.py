@@ -173,9 +173,6 @@ class TryOnModel:
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color (top-1), prompt anchor
         self._garment_clusters    = None   # k-means palette: list of (rgb_uint8, fraction)
-        # Geometric warp bbox EMA — kills the per-frame shimmer that Haar
-        # face detection causes. Reset on garment / temporal reset.
-        self._geom_bbox_ema       = None   # dict(top, bottom, left, right, cx) floats
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -734,7 +731,6 @@ class TryOnModel:
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
         self._prev_silhouette  = None
-        self._geom_bbox_ema    = None   # bbox smoothing also starts fresh per garment
 
         # Store alpha mask if original had transparency — used by geometric warp
         if garment_image.mode == 'RGBA':
@@ -957,49 +953,6 @@ class TryOnModel:
             left = int(W * 0.10); right = int(W * 0.90)
             face_bottom = int(H * 0.40)
             cx = W // 2
-
-        # ── EMA on bbox to kill Haar's ±2-5 px frame-to-frame shimmer ────────
-        # If detection moved more than DETECTION_HARD_RESET_PX between frames,
-        # treat it as a real pose change and snap (don't smooth across a real
-        # motion). Otherwise blend with alpha=0.35 new / 0.65 old — that's a
-        # ~3-frame visual rise-time which is plenty fast for normal motion
-        # but eliminates the visible jitter.
-        DETECTION_HARD_RESET_PX = 70
-        EMA_ALPHA = 0.35
-        if self._geom_bbox_ema is None:
-            self._geom_bbox_ema = dict(
-                top=float(top), bottom=float(bottom),
-                left=float(left), right=float(right),
-                cx=float(cx),
-            )
-        else:
-            prev = self._geom_bbox_ema
-            max_move = max(
-                abs(top    - prev["top"]),
-                abs(bottom - prev["bottom"]),
-                abs(left   - prev["left"]),
-                abs(right  - prev["right"]),
-                abs(cx     - prev["cx"]),
-            )
-            if max_move > DETECTION_HARD_RESET_PX:
-                prev["top"], prev["bottom"]  = float(top), float(bottom)
-                prev["left"], prev["right"]  = float(left), float(right)
-                prev["cx"]                   = float(cx)
-            else:
-                prev["top"]    = EMA_ALPHA * top    + (1 - EMA_ALPHA) * prev["top"]
-                prev["bottom"] = EMA_ALPHA * bottom + (1 - EMA_ALPHA) * prev["bottom"]
-                prev["left"]   = EMA_ALPHA * left   + (1 - EMA_ALPHA) * prev["left"]
-                prev["right"]  = EMA_ALPHA * right  + (1 - EMA_ALPHA) * prev["right"]
-                prev["cx"]     = EMA_ALPHA * cx     + (1 - EMA_ALPHA) * prev["cx"]
-        bb = self._geom_bbox_ema
-        top, bottom = int(round(bb["top"])),  int(round(bb["bottom"]))
-        left, right = int(round(bb["left"])), int(round(bb["right"]))
-        cx           = int(round(bb["cx"]))
-        # Clamp into frame after smoothing
-        top    = max(0, min(H - 1, top))
-        bottom = max(top + 1, min(H, bottom))
-        left   = max(0, min(W - 1, left))
-        right  = max(left + 1, min(W, right))
 
         th = max(1, bottom - top)
         tw = max(1, right  - left)
@@ -1225,10 +1178,6 @@ class TryOnModel:
         self._frame_buffer     = []
         self._video_results    = []
         self._video_result_idx = 0
-        # Drop the bbox EMA so a new session starts fresh — the smoothing
-        # would otherwise carry the prior person's shirt position into the
-        # first frames for the new person.
-        self._geom_bbox_ema    = None
 
     # ── CatVTON shared inference (Tier 1 + 2) ────────────────────────────────
 
