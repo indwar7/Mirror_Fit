@@ -160,8 +160,7 @@ class TryOnModel:
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
-        self._garment_color_name  = None   # dominant garment color (top-1), prompt anchor
-        self._garment_clusters    = None   # k-means palette: list of (rgb_uint8, fraction)
+        self._garment_color_name  = None   # dominant garment color, injected into prompt
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -629,9 +628,20 @@ class TryOnModel:
     # ── Garment ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _color_name(rgb: np.ndarray) -> str:
-        """Map an (R, G, B) sample to a short English colour name."""
-        r, g, b = [int(c) for c in rgb]
+    def _dominant_color_name(img_arr: np.ndarray) -> str:
+        """Pick the dominant non-white/black colour in the garment and map it
+        to a short English name. Used to anchor the diffusion prompt so the
+        model doesn't drift to a different colour."""
+        # Skip white/transparent edges by sampling the centre 60% only
+        h, w = img_arr.shape[:2]
+        cx0, cx1 = int(w * 0.20), int(w * 0.80)
+        cy0, cy1 = int(h * 0.20), int(h * 0.80)
+        center = img_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+        # Drop near-white and near-black pixels
+        mask = (center.max(axis=1) < 240) & (center.min(axis=1) > 20)
+        sel  = center[mask] if mask.any() else center
+        r, g, b = sel.mean(axis=0)
+        # Coarse name lookup
         hsv = cv2.cvtColor(np.uint8([[[r, g, b]]]), cv2.COLOR_RGB2HSV)[0, 0]
         h_, s_, v_ = int(hsv[0]), int(hsv[1]), int(hsv[2])
         if s_ < 30 and v_ > 200: return "white"
@@ -645,63 +655,6 @@ class TryOnModel:
         if h_ < 130:             return "blue"
         if h_ < 150:             return "purple"
         return "pink"
-
-    @classmethod
-    def _dominant_clusters(cls, img_arr: np.ndarray, k: int = 5):
-        """K-means 5-cluster colour palette on the garment centre.
-        Returns:
-            list of (rgb_uint8, fraction) sorted by fraction descending,
-            after dropping near-white and near-black clusters so the
-            anchor is the actual fabric colour, not background.
-        Falls back to a simple mean if k-means fails (degenerate image).
-        """
-        h, w = img_arr.shape[:2]
-        cx0, cx1 = int(w * 0.20), int(w * 0.80)
-        cy0, cy1 = int(h * 0.20), int(h * 0.80)
-        center = img_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
-        mask = (center.max(axis=1) < 245) & (center.min(axis=1) > 10)
-        samples = center[mask] if mask.any() else center
-        if samples.shape[0] < 32:
-            mean_rgb = samples.mean(axis=0).astype(np.uint8) if samples.size > 0 else np.array([128, 128, 128], np.uint8)
-            return [(mean_rgb, 1.0)]
-        # Subsample for speed if huge
-        if samples.shape[0] > 5000:
-            idx = np.random.choice(samples.shape[0], 5000, replace=False)
-            samples = samples[idx]
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 8, 1.0)
-        try:
-            _, labels, centers = cv2.kmeans(
-                samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
-            )
-        except cv2.error:
-            mean_rgb = samples.mean(axis=0).astype(np.uint8)
-            return [(mean_rgb, 1.0)]
-        labels = labels.flatten()
-        clusters = []
-        n_total = max(1, samples.shape[0])
-        for i in range(k):
-            n = int((labels == i).sum())
-            if n == 0:
-                continue
-            rgb = centers[i].astype(np.uint8)
-            # Reject clusters that are nearly white or nearly black —
-            # those are background bleed-through, not fabric.
-            if rgb.max() > 245 and rgb.min() > 200:
-                continue
-            if rgb.max() < 25:
-                continue
-            clusters.append((rgb, n / n_total))
-        if not clusters:
-            mean_rgb = samples.mean(axis=0).astype(np.uint8)
-            return [(mean_rgb, 1.0)]
-        clusters.sort(key=lambda c: -c[1])
-        return clusters
-
-    @classmethod
-    def _dominant_color_name(cls, img_arr: np.ndarray) -> str:
-        """Backwards-compatible single-colour name (top cluster)."""
-        clusters = cls._dominant_clusters(img_arr, k=5)
-        return cls._color_name(clusters[0][0])
 
     def set_garment(self, garment_image: Image.Image):
         if garment_image.mode == 'RGBA':
@@ -728,17 +681,10 @@ class TryOnModel:
         else:
             self._garment_alpha = None
 
-        # Extract dominant cluster palette (k-means, k=5). Used both to:
-        #  (a) seed the inpaint init image with a real fabric gradient,
-        #  (b) feed both the positive and negative prompts so SD doesn't
-        #      drift to a nearby but wrong colour (e.g. blue→purple).
-        clusters = self._dominant_clusters(np.array(garment_sq), k=5)
-        self._garment_clusters   = clusters                       # [(rgb, frac), ...]
-        self._garment_color_name = self._color_name(clusters[0][0])
-        log.info(
-            "Garment palette: %s",
-            [(self._color_name(c[0]), round(c[1], 2)) for c in clusters[:3]],
-        )
+        # Extract dominant non-background color name from garment for the prompt.
+        # This dramatically helps the diffusion model lock the actual colour.
+        self._garment_color_name = self._dominant_color_name(np.array(garment_sq))
+        log.info(f"Garment dominant color: {self._garment_color_name}")
 
         # Pre-compute IP-Adapter CLIP embeddings once — reused every frame instead of per-frame encoding
         if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
@@ -1330,42 +1276,22 @@ class TryOnModel:
             # right colour than from prompt + IP-Adapter alone. This is the
             # cheapest fix for the brown-drift we were seeing.
             try:
-                # 2-tone vertical gradient anchor: top→bottom = primary→
-                # secondary k-means cluster of the garment. Real fabric is
-                # not a flat colour (shoulder lighter, hem darker, or
-                # gradient prints), so a vertical gradient gives SD a much
-                # better "fabric-shaped" init than a single mean RGB. Falls
-                # back gracefully to a single-mean if clusters absent.
-                clusters = getattr(self, "_garment_clusters", None)
-                if clusters:
-                    primary = clusters[0][0].astype(np.float32)
-                    if len(clusters) > 1:
-                        secondary = clusters[1][0].astype(np.float32)
-                    else:
-                        # If only one cluster, darken primary by 12% so
-                        # there's still a subtle top-down shading.
-                        secondary = (primary * 0.88).clip(0, 255)
-                else:
-                    g_arr = np.array(garment.convert("RGB"))
-                    gh, gw = g_arr.shape[:2]
-                    cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
-                    cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
-                    centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
-                    mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
-                    mean_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
-                    primary   = mean_rgb
-                    secondary = (mean_rgb * 0.88).clip(0, 255)
-
-                # Build a vertical gradient image at orig_arr resolution
-                H, W = orig_arr.shape[:2]
-                t = np.linspace(0.0, 1.0, H, dtype=np.float32)[:, None, None]
-                gradient = (primary[None, None, :] * (1.0 - t)
-                            + secondary[None, None, :] * t)        # (H, 1, 3)
-                gradient = np.broadcast_to(gradient, (H, W, 3)).astype(np.float32)
-
+                g_arr = np.array(garment.convert("RGB"))
+                # Use the dark/saturated centre of the garment as the seed
+                # (skip white/transparent edges).
+                gh, gw = g_arr.shape[:2]
+                cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
+                cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
+                centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+                seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
+                seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
+                # Blend the seed colour into the orig_arr ONLY where the
+                # torso mask is high — outside the mask we keep the camera
+                # pixels untouched so the seed colour doesn't leak.
                 m = torso_mask[:, :, np.newaxis]
                 anchor = (
-                    gradient * m
+                    seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
                     + orig_arr.astype(np.float32) * (1.0 - m)
                 ).astype(np.uint8)
                 person = Image.fromarray(anchor)
@@ -1388,19 +1314,12 @@ class TryOnModel:
                 f"long sleeves following the arms down to the wrists, "
                 f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
-            # Anti-drift negatives — explicitly name EVERY common colour
-            # except the garment's, so SD's anti-conditioning pulls away
-            # from neighbour hues. The static "purple/mauve" exclusion
-            # below is kept because IP-Adapter mid-tone bias still pulls
-            # grey shirts toward mauve regardless of palette.
-            all_colors = {"red", "orange", "yellow", "green", "teal",
-                          "blue", "purple", "pink", "white", "black",
-                          "grey", "brown", "tan", "beige"}
-            wrong_colors = sorted(all_colors - {color})
-            wrong_color_str = ", ".join(wrong_colors)
+            # Anti-drift negatives. Includes purple/violet because at higher
+            # IP-Adapter scales grey shirts pick up a mauve tint from the
+            # mid-tone bias of the embedding.
             neg = (
-                f"wrong color, {wrong_color_str}, "
-                "mauve, violet, saturated, oversaturated, tinted, faded, washed out, "
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
                 "bare arms, t-shirt, tank top, sleeveless, naked, "
                 "floating clothes, shirt on background, shirt outline, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
