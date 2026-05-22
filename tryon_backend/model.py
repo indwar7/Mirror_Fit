@@ -1146,9 +1146,16 @@ class TryOnModel:
                     # Single iteration of dilation gives the jacket just
                     # enough room for sleeve thickness without producing
                     # the ghost outline we were seeing past the body.
-                    bm = (s > 0.6).astype(np.float32)
+                    # Threshold 0.4 (was 0.6) so MediaPipe includes arms
+                    # and hands even when they're against the body or
+                    # partially occluded — those pixels need to be in the
+                    # silhouette so SD inpaint can paint sleeves on them.
+                    bm = (s > 0.4).astype(np.float32)
                     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    bm = cv2.dilate(bm, kernel, iterations=1)
+                    # Two dilation iterations so the silhouette extends
+                    # slightly past the body edge — sleeves get full
+                    # thickness instead of cutting off at the arm outline.
+                    bm = cv2.dilate(bm, kernel, iterations=2)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
                     # MediaPipe produces per frame. alpha=0.6 on the new
@@ -1183,12 +1190,13 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff at chin + a real neck gap (~35% of face height) so
-                # the collar lands on the neck, not on the chin. This is the
-                # main "worn on" tweak — without the gap, the jacket sits
-                # like a sticker pressed against the face.
-                face_cutoff_y = int(np.clip(fy + fh + fh * 0.35,
-                                            h * 0.28, h * 0.55))
+                # Cutoff at chin + 0.20 * face_height gap (was 0.35). Smaller
+                # gap = collar starts higher up on the chest, so the
+                # collar/neckline actually wraps around the neck instead
+                # of leaving a band of bare chest visible between the
+                # chin and the jacket.
+                face_cutoff_y = int(np.clip(fy + fh + fh * 0.20,
+                                            h * 0.22, h * 0.50))
         except Exception:
             pass
 
