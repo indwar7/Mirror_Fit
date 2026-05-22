@@ -1146,16 +1146,16 @@ class TryOnModel:
                     # Single iteration of dilation gives the jacket just
                     # enough room for sleeve thickness without producing
                     # the ghost outline we were seeing past the body.
-                    # Threshold 0.4 (was 0.6) so MediaPipe includes arms
-                    # and hands even when they're against the body or
-                    # partially occluded — those pixels need to be in the
-                    # silhouette so SD inpaint can paint sleeves on them.
-                    bm = (s > 0.4).astype(np.float32)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    # Two dilation iterations so the silhouette extends
-                    # slightly past the body edge — sleeves get full
-                    # thickness instead of cutting off at the arm outline.
-                    bm = cv2.dilate(bm, kernel, iterations=2)
+                    # Threshold 0.25 (was 0.4 → 0.6 originally) catches
+                    # the soft edges where arms / hands fade into the
+                    # background. User reported background visible past
+                    # jacket edges and arms not painted; the mask was
+                    # cutting too tight.
+                    bm = (s > 0.25).astype(np.float32)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                    # 5 dilation iterations gives the silhouette enough
+                    # bulk for full shoulder + arm + hem coverage.
+                    bm = cv2.dilate(bm, kernel, iterations=5)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
                     # MediaPipe produces per frame. alpha=0.6 on the new
@@ -1180,6 +1180,38 @@ class TryOnModel:
                         0, 0, 360, 1.0, -1)
             silhouette = cv2.GaussianBlur(silhouette, (21, 21), 0)
 
+        # Safety: OR a generous bbox-derived rectangle covering the
+        # expected shoulders + arms + torso area. This guarantees the
+        # silhouette never undershoots even when MediaPipe is conservative
+        # on a frame. Anchored to a Haar face detection here (inline so
+        # this block doesn't depend on the face_cutoff section below).
+        try:
+            safety = np.zeros((h, w), dtype=np.float32)
+            gray_for_safety = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+            safety_faces = self._haar.detectMultiScale(
+                cv2.equalizeHist(gray_for_safety), scaleFactor=1.1,
+                minNeighbors=4, minSize=(40, 40),
+            )
+            if len(safety_faces) > 0:
+                fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
+                cx2 = fx2 + fw2 // 2
+                # Width = 4x face width (covers full shoulder-to-shoulder
+                # + extended arms). Height = chin to bottom of frame.
+                rect_top    = fy2 + fh2                          # chin row
+                rect_bottom = h
+                rect_left   = max(0, cx2 - fw2 * 2)
+                rect_right  = min(w, cx2 + fw2 * 2)
+                cv2.rectangle(safety, (rect_left, rect_top),
+                              (rect_right, rect_bottom), 1.0, -1)
+            else:
+                # No face → fallback to wide horizontal band
+                cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
+                              (int(w * 0.92), h), 1.0, -1)
+            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
+            silhouette = np.maximum(silhouette, safety * 0.85)
+        except Exception as e:
+            log.debug(f"safety rect skipped: {e}")
+
         # 2. Face cutoff — chin row. Everything above is preserved.
         face_cutoff_y = int(h * 0.35)
         try:
@@ -1200,10 +1232,11 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band — restrict mask vertically. Jacket reaches from just
-        # below the chin to mid-thigh.
+        # 3. Torso band — restrict mask vertically. Extended bottom to
+        # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
+        # rather than cutting off at mid-thigh leaving a visible hem oval.
         band = np.zeros((h, w), dtype=np.float32)
-        band[face_cutoff_y:int(h * 0.92), :] = 1.0
+        band[face_cutoff_y:int(h * 0.98), :] = 1.0
         band = cv2.GaussianBlur(band, (15, 15), 0)
 
         # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
