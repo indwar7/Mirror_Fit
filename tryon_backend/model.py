@@ -1203,16 +1203,15 @@ class TryOnModel:
         # Gentle feather so SD has a smooth boundary to denoise into.
         torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
 
-        # 5. Hand / arm exclusion. When a hand crosses in front of the
-        # torso, we KEEP the user's hand visible — so subtract the hand
-        # mask from torso_mask. SD inpaint will then not paint garment
-        # over those pixels.
-        try:
-            hand_mask = self._hand_exclusion_mask(frame_rgb)
-            if hand_mask is not None and hand_mask.shape == torso_mask.shape:
-                torso_mask = (torso_mask * (1.0 - hand_mask)).clip(0, 1)
-        except Exception as e:
-            log.debug(f"hand exclusion failed: {e}")
+        # NOTE: hand exclusion was tried here (subtracting MediaPipe Hands +
+        # YCrCb skin from torso_mask) but the skin detector was matching
+        # the user's brown shirt and dark skin tones across the entire
+        # torso, leaving SD inpaint with no area to paint. Result: the
+        # output frame looked identical to input (jacket never appeared).
+        # Removed from the AI tier mask builder. The geometric path still
+        # uses _hand_exclusion_mask separately on the warped alpha — that
+        # is safer because it only kills the garment alpha, not the SD
+        # paint region.
 
         return torso_mask, silhouette, face_cutoff_y
 
