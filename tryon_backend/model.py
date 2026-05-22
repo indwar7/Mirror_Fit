@@ -1192,31 +1192,10 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band with V-shaped collar cutout. Plain horizontal cutoff
-        # at face_cutoff_y produced a flat collar line that read as "scarf
-        # on neck". A real shirt collar has a V-opening below the chin —
-        # the band's TOP edge should drop lower in the centre than at the
-        # shoulders. We draw a filled polygon: bottom rectangle + V-cutout
-        # at the top centre.
+        # 3. Torso band — restrict mask vertically. Jacket reaches from just
+        # below the chin to mid-thigh.
         band = np.zeros((h, w), dtype=np.float32)
-        body_bottom_y = int(h * 0.92)
-        v_centre_drop = int(h * 0.05)   # how much lower the V dips at centre
-        v_half_width  = int(w * 0.12)   # how wide the V opening is
-
-        # Polygon vertices (clockwise from top-left of band):
-        #   top-left → V-left → V-bottom-centre → V-right → top-right →
-        #   bottom-right → bottom-left
-        cx = w // 2
-        poly = np.array([
-            [0,                  face_cutoff_y],                       # top-left
-            [cx - v_half_width,  face_cutoff_y],                       # V-left
-            [cx,                 face_cutoff_y + v_centre_drop],       # V-tip (lowest)
-            [cx + v_half_width,  face_cutoff_y],                       # V-right
-            [w,                  face_cutoff_y],                       # top-right
-            [w,                  body_bottom_y],                       # bottom-right
-            [0,                  body_bottom_y],                       # bottom-left
-        ], dtype=np.int32)
-        cv2.fillPoly(band, [poly], 1.0)
+        band[face_cutoff_y:int(h * 0.92), :] = 1.0
         band = cv2.GaussianBlur(band, (15, 15), 0)
 
         # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
