@@ -144,28 +144,17 @@ class TryOnModel:
                     min_detection_confidence=0.4,
                     min_tracking_confidence=0.4,
                 )
-                # Pose: only used for shoulder line angle in the geometric
-                # warp path. enable_segmentation=False keeps cost ~8 ms / frame.
-                self._mp_pose = mp.solutions.pose.Pose(
-                    static_image_mode=False,
-                    model_complexity=0,
-                    enable_segmentation=False,
-                    min_detection_confidence=0.4,
-                    min_tracking_confidence=0.4,
-                )
             else:
                 self._mp_seg   = None
                 self._mp_face  = None
                 self._mp_hands = None
-                self._mp_pose  = None
                 log.warning("MediaPipe solutions API not available, using fixed mask fallback.")
             if self._mp_seg:
-                log.info("MediaPipe loaded (seg + face + hands + pose).")
+                log.info("MediaPipe loaded (seg + face + hands).")
         except Exception as e:
             self._mp_seg   = None
             self._mp_face  = None
             self._mp_hands = None
-            self._mp_pose  = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
@@ -875,42 +864,6 @@ class TryOnModel:
         return np.clip(hand_mask, 0.0, 1.0)
 
 
-    def _shoulder_angle_deg(self, frame_rgb: np.ndarray) -> float | None:
-        """Detect L/R shoulder landmarks via MediaPipe Pose and return the
-        line angle in degrees (positive = clockwise tilt, i.e. user's left
-        shoulder down). Returns None when:
-          - MediaPipe Pose is not loaded
-          - No pose detected
-          - Either shoulder landmark has visibility < 0.5
-
-        Cheap (~8 ms / frame on CPU at LIVE_SIZE 512).
-        """
-        if self._mp_pose is None:
-            return None
-        try:
-            res = self._mp_pose.process(frame_rgb)
-            if not res.pose_landmarks:
-                return None
-            lmk = res.pose_landmarks.landmark
-            # 11 = left_shoulder, 12 = right_shoulder (mirrored: mediapipe
-            # returns subject's anatomical left = our viewer right when
-            # the camera is selfie-flipped; angle direction stays consistent
-            # because we always compute right_x - left_x and right_y - left_y).
-            L = lmk[11]
-            R = lmk[12]
-            if min(L.visibility, R.visibility) < 0.5:
-                return None
-            H, W = frame_rgb.shape[:2]
-            dx = (R.x - L.x) * W
-            dy = (R.y - L.y) * H
-            if abs(dx) < 1e-3:
-                return None
-            angle = float(np.degrees(np.arctan2(dy, dx)))
-            return angle
-        except Exception:
-            return None
-
-
     # ── Live geometric warp ───────────────────────────────────────────────────
 
     def _infer_live_geometric(self, person_image: Image.Image) -> Image.Image:
@@ -994,26 +947,6 @@ class TryOnModel:
                                     flags=cv2.INTER_LINEAR,
                                     borderMode=cv2.BORDER_REPLICATE)
         alpha = cv2.warpPerspective(alpha, M_persp, (tw, th))
-
-        # ── Shoulder-angle rotation ──────────────────────────────────────────
-        # When the user tilts their head/shoulders, a Haar-anchored vertical
-        # jacket looks fake (jacket stays vertical, body is tilted). Use the
-        # MediaPipe Pose L/R shoulder landmarks to measure the actual
-        # shoulder-line angle and rotate the shirt + alpha by the SAME angle
-        # before pasting. Clamped to +-25 degrees so a misdetection (extreme
-        # angle) cannot wreck the frame.
-        shoulder_angle_deg = self._shoulder_angle_deg(frame)
-        if shoulder_angle_deg is not None and abs(shoulder_angle_deg) > 1.0:
-            ang = float(np.clip(shoulder_angle_deg, -25.0, 25.0))
-            M_rot = cv2.getRotationMatrix2D((tw / 2.0, th / 2.0), -ang, 1.0)
-            shirt = cv2.warpAffine(
-                shirt, M_rot, (tw, th),
-                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
-            )
-            alpha = cv2.warpAffine(
-                alpha, M_rot, (tw, th),
-                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
-            )
 
         # ── Ambient light harmonization ───────────────────────────────────────
         roi_orig  = frame[top:top+th, left:left+tw].astype(np.float32)
