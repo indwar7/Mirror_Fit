@@ -437,15 +437,11 @@ class TryOnModel:
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
         # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3). The
-        # colour-anchor prefill carries most of the colour information, so
-        # IP-Adapter only needs to provide texture/structure detail. Higher
-        # IP at this CFG was over-saturating the result with the garment's
-        # mid-tones, giving a slight purple tint to grey shirts.
-        # Bumped 1.2 -> 1.5 for the manager demo: stronger IP-Adapter
-        # conditioning so the inpaint follows the uploaded garment's
-        # shape and texture more faithfully (was hallucinating wrong
-        # jacket shape at 1.2).
-        self.pipeline.set_ip_adapter_scale(1.5)
+        # IP-Adapter back to 1.2 — the working value that produced clean
+        # jacket results in the user's May 26 screenshot. 1.5 was tried
+        # for stronger garment lock and produced over-saturated garbage
+        # output (rainbow stripes / random colors). Reverted to known good.
+        self.pipeline.set_ip_adapter_scale(1.2)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
         self._ip_loaded = True
@@ -484,10 +480,8 @@ class TryOnModel:
             "h94/IP-Adapter", subfolder="models",
             weight_name="ip-adapter_sd15.bin")
         # Bumped 1.2 -> 1.5 for the manager demo: stronger IP-Adapter
-        # conditioning so the inpaint follows the uploaded garment's
-        # shape and texture more faithfully (was hallucinating wrong
-        # jacket shape at 1.2).
-        self.pipeline.set_ip_adapter_scale(1.5)
+        # IP-Adapter 1.2 — known good value, see comment above.
+        self.pipeline.set_ip_adapter_scale(1.2)
         self._ip_loaded = True
         self._catvton   = False
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
@@ -1342,20 +1336,18 @@ class TryOnModel:
             # because the colour-anchor prefill + IP-Adapter carry most of
             # the signal. Saves ~250 ms per frame which is the difference
             # between "feels laggy" and "feels live".
-            # Pushed steps 4 -> 6 and guidance_scale 2.5 -> 4.0 because
-            # at IP-Adapter scale 1.5 + 4-step LCM + CFG 2.5 the denoiser
-            # was converging before the garment conditioning had any
-            # visible effect (result looked identical to input frame).
-            # Higher CFG amplifies the IP-Adapter pull; 6 steps gives the
-            # denoiser room to actually paint the garment.
+            # 4-step LCM @ CFG 2.5 — known good combination from the
+            # user's working May 26 demo state. Bumping to 6/4.0 with
+            # IP scale 1.5 produced over-conditioning + rainbow-output
+            # corruption. Reverted to known good.
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=6,
-                    guidance_scale=4.0,
+                    num_inference_steps=4,
+                    guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
