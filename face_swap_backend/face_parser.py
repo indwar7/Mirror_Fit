@@ -123,6 +123,8 @@ def transfer_hair(
     tgt_face_kps: np.ndarray,
     tgt_face_exclusion_mask: Optional[np.ndarray] = None,
     tgt_head_region_mask:    Optional[np.ndarray] = None,
+    feather_px: int = 21,
+    erode_px:   int = 7,
 ) -> np.ndarray:
     """Warp avatar hair onto the target image. Clean version, no wig artifacts.
 
@@ -185,6 +187,16 @@ def transfer_hair(
             )
         paint = cv2.bitwise_and(paint, cv2.bitwise_not(tgt_face_exclusion_mask))
 
+    # Erode the paint mask by a few pixels so the Gaussian feather (next
+    # step) doesn't extend hair pixels INTO the background — that's what
+    # created the visible "blur halo / rectangular halo" around the head
+    # in the earlier broken version. Erode pulls the hair edge slightly
+    # inward, the feather then expands it back to roughly the original
+    # silhouette but with a soft alpha rather than a hard cut.
+    if erode_px > 0:
+        k = max(3, erode_px | 1)
+        paint = cv2.erode(paint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
     n_pix = int((paint > 0).sum())
     if n_pix < 800:
         return tgt_bgr
@@ -210,8 +222,12 @@ def transfer_hair(
     except Exception:
         pass  # colour match is a nice-to-have
 
-    # 6. Soft feather, no boost.
-    alpha = cv2.GaussianBlur(paint, (41, 41), 0).astype(np.float32) / 255.0
+    # 6. Soft feather. Kernel is configurable; 21 px (default) gives a
+    # ~10 px soft edge — tight enough to look like real hair, wide enough
+    # to hide the warp seam. Old default was 41 px which created a visible
+    # halo extending into the background.
+    k = max(3, feather_px | 1)
+    alpha = cv2.GaussianBlur(paint, (k, k), 0).astype(np.float32) / 255.0
     a3    = alpha[:, :, np.newaxis]
     out   = (src_warp.astype(np.float32) * a3 +
              tgt_bgr.astype(np.float32) * (1.0 - a3)).astype(np.uint8)

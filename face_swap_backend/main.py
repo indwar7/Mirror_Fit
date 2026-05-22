@@ -995,8 +995,12 @@ def _smooth_face_kps(prev_face, new_face, weight: float):
     weight=0.7 → smooth but responsive, weight=0.3 → heavy smoothing
     (laggy if user moves fast).
 
-    Only kps + landmark_2d_106 are blended — bbox and other attrs come
-    from the new face object directly (they're stable enough).
+    CRITICAL: mouth landmarks (52-71) are kept at FULL new weight, never
+    smoothed. The mouth mask uses these landmarks to know which pixels
+    are "user's mouth" — smoothing them would lag the mouth boundary
+    behind real lip motion → visible "lip lag" the user complained
+    about. Brow / cheek / eye landmarks ARE smoothed (they don't drive
+    the mouth mask and smoothing them kills detection wobble).
     """
     if prev_face is None or new_face is None or weight >= 0.999:
         return new_face
@@ -1008,10 +1012,14 @@ def _smooth_face_kps(prev_face, new_face, weight: float):
         new_lmk = getattr(new_face, "landmark_2d_106", None)
         old_lmk = getattr(prev_face, "landmark_2d_106", None)
         if new_lmk is not None and old_lmk is not None and new_lmk.shape == old_lmk.shape:
-            new_face.landmark_2d_106 = (
+            blended = (
                 weight * new_lmk.astype(np.float32)
                 + (1 - weight) * old_lmk.astype(np.float32)
             ).astype(np.float32)
+            # Restore the MOUTH region from the raw new detection so lip
+            # motion stays real-time. Indices 52..71 = 20 mouth landmarks.
+            blended[52:72] = new_lmk[52:72].astype(np.float32)
+            new_face.landmark_2d_106 = blended
     except Exception:
         pass  # smoothing is best-effort; raw new_face is fine on error
     return new_face
@@ -1133,24 +1141,20 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
                 if lmk is not None and len(lmk) > 10:
                     face_excl = np.zeros(target_img.shape[:2], np.uint8)
                     cv2.fillPoly(face_excl, [cv2.convexHull(lmk.astype(np.int32))], 255)
-                # Head region = oval grown from the bbox (loose bound)
-                x1, y1, x2, y2 = (int(v) for v in tgt_face.bbox)
-                fw, fh = x2 - x1, y2 - y1
-                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                head_region = np.zeros(target_img.shape[:2], np.uint8)
-                cv2.ellipse(head_region, (cx, cy - int(fh * 0.2)),
-                            (int(fw * 0.95), int(fh * 1.3)),
-                            0, 0, 360, 255, -1)
-                # tgt_hair_mask may be stale by ~3 frames; that's OK —
-                # it's only used for LAB colour matching of avatar hair
-                # tone toward user scene lighting.
+                # Drop the generous head_region oval — it was clipping AND
+                # extending beyond actual hair, creating the rectangular
+                # halo. The warped avatar hair mask itself is the right
+                # paint region. transfer_hair's internal erode + tight
+                # feather (21 px) keeps the edge clean.
                 _tgt_hair = tgt_hair_mask if tgt_hair_mask is not None \
                     else np.zeros(target_img.shape[:2], np.uint8)
                 result = transfer_hair(
                     src_img, src_hair_mask, src_face.kps,
                     result, _tgt_hair, tgt_face.kps,
                     tgt_face_exclusion_mask=face_excl,
-                    tgt_head_region_mask=head_region,
+                    tgt_head_region_mask=None,
+                    feather_px=21,
+                    erode_px=7,
                 )
             except Exception as e:
                 # Hair swap is best-effort. Any error → keep face-only result.
