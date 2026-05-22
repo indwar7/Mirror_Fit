@@ -203,23 +203,30 @@ class LivePortraitEngine:
         # We resize the crop to 256×256 BGR for compatibility with the
         # rest of the pipeline (wrap.prepare_source expects this shape).
         sess["frame_n"] += 1
-        # Re-detect bbox every Nth frame and EMA-blend it into last_bbox so
-        # the crop window doesn't snap-zoom on each detection. The actual
-        # crop is always cv2.resize from last_bbox so source-of-truth is one
-        # tensor, no slow/fast-path divergence.
+        crop_d = None
+        # Slow path: detect + use the cropper's face-aligned 512→256 crop.
+        # This MUST happen on the first frame so the neutral baseline x_d_0
+        # is computed from a properly aligned face — otherwise downstream
+        # expression deltas are noise. last_bbox is also updated here (with
+        # EMA blend) and used by the fast path on subsequent frames.
         if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
                 driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
                 out = self.cropper.crop_driving_video([driving_rgb])
-                if out and out.get("lmk_crop_lst"):
+                if out and out.get("frame_crop_lst"):
+                    crop512_rgb = out["frame_crop_lst"][0]
+                    crop256_rgb = cv2.resize(
+                        crop512_rgb, (256, 256), interpolation=cv2.INTER_LINEAR
+                    )
+                    crop_d = {"img_crop_256x256": crop256_rgb}
                     lmks = out["lmk_crop_lst"][0]
                     if lmks is not None and len(lmks) > 0:
                         x1, y1 = lmks[:, 0].min(), lmks[:, 1].min()
                         x2, y2 = lmks[:, 0].max(), lmks[:, 1].max()
-                        # ~40% pad to include forehead + chin, not just the
-                        # tight landmark box.
                         pw, ph = (x2 - x1) * 0.4, (y2 - y1) * 0.4
                         new_bbox = (x1 - pw, y1 - ph, x2 + pw, y2 + ph)
+                        # EMA-blend with previous bbox so the fast-path crop
+                        # window doesn't snap each detection.
                         if sess["last_bbox"] is None:
                             sess["last_bbox"] = new_bbox
                         else:
@@ -234,18 +241,20 @@ class LivePortraitEngine:
                         "[LP] crop_driving_video failed (frame=%d shape=%s): %s",
                         sess["frame_n"], driving_bgr.shape, e,
                     )
-
-        if sess["last_bbox"] is None:
+                crop_d = None
+        # Fast path: cv2 bbox crop from the smoothed last_bbox.
+        if crop_d is None and sess["last_bbox"] is not None:
+            x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
+            if x2 - x1 < 16 or y2 - y1 < 16:
+                return None
+            patch_bgr = driving_bgr[y1:y2, x1:x2]
+            patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
+            patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
+            crop_d = {"img_crop_256x256": patch_rgb}
+        if crop_d is None:
             return None
-        x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
-        if x2 - x1 < 16 or y2 - y1 < 16:
-            return None
-        patch_bgr = driving_bgr[y1:y2, x1:x2]
-        patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
-        patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
-        crop_d = {"img_crop_256x256": patch_rgb}
 
         I_d = self.wrap.prepare_source(crop_d["img_crop_256x256"])
         x_d_info = self.wrap.get_kp_info(I_d)
