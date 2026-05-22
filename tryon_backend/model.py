@@ -1342,14 +1342,20 @@ class TryOnModel:
             # because the colour-anchor prefill + IP-Adapter carry most of
             # the signal. Saves ~250 ms per frame which is the difference
             # between "feels laggy" and "feels live".
+            # Pushed steps 4 -> 6 and guidance_scale 2.5 -> 4.0 because
+            # at IP-Adapter scale 1.5 + 4-step LCM + CFG 2.5 the denoiser
+            # was converging before the garment conditioning had any
+            # visible effect (result looked identical to input frame).
+            # Higher CFG amplifies the IP-Adapter pull; 6 steps gives the
+            # denoiser room to actually paint the garment.
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=4,
-                    guidance_scale=2.5,
+                    num_inference_steps=6,
+                    guidance_scale=4.0,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
