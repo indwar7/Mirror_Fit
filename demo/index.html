@@ -537,6 +537,15 @@ header {
             <span id="lsStatusText" style="font-size:12px">Not connected</span>
           </div>
         </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:11px;color:var(--ink-soft)">
+          <span style="font-weight:600;letter-spacing:.1em;text-transform:uppercase">Engine</span>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="radio" name="swapEngine" value="v1" checked> V1 (legacy)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="radio" name="swapEngine" value="v2"> V2 (Deep-Live-Cam)
+          </label>
+        </div>
         <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
         <div id="liveStatus" class="status-msg"></div>
       </div>
@@ -708,7 +717,13 @@ const TRYON_WS = 'ws://13.203.75.149:8000/ws/tryon';
 // which actively drives the source's expression from the camera frame
 // (blinks, smiles, brow raises). They are independent backends with
 // independent UI so operator can demo either without touching the other.
-const SWAP_WS         = 'ws://13.203.75.149:7860/ws/live-swap';
+const SWAP_WS_V1      = 'ws://13.203.75.149:7860/ws/live-swap';
+const SWAP_WS_V2      = 'ws://13.203.75.149:7860/ws/live-swap-v2';
+// Read the engine radio at connect time; default V1 if nothing selected.
+function selectedSwapWs() {
+  const el = document.querySelector('input[name="swapEngine"]:checked');
+  return el && el.value === 'v2' ? SWAP_WS_V2 : SWAP_WS_V1;
+}
 const LIVEPORTRAIT_WS = 'ws://13.203.75.149:7862/ws/liveportrait-swap';
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
@@ -1088,7 +1103,7 @@ function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
 function startLiveSwap() {
   if (!liveSource) { setStatus('liveStatus','error','Select a face first'); return; }
   liveLatestResult=null;
-  liveWs = new WebSocket(SWAP_WS);
+  liveWs = new WebSocket(selectedSwapWs());
   liveWs.onopen = () => {
     setDot('ls',true);
     const baseInit = { type:'init', session_id: LUCY_SESSION_ID };

@@ -111,6 +111,13 @@ _FACE_PARSER_PATH                      = str(_HERE / "models" / "models" / "face
 _codeformer                           = None   # CodeFormer ONNX for face restoration (optional)
 _CODEFORMER_PATH                       = str(_HERE / "models" / "models" / "codeformer.onnx")
 
+# ── V2 fresh face swap pipeline (Deep-Live-Cam architecture) ─────────────────
+# Lives entirely in swap_v2.py + gfpgan_onnx.py; this just exposes a singleton
+# the /ws/live-swap-v2 endpoint can call.
+_swap_v2                              = None
+_INSWAPPER_FP16_PATH                   = str(_HERE / "models" / "models" / "inswapper_128_fp16.onnx")
+_GFPGAN_ONNX_PATH                      = str(_HERE / "models" / "models" / "GFPGANv1.4.onnx")
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cross-WebSocket session state
 #
@@ -343,6 +350,29 @@ def _load_models() -> None:
 
     print("[LUCY] Models loaded: FaceAnalysis buffalo_l + inswapper_128 + Haar cascade"
           f"{' + GFPGAN' if _gfpgan else ''}")
+
+    # ── V2 pipeline (fresh Deep-Live-Cam architecture) ───────────────────────
+    # Loads only if BOTH new model files are present. Failure is non-fatal —
+    # the V1 endpoint stays fully functional regardless.
+    global _swap_v2
+    try:
+        from swap_v2 import FaceSwapV2
+        if (pathlib.Path(_INSWAPPER_FP16_PATH).exists()
+                and pathlib.Path(_GFPGAN_ONNX_PATH).exists()):
+            _swap_v2 = FaceSwapV2(_INSWAPPER_FP16_PATH, _GFPGAN_ONNX_PATH)
+            print("[LUCY] V2 face swap loaded — inswapper_128_fp16 + GFPGANv1.4 "
+                  "(Deep-Live-Cam architecture)")
+        else:
+            missing = []
+            if not pathlib.Path(_INSWAPPER_FP16_PATH).exists():
+                missing.append("inswapper_128_fp16.onnx")
+            if not pathlib.Path(_GFPGAN_ONNX_PATH).exists():
+                missing.append("GFPGANv1.4.onnx")
+            print(f"[LUCY] V2 face swap not loaded — missing: {', '.join(missing)}. "
+                  f"Download from https://huggingface.co/hacksider/deep-live-cam")
+    except Exception as e:
+        _swap_v2 = None
+        print(f"[LUCY] V2 face swap load failed ({type(e).__name__}: {e})")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1918,6 +1948,136 @@ async def ws_live_swap(ws: WebSocket):
             session["live_active"] = False
             with contextlib.suppress(Exception):
                 await _release_session(session_id, "live_active")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  WebSocket — V2 face swap (Deep-Live-Cam architecture, fresh pipeline)
+#
+#  This endpoint runs the swap_v2 module — a clean inswapper_128_fp16 + GFPGAN
+#  v1.4 ONNX + mouth-mask pipeline. It deliberately does NOT share state with
+#  V1 (/ws/live-swap) so the two can be A/B compared from the same demo.
+#
+#  Protocol identical to V1: client sends `init` with avatar_id or source_image,
+#  then a stream of `frame` messages; server replies with `result` (jpeg base64)
+#  or `no_face`. No Wav2Lip, no hair swap — V2 is intentionally minimal.
+# ─────────────────────────────────────────────────────────────────────────────
+@app.websocket("/ws/live-swap-v2")
+async def ws_live_swap_v2(ws: WebSocket):
+    await ws.accept()
+    if _swap_v2 is None:
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({
+                "type": "error",
+                "message": ("V2 swap not available — server is missing "
+                            "inswapper_128_fp16.onnx and/or GFPGANv1.4.onnx. "
+                            "Download both from "
+                            "https://huggingface.co/hacksider/deep-live-cam "
+                            "into face_swap_backend/models/models/ and restart."),
+            }))
+        with contextlib.suppress(Exception):
+            await ws.close()
+        return
+
+    loop = asyncio.get_event_loop()
+    src_embedding = None
+    processing    = False
+
+    async def send(obj):
+        await ws.send_text(json.dumps(obj))
+
+    keepalive_task = asyncio.create_task(_ws_keepalive(ws))
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+            mtype = msg.get("type")
+
+            if mtype in ("ping", "pong"):
+                if mtype == "ping":
+                    with contextlib.suppress(Exception):
+                        await send({"type": "pong", "t": msg.get("t")})
+                continue
+
+            if mtype == "init":
+                # Decode source image (avatar_id from cache or base64)
+                if "avatar_id" in msg:
+                    av_id = msg["avatar_id"]
+                    cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
+                    if av_id not in _AVATAR_MAP:
+                        await send({"type": "error", "message": "Unknown avatar"})
+                        continue
+                    if not cache_path.exists():
+                        await send({"type": "error",
+                                    "message": "Avatar not generated yet."})
+                        continue
+                    src_img = await loop.run_in_executor(
+                        None, _decode_image, cache_path.read_bytes())
+                else:
+                    img_bytes = base64.b64decode(msg["source_image"])
+                    src_img = await loop.run_in_executor(
+                        None, _decode_image, img_bytes)
+
+                # Detect source face ONCE, cache its normed embedding for the
+                # rest of the session. inswapper takes the embedding as the
+                # identity input, so caching it = ~100 ms saved per frame.
+                src_faces = await loop.run_in_executor(None, _face_app.get, src_img)
+                src_face  = _largest_face(src_faces)
+                if src_face is None:
+                    await send({"type": "error",
+                                "message": "No face detected in source image"})
+                    src_embedding = None
+                else:
+                    src_embedding = src_face.normed_embedding.astype(np.float32)
+                    await send({"type": "ready"})
+
+            elif mtype == "frame":
+                if src_embedding is None:
+                    await send({"type": "error", "message": "Send init first"})
+                    continue
+                if processing:
+                    await send({"type": "dropped"})
+                    continue
+                processing = True
+                try:
+                    frame_bytes = base64.b64decode(msg["image"])
+                    frame = await loop.run_in_executor(
+                        None, _decode_image, frame_bytes)
+
+                    # Detect target face (fast detector — 480 px det_size)
+                    tgt_faces = await loop.run_in_executor(
+                        None, _face_app_fast.get, frame)
+                    tgt_face = _largest_face(tgt_faces)
+                    if tgt_face is None:
+                        await send({"type": "no_face"})
+                        continue
+
+                    # Run V2 pipeline
+                    result = await loop.run_in_executor(
+                        None, _swap_v2.swap_frame,
+                        src_embedding, frame, tgt_face,
+                    )
+                    if result is None:
+                        await send({"type": "no_face"})
+                        continue
+
+                    # JPEG q=85 — slightly higher than V1 because GFPGAN
+                    # produces fine details that benefit from less compression.
+                    _, buf = cv2.imencode(".jpg", result,
+                                          [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    await send({"type": "result",
+                                "image": base64.b64encode(buf).decode()})
+                finally:
+                    processing = False
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            await send({"type": "error", "message": str(e)})
+    finally:
+        keepalive_task.cancel()
+        with contextlib.suppress(Exception):
+            await keepalive_task
 
 
 # ─────────────────────────────────────────────────────────────────────────────
