@@ -155,7 +155,13 @@ class LivePortraitEngine:
             "R_d_0":      None,
             # Last-known driving crop bbox for fast re-crop (avoid running
             # the full Cropper every frame — re-detect only every Nth frame).
+            # EMA-smoothed across re-detections so periodic bbox snap doesn't
+            # show up as a zoom pulse on the rendered portrait.
             "last_bbox":  None,
+            # Running EMA of the per-frame expression delta. Light smoothing
+            # removes the high-frequency component that reads as breathing /
+            # face-size jitter while still passing through blinks and lips.
+            "exp_smooth": None,
             "frame_n":    0,
         }
         log.info("[LP] source prepared for session %s", session_id)
@@ -197,56 +203,49 @@ class LivePortraitEngine:
         # We resize the crop to 256×256 BGR for compatibility with the
         # rest of the pipeline (wrap.prepare_source expects this shape).
         sess["frame_n"] += 1
-        crop_d = None
+        # Re-detect bbox every Nth frame and EMA-blend it into last_bbox so
+        # the crop window doesn't snap-zoom on each detection. The actual
+        # crop is always cv2.resize from last_bbox so source-of-truth is one
+        # tensor, no slow/fast-path divergence.
         if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
-                # cv2 BGR → RGB for upstream cropper
                 driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
                 out = self.cropper.crop_driving_video([driving_rgb])
-                if out and out.get("frame_crop_lst"):
-                    crop512_rgb = out["frame_crop_lst"][0]
-                    # Keep RGB — upstream wrap.prepare_source expects
-                    # RGB (model was trained on RGB; passing BGR produces
-                    # scrambled colour-bar noise).
-                    crop256_rgb = cv2.resize(
-                        crop512_rgb,
-                        (256, 256),
-                        interpolation=cv2.INTER_LINEAR,
-                    )
-                    crop_d = {"img_crop_256x256": crop256_rgb}
-                    # Stash the original-frame bbox so we can fast-path
-                    # the next 9 frames without re-running face_analysis.
-                    # crop_driving_video doesn't return a bbox directly,
-                    # so derive it from the landmarks.
+                if out and out.get("lmk_crop_lst"):
                     lmks = out["lmk_crop_lst"][0]
                     if lmks is not None and len(lmks) > 0:
                         x1, y1 = lmks[:, 0].min(), lmks[:, 1].min()
                         x2, y2 = lmks[:, 0].max(), lmks[:, 1].max()
-                        # Pad ~40% so we capture the full head, not just the
-                        # tight face box.
+                        # ~40% pad to include forehead + chin, not just the
+                        # tight landmark box.
                         pw, ph = (x2 - x1) * 0.4, (y2 - y1) * 0.4
-                        sess["last_bbox"] = (x1 - pw, y1 - ph, x2 + pw, y2 + ph)
+                        new_bbox = (x1 - pw, y1 - ph, x2 + pw, y2 + ph)
+                        if sess["last_bbox"] is None:
+                            sess["last_bbox"] = new_bbox
+                        else:
+                            a = 0.35
+                            sess["last_bbox"] = tuple(
+                                a * n + (1 - a) * o
+                                for n, o in zip(new_bbox, sess["last_bbox"])
+                            )
             except Exception as e:
                 if sess["frame_n"] % 30 == 1:
                     log.warning(
                         "[LP] crop_driving_video failed (frame=%d shape=%s): %s",
                         sess["frame_n"], driving_bgr.shape, e,
                     )
-                crop_d = None
-        if crop_d is None and sess["last_bbox"] is not None:
-            # Fast path: cv2 crop using last bbox, then resize to 256.
-            # Convert BGR → RGB to match the slow-path (RGB everywhere).
-            x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
-            if x2 - x1 < 16 or y2 - y1 < 16:
-                return None
-            patch_bgr = driving_bgr[y1:y2, x1:x2]
-            patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
-            patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
-            crop_d = {"img_crop_256x256": patch_rgb}
-        if crop_d is None:
+
+        if sess["last_bbox"] is None:
             return None
+        x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
+        if x2 - x1 < 16 or y2 - y1 < 16:
+            return None
+        patch_bgr = driving_bgr[y1:y2, x1:x2]
+        patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
+        patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
+        crop_d = {"img_crop_256x256": patch_rgb}
 
         I_d = self.wrap.prepare_source(crop_d["img_crop_256x256"])
         x_d_info = self.wrap.get_kp_info(I_d)
@@ -267,16 +266,24 @@ class LivePortraitEngine:
         x_d_0 = sess["x_d_0_info"]
         R_d_0 = sess["R_d_0"]
 
-        # Relative-motion driving: drive by delta from neutral.
-        # Expression amp 1.15 — just enough that blinks/brow raises read
-        # but the face doesn't over-react. 1.6 was cartoony (the source
-        # looked angry/shocked with every small movement).
-        # Head trans 1.0 (no amp) — natural head turn already correct.
-        R_new = (R_d @ R_d_0.permute(0, 2, 1)) @ sess["R_s"]
-        delta_exp = 1.15 * (x_d_info["exp"] - x_d_0["exp"]) + sess["x_s_info"]["exp"]
-        scale_new = sess["x_s_info"]["scale"] * (x_d_info["scale"] / x_d_0["scale"])
-        t_new = sess["x_s_info"]["t"] + (x_d_info["t"] - x_d_0["t"])
-        t_new[..., 2] = 0  # zero out z translation — convention
+        # Head pose locked to source — driving frame contributes expression only.
+        # Carrying R_d / scale / translation through produced visible neck
+        # movement on the rendered portrait. Eyes / lips / mouth still animate
+        # because delta_exp is independent of pose.
+        R_new = sess["R_s"]
+        # Light EMA on the raw expression delta. alpha=0.55 → ~145ms time
+        # constant at 80ms/frame: blinks (~150ms) and lip closures (~80ms)
+        # still pass through, but per-frame jitter that read as zoom pulse
+        # is attenuated.
+        raw_delta = x_d_info["exp"] - x_d_0["exp"]
+        if sess["exp_smooth"] is None:
+            sess["exp_smooth"] = raw_delta.clone()
+        else:
+            sess["exp_smooth"] = 0.55 * raw_delta + 0.45 * sess["exp_smooth"]
+        delta_exp = 1.15 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
+        scale_new = sess["x_s_info"]["scale"]
+        t_new = sess["x_s_info"]["t"].clone()
+        t_new[..., 2] = 0
 
         x_d_new = scale_new * (sess["x_s_info"]["kp"] @ R_new + delta_exp) + t_new
         if self._cfg.flag_stitching:
