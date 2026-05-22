@@ -271,16 +271,17 @@ class LivePortraitEngine:
         # movement on the rendered portrait. Eyes / lips / mouth still animate
         # because delta_exp is independent of pose.
         R_new = sess["R_s"]
-        # Light EMA on the raw expression delta. alpha=0.55 → ~145ms time
-        # constant at 80ms/frame: blinks (~150ms) and lip closures (~80ms)
-        # still pass through, but per-frame jitter that read as zoom pulse
-        # is attenuated.
+        # Near-pass-through EMA on the raw expression delta. alpha=0.85
+        # arrives at 85% on frame 1, 98% on frame 2 — fast blinks and lip
+        # closures retain their full amplitude. Only single-frame landmark
+        # outliers get knocked down. Amp 1.25 is the sweet spot between
+        # cartoony (1.6) and under-read (1.15).
         raw_delta = x_d_info["exp"] - x_d_0["exp"]
         if sess["exp_smooth"] is None:
             sess["exp_smooth"] = raw_delta.clone()
         else:
-            sess["exp_smooth"] = 0.55 * raw_delta + 0.45 * sess["exp_smooth"]
-        delta_exp = 1.15 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
+            sess["exp_smooth"] = 0.85 * raw_delta + 0.15 * sess["exp_smooth"]
+        delta_exp = 1.25 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
         scale_new = sess["x_s_info"]["scale"]
         t_new = sess["x_s_info"]["t"].clone()
         t_new[..., 2] = 0
