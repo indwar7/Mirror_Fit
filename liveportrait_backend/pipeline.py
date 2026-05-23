@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import gc
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -209,7 +210,10 @@ class LivePortraitEngine:
         # is computed from a properly aligned face — otherwise downstream
         # expression deltas are noise. last_bbox is also updated here (with
         # EMA blend) and used by the fast path on subsequent frames.
-        if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
+        # Detection runs every 30th frame (~2.4s @ 12.5 FPS) to cap the
+        # numpy buffer churn — the cropper allocates a 512x512x3 float32
+        # per call and the CPU fallback path leaks pressure into system RAM.
+        if sess["frame_n"] % 30 == 1 or sess["last_bbox"] is None:
             try:
                 driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
                 out = self.cropper.crop_driving_video([driving_rgb])
@@ -235,6 +239,17 @@ class LivePortraitEngine:
                                 a * n + (1 - a) * o
                                 for n, o in zip(new_bbox, sess["last_bbox"])
                             )
+                # Release the cropper's intermediate 512x512x3 buffer
+                # immediately — under CPU-fallback the GC delay was tripping
+                # MemoryError when system RAM was already tight.
+                del out
+                gc.collect()
+            except MemoryError as e:
+                # Free what we can and skip this detection. The fast path
+                # using last_bbox will keep the session alive.
+                log.warning("[LP] cropper OOM at frame %d: %s", sess["frame_n"], e)
+                gc.collect()
+                crop_d = None
             except Exception as e:
                 if sess["frame_n"] % 30 == 1:
                     log.warning(
