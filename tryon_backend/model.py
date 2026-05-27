@@ -451,23 +451,28 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference. Scale 1.5 is the
-        # sweet spot — high enough to anchor colour/texture, low enough that
-        # the model still generates real garment structure (collar, zipper,
-        # sleeves). Higher scales (2.0+) collapse the mask into a flat colour
-        # blob instead of a real jacket.
-        self.pipeline.load_ip_adapter(
-            "h94/IP-Adapter", subfolder="models",
-            weight_name="ip-adapter_sd15.bin")
-        # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3). The
-        # IP-Adapter back to 1.2 — the working value that produced clean
-        # jacket results in the user's May 26 screenshot. 1.5 was tried
-        # for stronger garment lock and produced over-saturated garbage
-        # output (rainbow stripes / random colors). Reverted to known good.
-        self.pipeline.set_ip_adapter_scale(1.2)
+        # IP-Adapter: garment image as visual reference. Wrapped in
+        # try/except because the 600 MB image_encoder safetensors fetch
+        # has been silently killing the whole process on the user's
+        # server (HF unauthenticated rate limit + memory pressure).
+        # Now: if load fails, the server stays alive in degraded mode
+        # (no IP conditioning, prompt-only) instead of crashing.
+        try:
+            self.pipeline.load_ip_adapter(
+                "h94/IP-Adapter", subfolder="models",
+                weight_name="ip-adapter_sd15.bin",
+            )
+            self.pipeline.set_ip_adapter_scale(1.2)
+            self._ip_loaded = True
+            log.info("IP-Adapter loaded (scale 1.2)")
+        except Exception as e:
+            self._ip_loaded = False
+            log.warning(
+                "IP-Adapter load failed (server will run in degraded "
+                "prompt-only mode): %s", e
+            )
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
-        self._ip_loaded = True
         self._catvton   = True   # use inpainting path
 
         if self.device == "cuda":
@@ -1378,7 +1383,10 @@ class TryOnModel:
             # embeds were prepared with CFG=False (shape [1,…]) — pass the
             # raw garment image so diffusers re-encodes with the right
             # CFG-shape (negative + positive concatenated).
-            ip_kw = {"ip_adapter_image": garment}
+            # Only pass IP-Adapter kwargs if the adapter actually loaded.
+            # In degraded mode (load_ip_adapter failed at startup) we
+            # rely entirely on the prompt + colour-anchor seed.
+            ip_kw = {"ip_adapter_image": garment} if self._ip_loaded else {}
             color = self._garment_color_name or "matching"
             prompt = (
                 f"photo of a person wearing a fitted {color} button-up shirt, "
