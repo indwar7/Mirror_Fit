@@ -1208,8 +1208,16 @@ class TryOnModel:
                 # No face → fallback to wide horizontal band
                 cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
                               (int(w * 0.92), h), 1.0, -1)
-            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
-            silhouette = np.maximum(silhouette, safety * 0.85)
+            # Wider Gaussian (61 vs 31) so the safety rect's edges fade
+            # gradually instead of having a hard rectangular boundary.
+            # Strength 0.85 -> 0.35 so where MediaPipe sees background,
+            # the safety contribution is much lower — eliminates the
+            # visible "square halo of jacket-coloured pixels behind the
+            # user" the user reported. Where MediaPipe IS confident
+            # (body), the max() still keeps silhouette ~1.0 so jacket
+            # coverage of the actual body is unchanged.
+            safety = cv2.GaussianBlur(safety, (61, 61), 0).clip(0, 1)
+            silhouette = np.maximum(silhouette, safety * 0.35)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
@@ -1443,11 +1451,14 @@ class TryOnModel:
             # go. Body movement still shows because the silhouette mask
             # itself is updating per frame from MediaPipe.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                # 0.45 = "live filter" balance — new frame contributes
-                # nearly half, so body movement tracks faster (~1 sec lag
-                # at 800ms capture interval) while the 55% prev term still
-                # damps colour flicker between samples.
-                alpha_new = 0.45
+                # 0.28 = stronger prev weighting (was 0.45). Each frame is
+                # only 28 % new, 72 % previous → the painted jacket colour
+                # is locked across frames and the flickering the user
+                # reported stops. Body movement still tracks because the
+                # silhouette mask itself updates per frame; only the
+                # rendered RGB inside the mask is EMA'd. Slower colour
+                # response (~3 s) vs the old 1 s, but no flicker.
+                alpha_new = 0.28
                 ema = (
                     composed.astype(np.float32) * alpha_new
                     + self._prev_result.astype(np.float32) * (1.0 - alpha_new)
