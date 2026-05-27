@@ -127,58 +127,36 @@ class TryOnModel:
         # Also load Hands detector so we can carve hand regions OUT of the garment
         # mask. Without this, a hand crossing in front of the camera gets painted
         # over with the garment (user-reported "hand crosses → painted as jacket").
-        # MediaPipe layout varies by version + platform:
-        #   - mediapipe.solutions.selfie_segmentation       (old layout)
-        #   - mediapipe.python.solutions.selfie_segmentation (newer eager)
-        #   - mp.solutions.selfie_segmentation              (lazy attribute)
-        # Try all three so this works on any installed version.
-        self._mp_seg = self._mp_face = self._mp_hands = None
-        _mp_ss = _mp_fd = _mp_hd = None
         try:
             import mediapipe as mp
-        except ImportError as e:
+            # MediaPipe 0.10.30+ on Python 3.14 makes `mp.solutions` lazy and
+            # `hasattr(mp, 'solutions')` returns False until the submodule
+            # is explicitly imported. Force-import each solution submodule
+            # so the namespace exists. If any of these imports fails, the
+            # whole block falls through to the fallback.
+            from mediapipe.python.solutions import selfie_segmentation as _mp_ss
+            from mediapipe.python.solutions import face_detection      as _mp_fd
+            from mediapipe.python.solutions import hands               as _mp_hd
+            self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
+            self._mp_face = _mp_fd.FaceDetection(
+                model_selection=0, min_detection_confidence=0.5
+            )
+            # Hands: detect up to 2 hands, lower confidence so a partial /
+            # blurry hand crossing still gets picked up. Performance-mode
+            # model (model_complexity=0) is ~5-7 ms / frame on CPU.
+            self._mp_hands = _mp_hd.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                model_complexity=0,
+                min_detection_confidence=0.4,
+                min_tracking_confidence=0.4,
+            )
+            log.info("MediaPipe loaded (seg + face + hands).")
+        except Exception as e:
+            self._mp_seg   = None
+            self._mp_face  = None
+            self._mp_hands = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
-        else:
-            for path in (
-                "mediapipe.solutions",          # standard
-                "mediapipe.python.solutions",   # newer eager layout
-            ):
-                try:
-                    import importlib
-                    ss_mod = importlib.import_module(f"{path}.selfie_segmentation")
-                    fd_mod = importlib.import_module(f"{path}.face_detection")
-                    hd_mod = importlib.import_module(f"{path}.hands")
-                    _mp_ss, _mp_fd, _mp_hd = ss_mod, fd_mod, hd_mod
-                    break
-                except ImportError:
-                    continue
-            # Final fallback: lazy attribute access (only works on older mp)
-            if _mp_ss is None and hasattr(mp, "solutions"):
-                try:
-                    _mp_ss = mp.solutions.selfie_segmentation
-                    _mp_fd = mp.solutions.face_detection
-                    _mp_hd = mp.solutions.hands
-                except AttributeError:
-                    pass
-
-            if _mp_ss is not None:
-                try:
-                    self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
-                    self._mp_face = _mp_fd.FaceDetection(
-                        model_selection=0, min_detection_confidence=0.5
-                    )
-                    self._mp_hands = _mp_hd.Hands(
-                        static_image_mode=False,
-                        max_num_hands=2,
-                        model_complexity=0,
-                        min_detection_confidence=0.4,
-                        min_tracking_confidence=0.4,
-                    )
-                    log.info("MediaPipe loaded (seg + face + hands).")
-                except Exception as e:
-                    log.warning(f"MediaPipe instantiation failed: {e}")
-            else:
-                log.warning("MediaPipe present but no solutions submodule found.")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._fixed_mask_cache = None
@@ -451,28 +429,23 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference. Wrapped in
-        # try/except because the 600 MB image_encoder safetensors fetch
-        # has been silently killing the whole process on the user's
-        # server (HF unauthenticated rate limit + memory pressure).
-        # Now: if load fails, the server stays alive in degraded mode
-        # (no IP conditioning, prompt-only) instead of crashing.
-        try:
-            self.pipeline.load_ip_adapter(
-                "h94/IP-Adapter", subfolder="models",
-                weight_name="ip-adapter_sd15.bin",
-            )
-            self.pipeline.set_ip_adapter_scale(1.2)
-            self._ip_loaded = True
-            log.info("IP-Adapter loaded (scale 1.2)")
-        except Exception as e:
-            self._ip_loaded = False
-            log.warning(
-                "IP-Adapter load failed (server will run in degraded "
-                "prompt-only mode): %s", e
-            )
+        # IP-Adapter: garment image as visual reference. Scale 1.5 is the
+        # sweet spot — high enough to anchor colour/texture, low enough that
+        # the model still generates real garment structure (collar, zipper,
+        # sleeves). Higher scales (2.0+) collapse the mask into a flat colour
+        # blob instead of a real jacket.
+        self.pipeline.load_ip_adapter(
+            "h94/IP-Adapter", subfolder="models",
+            weight_name="ip-adapter_sd15.bin")
+        # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3). The
+        # IP-Adapter back to 1.2 — the working value that produced clean
+        # jacket results in the user's May 26 screenshot. 1.5 was tried
+        # for stronger garment lock and produced over-saturated garbage
+        # output (rainbow stripes / random colors). Reverted to known good.
+        self.pipeline.set_ip_adapter_scale(1.2)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
+        self._ip_loaded = True
         self._catvton   = True   # use inpainting path
 
         if self.device == "cuda":
@@ -1235,16 +1208,8 @@ class TryOnModel:
                 # No face → fallback to wide horizontal band
                 cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
                               (int(w * 0.92), h), 1.0, -1)
-            # Wider Gaussian (61 vs 31) so the safety rect's edges fade
-            # gradually instead of having a hard rectangular boundary.
-            # Strength 0.85 -> 0.35 so where MediaPipe sees background,
-            # the safety contribution is much lower — eliminates the
-            # visible "square halo of jacket-coloured pixels behind the
-            # user" the user reported. Where MediaPipe IS confident
-            # (body), the max() still keeps silhouette ~1.0 so jacket
-            # coverage of the actual body is unchanged.
-            safety = cv2.GaussianBlur(safety, (61, 61), 0).clip(0, 1)
-            silhouette = np.maximum(silhouette, safety * 0.35)
+            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
+            silhouette = np.maximum(silhouette, safety * 0.85)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
@@ -1364,17 +1329,10 @@ class TryOnModel:
                 mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
                 seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
                 seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                # Sharpened seed pre-fill: previously a soft mask let the
-                # user's existing t-shirt (~30 % through edges) bleed into
-                # the SD init image, which is why the painted garment ended
-                # up colour-averaged with the user's clothes. Now we
-                # gamma-boost the colour-anchor mask so any region with
-                # mask > 0.15 becomes ~0.9-1.0 — the SD denoiser starts
-                # from a NEAR-PURE garment-colour seed across the entire
-                # torso, then the IP-Adapter sculpts texture/structure on
-                # top. Result: uploaded jacket colour preserved end-to-end.
-                anchor_alpha = np.clip(torso_mask * 2.5, 0.0, 1.0)
-                m = anchor_alpha[:, :, np.newaxis]
+                # Blend the seed colour into the orig_arr ONLY where the
+                # torso mask is high — outside the mask we keep the camera
+                # pixels untouched so the seed colour doesn't leak.
+                m = torso_mask[:, :, np.newaxis]
                 anchor = (
                     seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
                     + orig_arr.astype(np.float32) * (1.0 - m)
@@ -1390,10 +1348,7 @@ class TryOnModel:
             # embeds were prepared with CFG=False (shape [1,…]) — pass the
             # raw garment image so diffusers re-encodes with the right
             # CFG-shape (negative + positive concatenated).
-            # Only pass IP-Adapter kwargs if the adapter actually loaded.
-            # In degraded mode (load_ip_adapter failed at startup) we
-            # rely entirely on the prompt + colour-anchor seed.
-            ip_kw = {"ip_adapter_image": garment} if self._ip_loaded else {}
+            ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
             prompt = (
                 f"photo of a person wearing a fitted {color} button-up shirt, "
@@ -1452,24 +1407,12 @@ class TryOnModel:
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            # Sharpened final alpha: SD output should DOMINATE over the
-            # user's original t-shirt instead of half-blending with it.
-            # Previous mask was a soft Gaussian → wherever alpha=0.3-0.6,
-            # 40-70 % of the user's original brown t-shirt showed through
-            # the painted jacket → uploaded grey jacket colour drifted to
-            # neutral, original clothes were visible.
-            # Two-step fix:
-            #   (a) gamma-boost so any mask > 0.15 becomes ~0.9-1.0
-            #       (full SD result, original hidden)
-            #   (b) only the OUTER 8 px feathered for anti-jaggy
-            sharp = np.clip(torso_mask * 2.5, 0.0, 1.0)  # boost mid-tones
-            # Hard core + small feather at edge: where the boosted alpha
-            # is > 0.7 it stays at 1.0 (full paint); a 9 px Gaussian only
-            # softens the outer rim. SD output fully replaces the user's
-            # garment instead of blending with it.
-            core = (sharp > 0.7).astype(np.float32)
-            edge_blur = cv2.GaussianBlur(sharp, (9, 9), 0)
-            blend_mask = np.maximum(core, edge_blur).clip(0.0, 1.0)
+            # Tight final alpha — blur FIRST with a small (3,3) kernel
+            # for just enough antialiasing to avoid jaggies, then zero
+            # the face region. Old order (zero, then blur 7x7) was
+            # smearing the chin row by 7 px and making the collar look
+            # half-transparent.
+            blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
             blend_mask[:face_cutoff_y] = 0.0
 
             # Edge contact shadow — narrow ring just INSIDE the alpha
@@ -1500,14 +1443,11 @@ class TryOnModel:
             # go. Body movement still shows because the silhouette mask
             # itself is updating per frame from MediaPipe.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                # 0.28 = stronger prev weighting (was 0.45). Each frame is
-                # only 28 % new, 72 % previous → the painted jacket colour
-                # is locked across frames and the flickering the user
-                # reported stops. Body movement still tracks because the
-                # silhouette mask itself updates per frame; only the
-                # rendered RGB inside the mask is EMA'd. Slower colour
-                # response (~3 s) vs the old 1 s, but no flicker.
-                alpha_new = 0.28
+                # 0.45 = "live filter" balance — new frame contributes
+                # nearly half, so body movement tracks faster (~1 sec lag
+                # at 800ms capture interval) while the 55% prev term still
+                # damps colour flicker between samples.
+                alpha_new = 0.45
                 ema = (
                     composed.astype(np.float32) * alpha_new
                     + self._prev_result.astype(np.float32) * (1.0 - alpha_new)

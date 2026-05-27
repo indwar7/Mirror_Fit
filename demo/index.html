@@ -613,10 +613,6 @@ header {
           </div>
         </div>
         <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
-        <button class="btn btn-primary" id="fashnBtn" onclick="generateFashn()" disabled
-                style="margin-top:8px;background:linear-gradient(135deg,#a855f7,#ec4899)">
-          ✨ Generate (fashn.ai HD)
-        </button>
         <div id="tryonStatus" class="status-msg"></div>
       </div>
     </div>
@@ -1321,82 +1317,8 @@ function _checkTryOnReady(){
   // Enable Start button only when BOTH garment uploaded AND camera on.
   const ready = !!(toGarment && toStream);
   document.getElementById('tryonBtn').disabled = !ready;
-  document.getElementById('fashnBtn').disabled = !ready;
 }
 
-// ── fashn.ai one-shot HD try-on ─────────────────────────────────────────
-// Demo path for the manager presentation: capture one frame from the
-// camera, send it + the uploaded garment through the face_swap_backend
-// proxy (POST /fashn/run) which forwards to fashn.ai with the server-
-// held API key. Wait 10-25s, show the result image. NOT live video.
-async function generateFashn() {
-  const btn = document.getElementById('fashnBtn');
-  if (!toStream || !toGarment) {
-    setStatus('tryonStatus','error','Camera + garment required');
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = '⏳ Generating (10-25s)...';
-  setStatus('tryonStatus','info','Capturing frame + sending to fashn.ai...');
-  try {
-    // Capture one frame from the camera video element
-    const video = document.getElementById('tryonVideo');
-    const cv = document.createElement('canvas');
-    cv.width  = video.videoWidth  || 640;
-    cv.height = video.videoHeight || 480;
-    const ctx = cv.getContext('2d');
-    // Un-mirror for the server (CSS scaleX(-1) is display-only)
-    ctx.translate(cv.width, 0); ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, cv.width, cv.height);
-    const modelB64 = cv.toDataURL('image/jpeg', 0.92).split(',')[1];
-
-    // Read garment as base64
-    const garmentB64 = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload  = e => res(e.target.result.split(',')[1]);
-      r.onerror = rej;
-      r.readAsDataURL(toGarment);
-    });
-
-    // Server proxy holds the fashn.ai API key. We never send the key
-    // from the browser.
-    const resp = await fetch(`${FACE_API}/fashn/run`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        model_image:   modelB64,
-        garment_image: garmentB64,
-        category: 'auto',
-      }),
-    });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error(`fashn.ai proxy error ${resp.status}: ${txt}`);
-    }
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    if (!data.output || !data.output[0]) throw new Error('No output URL returned');
-
-    // Display the result in the tryon canvas area
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.getElementById('tryonCanvas');
-      const c = canvas.getContext('2d');
-      canvas.width  = img.width;
-      canvas.height = img.height;
-      c.drawImage(img, 0, 0);
-    };
-    img.src = data.output[0];
-    setStatus('tryonStatus','success','✨ fashn.ai HD result ready');
-  } catch (e) {
-    console.error('[fashn]', e);
-    setStatus('tryonStatus','error', 'fashn.ai failed: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '✨ Generate (fashn.ai HD)';
-  }
-}
 function setGarment(inp) {
   toGarment = inp.files[0];
   _checkTryOnReady();
