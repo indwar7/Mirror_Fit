@@ -127,36 +127,58 @@ class TryOnModel:
         # Also load Hands detector so we can carve hand regions OUT of the garment
         # mask. Without this, a hand crossing in front of the camera gets painted
         # over with the garment (user-reported "hand crosses → painted as jacket").
+        # MediaPipe layout varies by version + platform:
+        #   - mediapipe.solutions.selfie_segmentation       (old layout)
+        #   - mediapipe.python.solutions.selfie_segmentation (newer eager)
+        #   - mp.solutions.selfie_segmentation              (lazy attribute)
+        # Try all three so this works on any installed version.
+        self._mp_seg = self._mp_face = self._mp_hands = None
+        _mp_ss = _mp_fd = _mp_hd = None
         try:
             import mediapipe as mp
-            # MediaPipe 0.10.30+ on Python 3.14 makes `mp.solutions` lazy and
-            # `hasattr(mp, 'solutions')` returns False until the submodule
-            # is explicitly imported. Force-import each solution submodule
-            # so the namespace exists. If any of these imports fails, the
-            # whole block falls through to the fallback.
-            from mediapipe.python.solutions import selfie_segmentation as _mp_ss
-            from mediapipe.python.solutions import face_detection      as _mp_fd
-            from mediapipe.python.solutions import hands               as _mp_hd
-            self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
-            self._mp_face = _mp_fd.FaceDetection(
-                model_selection=0, min_detection_confidence=0.5
-            )
-            # Hands: detect up to 2 hands, lower confidence so a partial /
-            # blurry hand crossing still gets picked up. Performance-mode
-            # model (model_complexity=0) is ~5-7 ms / frame on CPU.
-            self._mp_hands = _mp_hd.Hands(
-                static_image_mode=False,
-                max_num_hands=2,
-                model_complexity=0,
-                min_detection_confidence=0.4,
-                min_tracking_confidence=0.4,
-            )
-            log.info("MediaPipe loaded (seg + face + hands).")
-        except Exception as e:
-            self._mp_seg   = None
-            self._mp_face  = None
-            self._mp_hands = None
+        except ImportError as e:
             log.warning(f"MediaPipe not available, using fallback: {e}")
+        else:
+            for path in (
+                "mediapipe.solutions",          # standard
+                "mediapipe.python.solutions",   # newer eager layout
+            ):
+                try:
+                    import importlib
+                    ss_mod = importlib.import_module(f"{path}.selfie_segmentation")
+                    fd_mod = importlib.import_module(f"{path}.face_detection")
+                    hd_mod = importlib.import_module(f"{path}.hands")
+                    _mp_ss, _mp_fd, _mp_hd = ss_mod, fd_mod, hd_mod
+                    break
+                except ImportError:
+                    continue
+            # Final fallback: lazy attribute access (only works on older mp)
+            if _mp_ss is None and hasattr(mp, "solutions"):
+                try:
+                    _mp_ss = mp.solutions.selfie_segmentation
+                    _mp_fd = mp.solutions.face_detection
+                    _mp_hd = mp.solutions.hands
+                except AttributeError:
+                    pass
+
+            if _mp_ss is not None:
+                try:
+                    self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
+                    self._mp_face = _mp_fd.FaceDetection(
+                        model_selection=0, min_detection_confidence=0.5
+                    )
+                    self._mp_hands = _mp_hd.Hands(
+                        static_image_mode=False,
+                        max_num_hands=2,
+                        model_complexity=0,
+                        min_detection_confidence=0.4,
+                        min_tracking_confidence=0.4,
+                    )
+                    log.info("MediaPipe loaded (seg + face + hands).")
+                except Exception as e:
+                    log.warning(f"MediaPipe instantiation failed: {e}")
+            else:
+                log.warning("MediaPipe present but no solutions submodule found.")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._fixed_mask_cache = None
