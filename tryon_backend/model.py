@@ -1364,10 +1364,17 @@ class TryOnModel:
                 mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
                 seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
                 seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                # Blend the seed colour into the orig_arr ONLY where the
-                # torso mask is high — outside the mask we keep the camera
-                # pixels untouched so the seed colour doesn't leak.
-                m = torso_mask[:, :, np.newaxis]
+                # Sharpened seed pre-fill: previously a soft mask let the
+                # user's existing t-shirt (~30 % through edges) bleed into
+                # the SD init image, which is why the painted garment ended
+                # up colour-averaged with the user's clothes. Now we
+                # gamma-boost the colour-anchor mask so any region with
+                # mask > 0.15 becomes ~0.9-1.0 — the SD denoiser starts
+                # from a NEAR-PURE garment-colour seed across the entire
+                # torso, then the IP-Adapter sculpts texture/structure on
+                # top. Result: uploaded jacket colour preserved end-to-end.
+                anchor_alpha = np.clip(torso_mask * 2.5, 0.0, 1.0)
+                m = anchor_alpha[:, :, np.newaxis]
                 anchor = (
                     seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
                     + orig_arr.astype(np.float32) * (1.0 - m)
@@ -1445,12 +1452,24 @@ class TryOnModel:
             # a faint colour ghost where the shirt outline floated past
             # the body. torso_mask is already silhouette ∩ torso-band, so
             # this gives a clean cut at the bottom of the jacket too.
-            # Tight final alpha — blur FIRST with a small (3,3) kernel
-            # for just enough antialiasing to avoid jaggies, then zero
-            # the face region. Old order (zero, then blur 7x7) was
-            # smearing the chin row by 7 px and making the collar look
-            # half-transparent.
-            blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
+            # Sharpened final alpha: SD output should DOMINATE over the
+            # user's original t-shirt instead of half-blending with it.
+            # Previous mask was a soft Gaussian → wherever alpha=0.3-0.6,
+            # 40-70 % of the user's original brown t-shirt showed through
+            # the painted jacket → uploaded grey jacket colour drifted to
+            # neutral, original clothes were visible.
+            # Two-step fix:
+            #   (a) gamma-boost so any mask > 0.15 becomes ~0.9-1.0
+            #       (full SD result, original hidden)
+            #   (b) only the OUTER 8 px feathered for anti-jaggy
+            sharp = np.clip(torso_mask * 2.5, 0.0, 1.0)  # boost mid-tones
+            # Hard core + small feather at edge: where the boosted alpha
+            # is > 0.7 it stays at 1.0 (full paint); a 9 px Gaussian only
+            # softens the outer rim. SD output fully replaces the user's
+            # garment instead of blending with it.
+            core = (sharp > 0.7).astype(np.float32)
+            edge_blur = cv2.GaussianBlur(sharp, (9, 9), 0)
+            blend_mask = np.maximum(core, edge_blur).clip(0.0, 1.0)
             blend_mask[:face_cutoff_y] = 0.0
 
             # Edge contact shadow — narrow ring just INSIDE the alpha
