@@ -1208,8 +1208,16 @@ class TryOnModel:
                 # No face → fallback to wide horizontal band
                 cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
                               (int(w * 0.92), h), 1.0, -1)
-            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
-            silhouette = np.maximum(silhouette, safety * 0.85)
+            # Wider Gaussian (61 vs 31) so the safety rect's edges fade
+            # gradually instead of forming a hard rectangle outline.
+            # Strength 0.85 -> 0.35: where MediaPipe sees background,
+            # safety contribution is much smaller, so the visible "dark
+            # square shadow behind the garment" the user reported goes
+            # away. Where MediaPipe IS confident (body), the max() still
+            # keeps silhouette ~1.0, so jacket / tshirt coverage on the
+            # actual body is unchanged.
+            safety = cv2.GaussianBlur(safety, (61, 61), 0).clip(0, 1)
+            silhouette = np.maximum(silhouette, safety * 0.35)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
