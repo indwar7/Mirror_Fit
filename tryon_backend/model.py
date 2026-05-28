@@ -1350,11 +1350,17 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
+            # Garment-agnostic prompt. Removed "button-up", "visible collar
+            # around the neck", and "long sleeves following the arms down
+            # to the wrists" because these biases made SD render jacket-
+            # like garments even when the uploaded image was a t-shirt
+            # (short sleeves, crew neck). The IP-Adapter carries the
+            # actual garment shape and texture so the prompt only needs
+            # to describe colour + "fits naturally on the body".
             prompt = (
-                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"photo of a person wearing a fitted {color} garment, "
                 f"solid {color} fabric, neutral {color} colour, "
-                f"the shirt fits naturally on the body, visible collar around the neck, "
-                f"long sleeves following the arms down to the wrists, "
+                f"the garment fits naturally on the body, "
                 f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
             # Anti-drift negatives. Includes purple/violet because at higher
