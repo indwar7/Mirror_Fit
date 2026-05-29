@@ -256,6 +256,206 @@ header {
 }
 .btn-ghost:hover { border-color: var(--accent); background: rgba(124,58,237,0.10); }
 
+/* ══════ Landing page (first thing a visitor sees) ══════ */
+body.landing-active header,
+body.landing-active .app { display: none !important; }
+
+.landing {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(1100px 600px at 80% 8%, rgba(124,58,237,0.18), transparent 60%),
+    radial-gradient(900px 500px at 12% 92%, rgba(167,139,250,0.10), transparent 60%),
+    var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 48px 32px;
+}
+.landing.hide { display: none; }
+
+/* hanging garments — scattered, faint, decorative */
+.hangs {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.hangs .rack {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--border-2), transparent);
+}
+.hangs .rack.top    { top: 56px; }
+.hangs .rack.bottom { bottom: 70px; }
+
+.hang {
+  position: absolute;
+  font-size: 64px;
+  opacity: 0.18;
+  filter: grayscale(0.4);
+  transform-origin: top center;
+  animation: sway 6s ease-in-out infinite;
+  user-select: none;
+}
+.hang.h1 { top: 60px;  left: 7%;   transform: rotate(-6deg);  animation-delay: -0.1s; }
+.hang.h2 { top: 64px;  left: 22%;  transform: rotate(4deg);   animation-delay: -1.2s; font-size: 72px; }
+.hang.h3 { top: 58px;  left: 38%;  transform: rotate(-3deg);  animation-delay: -2.4s; }
+.hang.h4 { top: 62px;  left: 62%;  transform: rotate(5deg);   animation-delay: -3.0s; font-size: 70px; }
+.hang.h5 { top: 60px;  left: 78%;  transform: rotate(-7deg);  animation-delay: -1.7s; }
+.hang.h6 { top: 60px;  right: 6%;  transform: rotate(3deg);   animation-delay: -2.1s; font-size: 76px; }
+.hang.b1 { bottom: 80px; left: 5%;  transform: rotate(6deg);  animation-delay: -0.7s; }
+.hang.b2 { bottom: 80px; left: 28%; transform: rotate(-4deg); animation-delay: -2.9s; font-size: 60px; }
+.hang.b3 { bottom: 80px; right: 24%;transform: rotate(5deg);  animation-delay: -1.4s; }
+.hang.b4 { bottom: 80px; right: 5%; transform: rotate(-3deg); animation-delay: -3.1s; font-size: 70px; }
+
+@keyframes sway {
+  0%, 100% { transform: rotate(var(--r, 0deg)) translateY(0); }
+  50%      { transform: rotate(calc(var(--r, 0deg) + 2deg)) translateY(4px); }
+}
+
+.landing-inner {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 1180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 48px;
+}
+
+.landing-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 18px;
+  letter-spacing: 6px;
+  color: var(--muted);
+}
+.landing-brand-dot {
+  width: 8px; height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 14px var(--accent);
+}
+
+.landing-title {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: clamp(72px, 11vw, 168px);
+  line-height: 0.92;
+  letter-spacing: 4px;
+  text-align: center;
+  color: #fff;
+  margin: 0;
+  text-shadow: 0 4px 60px rgba(124,58,237,0.35);
+}
+.landing-title .accent {
+  background: linear-gradient(135deg, var(--accent-hot), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.landing-subtitle {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-align: center;
+  max-width: 620px;
+  line-height: 1.55;
+  letter-spacing: 0.2px;
+}
+
+.landing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 22px;
+  width: 100%;
+  margin-top: 8px;
+}
+@media (max-width: 920px) {
+  .landing-grid { grid-template-columns: 1fr; }
+}
+
+.feature-card {
+  position: relative;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 28px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  text-align: left;
+  min-height: 230px;
+  overflow: hidden;
+}
+.feature-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  background: radial-gradient(220px 120px at 100% 0%, rgba(124,58,237,0.18), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  background: rgba(124,58,237,0.06);
+  box-shadow: 0 18px 60px rgba(124,58,237,0.18);
+}
+.feature-card:hover::after { opacity: 1; }
+
+.feature-icon {
+  font-size: 32px;
+  width: 52px; height: 52px;
+  border-radius: 12px;
+  background: rgba(124,58,237,0.14);
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(124,58,237,0.25);
+}
+.feature-name {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 32px;
+  letter-spacing: 3px;
+  color: #fff;
+}
+.feature-desc {
+  font-size: 14px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+  flex: 1;
+}
+.feature-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600;
+  color: var(--accent-hot);
+  letter-spacing: 0.5px;
+}
+.feature-cta .arrow {
+  transition: transform 0.2s;
+}
+.feature-card:hover .feature-cta .arrow { transform: translateX(4px); }
+
+.landing-footer {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  text-align: center;
+}
+
 /* ══════ Preview toggle (above the result screen of each feature) ══════ */
 .preview-toolbar {
   display: flex;
@@ -518,7 +718,74 @@ header {
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 </style>
 </head>
-<body>
+<body class="landing-active">
+
+<!-- ══════════════ LANDING ══════════════ -->
+<div class="landing" id="landing">
+  <div class="hangs" aria-hidden="true">
+    <div class="rack top"></div>
+    <div class="rack bottom"></div>
+    <div class="hang h1" style="--r:-6deg">🧥</div>
+    <div class="hang h2" style="--r:4deg">👕</div>
+    <div class="hang h3" style="--r:-3deg">👔</div>
+    <div class="hang h4" style="--r:5deg">🧥</div>
+    <div class="hang h5" style="--r:-7deg">👚</div>
+    <div class="hang h6" style="--r:3deg">👕</div>
+    <div class="hang b1" style="--r:6deg">👔</div>
+    <div class="hang b2" style="--r:-4deg">👗</div>
+    <div class="hang b3" style="--r:5deg">🧥</div>
+    <div class="hang b4" style="--r:-3deg">👕</div>
+  </div>
+
+  <div class="landing-inner">
+    <div class="landing-brand">
+      <span class="landing-brand-dot"></span>
+      LUCY AI
+    </div>
+
+    <h1 class="landing-title">
+      ABOARD<br><span class="accent">LUCY AI</span>
+    </h1>
+
+    <p class="landing-subtitle">
+      Real-time virtual mirror powered by AI. Try on garments, swap faces,
+      and become your avatar &mdash; live, in your browser.
+    </p>
+
+    <div class="landing-grid">
+      <button class="feature-card" onclick="enterFeature('liveswap')">
+        <div class="feature-icon">🎭</div>
+        <div class="feature-name">FACE&nbsp;SWAP</div>
+        <div class="feature-desc">
+          Live identity transfer. Pick an avatar and watch yourself become someone else &mdash; instantly, frame by frame.
+        </div>
+        <div class="feature-cta">Launch <span class="arrow">→</span></div>
+      </button>
+
+      <button class="feature-card" onclick="enterFeature('liveportrait')">
+        <div class="feature-icon">😊</div>
+        <div class="feature-name">LIVE&nbsp;PORTRAIT</div>
+        <div class="feature-desc">
+          Expression mirror. Your blinks, smiles, and head pose drive the avatar's face in real time.
+        </div>
+        <div class="feature-cta">Launch <span class="arrow">→</span></div>
+      </button>
+
+      <button class="feature-card" onclick="enterFeature('tryon')">
+        <div class="feature-icon">👕</div>
+        <div class="feature-name">LIVE&nbsp;TRY-ON</div>
+        <div class="feature-desc">
+          Upload a jacket, shirt, or t-shirt and see it worn on your live camera feed &mdash; no stop, no upload delay.
+        </div>
+        <div class="feature-cta">Launch <span class="arrow">→</span></div>
+      </button>
+    </div>
+
+    <div class="landing-footer">
+      Powered by AI · Real-time · Photo-real
+    </div>
+  </div>
+</div>
 
 <header>
   <div class="logo">
@@ -819,6 +1086,22 @@ function switchTab(t) {
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('placeholder').style.display = 'none';
+}
+
+// ── Landing → feature entry. Hides the intro page, reveals the app
+// shell (header + sidebar + main), and switches to the requested tab.
+function enterFeature(name) {
+  document.body.classList.remove('landing-active');
+  const landing = document.getElementById('landing');
+  if (landing) landing.classList.add('hide');
+  switchTab(name);
+}
+
+// Logo click takes the user back to the landing page.
+function goLanding() {
+  const landing = document.getElementById('landing');
+  if (landing) landing.classList.remove('hide');
+  document.body.classList.add('landing-active');
 }
 
 // ── Preview toggle: each feature has a checkbox above its result screen.
