@@ -256,6 +256,52 @@ header {
 }
 .btn-ghost:hover { border-color: var(--accent); background: rgba(124,58,237,0.10); }
 
+/* ══════ Preview toggle (above the result screen of each feature) ══════ */
+.preview-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  user-select: none;
+}
+.preview-toggle:hover { border-color: var(--accent); color: var(--ink); }
+.preview-toggle input[type="checkbox"] {
+  appearance: none;
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--border-2);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  display: inline-grid; place-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+.preview-toggle input[type="checkbox"]::before {
+  content: '';
+  width: 8px; height: 8px;
+  transform: scale(0);
+  background: var(--accent-hot);
+  border-radius: 2px;
+  transition: transform 0.12s;
+}
+.preview-toggle input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: rgba(124,58,237,0.10);
+}
+.preview-toggle input[type="checkbox"]:checked::before { transform: scale(1); }
+.preview-toggle input[type="checkbox"]:checked + span { color: var(--ink); }
+
 /* ══════ Status row ══════ */
 .status-row {
   display: flex;
@@ -643,8 +689,14 @@ header {
 
     <!-- Live face swap: camera + result side by side -->
     <div id="liveWrap" style="display:none;width:100%">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
-        <div class="canvas-wrap" style="max-width:100%">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="livePreviewToggle" onchange="setPreview('live', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="liveGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="liveCameraPane" style="max-width:100%;display:none">
           <video id="liveVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">📷 Your Camera</div>
@@ -664,8 +716,14 @@ header {
 
     <!-- Live Portrait: expression-driven swap (port 7862) -->
     <div id="lpWrap" style="display:none;width:100%">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
-        <div class="canvas-wrap" style="max-width:100%">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="lpPreviewToggle" onchange="setPreview('lp', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="lpGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="lpCameraPane" style="max-width:100%;display:none">
           <video id="lpVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">📷 Your Camera</div>
@@ -685,8 +743,14 @@ header {
 
     <!-- Live try-on: camera + result side by side -->
     <div id="tryonWrap" style="display:none;width:100%;display:none">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;width:100%;max-width:1100px">
-        <div class="canvas-wrap" style="max-width:100%">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="tryonPreviewToggle" onchange="setPreview('tryon', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="tryonGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="tryonCameraPane" style="max-width:100%;display:none">
           <video id="tryonVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">📷 Your Camera</div>
@@ -755,6 +819,24 @@ function switchTab(t) {
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('placeholder').style.display = 'none';
+}
+
+// ── Preview toggle: each feature has a checkbox above its result screen.
+// Unchecked (default) = only the result is shown. Checked = the user's
+// camera pane appears next to it in a two-column grid, like before.
+function setPreview(feature, on) {
+  const map = {
+    live:  { grid:'liveGrid',  pane:'liveCameraPane'  },
+    lp:    { grid:'lpGrid',    pane:'lpCameraPane'    },
+    tryon: { grid:'tryonGrid', pane:'tryonCameraPane' },
+  };
+  const ids = map[feature];
+  if (!ids) return;
+  const grid = document.getElementById(ids.grid);
+  const pane = document.getElementById(ids.pane);
+  if (!grid || !pane) return;
+  grid.style.gridTemplateColumns = on ? '1fr 1fr' : '1fr';
+  pane.style.display              = on ? '' : 'none';
 }
 
 function previewFile(inp, imgId, phId) {
