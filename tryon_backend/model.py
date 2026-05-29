@@ -819,12 +819,19 @@ class TryOnModel:
                 ).pixel_values.to("cpu", self.dtype)
                 with torch.inference_mode():
                     image_embeds = self.pipeline.image_encoder(pixel).image_embeds
-                # Move embeddings (tiny — KB scale) onto the GPU dtype.
+                # Encoder returns 2D [batch, embed_dim]. Diffusers'
+                # ip_adapter_image_embeds expects a list of 3D tensors
+                # shaped [2 * batch, num_images_per_prompt, embed_dim]
+                # when CFG is on — matching what
+                # prepare_ip_adapter_image_embeds emits internally.
                 image_embeds = image_embeds.to(self.device, self.dtype)
-                # CFG inpaint path expects [neg, pos] stacked along dim 0.
-                neg_embeds = torch.zeros_like(image_embeds)
-                self._ip_embeds = [torch.cat([neg_embeds, image_embeds], dim=0)]
-                log.info("Garment IP embeddings pre-computed (CPU encode) and cached on GPU.")
+                image_embeds = image_embeds.unsqueeze(0)            # [1, 1, 1024]
+                neg_embeds   = torch.zeros_like(image_embeds)       # [1, 1, 1024]
+                self._ip_embeds = [
+                    torch.cat([neg_embeds, image_embeds], dim=0),   # [2, 1, 1024]
+                ]
+                log.info("Garment IP embeddings pre-computed (CPU encode) and cached on GPU. Shape=%s",
+                         tuple(self._ip_embeds[0].shape))
             except Exception as e:
                 log.warning(f"IP embed pre-cache failed: {e}")
                 self._ip_embeds = None
