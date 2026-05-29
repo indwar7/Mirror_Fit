@@ -1257,27 +1257,41 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Width = 4x face width (covers full shoulder-to-shoulder
-                # + extended arms). Height = chin to bottom of frame.
-                rect_top    = fy2 + fh2                          # chin row
-                rect_bottom = h
-                rect_left   = max(0, cx2 - fw2 * 2)
-                rect_right  = min(w, cx2 + fw2 * 2)
-                cv2.rectangle(safety, (rect_left, rect_top),
-                              (rect_right, rect_bottom), 1.0, -1)
+                # Body-shaped trapezoid anchored to the detected face.
+                # Shoulders ≈ 1.1x face width on each side (≈2.2x total),
+                # waist ≈ 0.85x. Top = just under chin; bottom = down to
+                # bottom of frame. Much tighter than the old 4x face-width
+                # rectangle, so when the safety mask is the only mask we
+                # have (MediaPipe unavailable on Py-3.14) the SD paint
+                # region stays close to the actual body — no dark square
+                # halo behind the user.
+                shoulder_y = fy2 + fh2 + int(fh2 * 0.10)
+                hip_y      = h
+                sl = max(0, cx2 - int(fw2 * 1.10))
+                sr = min(w, cx2 + int(fw2 * 1.10))
+                hl = max(0, cx2 - int(fw2 * 0.85))
+                hr = min(w, cx2 + int(fw2 * 0.85))
+                poly = np.array(
+                    [[sl, shoulder_y], [sr, shoulder_y],
+                     [hr, hip_y],      [hl, hip_y]],
+                    dtype=np.int32,
+                )
+                cv2.fillConvexPoly(safety, poly, 1.0)
             else:
-                # No face → fallback to wide horizontal band
-                cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
-                              (int(w * 0.92), h), 1.0, -1)
-            # Wider Gaussian (61 vs 31) so the safety rect's edges fade
-            # gradually instead of forming a hard rectangle outline.
-            safety = cv2.GaussianBlur(safety, (61, 61), 0).clip(0, 1)
+                # No face → tapered fallback band (narrower than full
+                # frame width so we don't paint corners of the room).
+                cv2.rectangle(safety, (int(w * 0.20), int(h * 0.32)),
+                              (int(w * 0.80), h), 1.0, -1)
+            # Gaussian softens the polygon edges so SD has a feathered
+            # boundary instead of a hard trapezoid outline.
+            safety = cv2.GaussianBlur(safety, (51, 51), 0).clip(0, 1)
             # When MediaPipe segmentation IS available, the safety rect is
-            # only a small assist (0.35) so it doesn't produce a dark square
-            # halo behind the garment. When MediaPipe is unavailable (the
-            # Python-3.14 wheel ships no solutions submodule), the fallback
-            # ellipse is too small to cover a full torso, so the safety rect
-            # has to BE the mask — bump it to 0.95.
+            # only a small assist (0.35) on top of the real silhouette.
+            # When MediaPipe is unavailable (Python-3.14 wheel ships no
+            # solutions submodule), the safety polygon has to BE the mask,
+            # so we bump it to 0.95. The polygon now tracks the actual body
+            # shape so this stronger weight no longer leaks a dark halo
+            # past the user's silhouette.
             safety_weight = 0.35 if self._mp_seg is not None else 0.95
             silhouette = np.maximum(silhouette, safety * safety_weight)
         except Exception as e:
