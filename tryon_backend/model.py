@@ -44,6 +44,13 @@ VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 # overlay if the AI path is misbehaving.
 TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 
+# Explicit IP-Adapter kill-switch. Set VTON_DISABLE_IP_ADAPTER=1 to skip
+# the load_ip_adapter step entirely. Use when the Windows native code
+# path for IP-Adapter keeps segfaulting on cold start (corrupt cache,
+# CLIPVisionModel VRAM crash, etc.) — server starts in degraded mode
+# (prompt-only inpaint, no garment-image conditioning) but stays alive.
+VTON_DISABLE_IP_ADAPTER   = os.environ.get("VTON_DISABLE_IP_ADAPTER", "0") == "1"
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -464,6 +471,33 @@ class TryOnModel:
 
         # IP-Adapter: garment image as visual reference.
         #
+        # Explicit kill-switch first: VTON_DISABLE_IP_ADAPTER=1 skips the
+        # entire load. Use this on Windows where the native loader has
+        # been observed to segfault even after a successful prefetch
+        # (likely due to a corrupted cache blob or a CLIPVisionModel
+        # VRAM crash). Degraded mode = text-prompt + colour anchor only.
+        if VTON_DISABLE_IP_ADAPTER:
+            log.warning(
+                "VTON_DISABLE_IP_ADAPTER=1 — skipping IP-Adapter load. "
+                "Running in degraded mode (prompt-only inpaint)."
+            )
+            self._ip_loaded = False
+            self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
+            self._catvton   = True
+            if self.device == "cuda":
+                try:
+                    self.pipeline.enable_xformers_memory_efficient_attention()
+                except Exception:
+                    pass
+                try:
+                    self.pipeline.unet.to(memory_format=torch.channels_last)
+                    self.pipeline.vae.to(memory_format=torch.channels_last)
+                except Exception:
+                    pass
+            log.info("Inpainting try-on ready (degraded) — %d-step LCM.",
+                     self._steps)
+            return
+
         # Why pre-download instead of letting load_ip_adapter download:
         # on Windows the load_ip_adapter native code path segfaulted /
         # killed the Python process silently the moment image_encoder
