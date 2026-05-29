@@ -498,17 +498,44 @@ class TryOnModel:
                      self._steps)
             return
 
-        # Why pre-download instead of letting load_ip_adapter download:
-        # on Windows the load_ip_adapter native code path segfaulted /
-        # killed the Python process silently the moment image_encoder
-        # download started — try/except couldn't catch it because the
-        # crash was C-level, not a Python exception. Prefetching via
-        # huggingface_hub.hf_hub_download is plain Python — any failure
-        # raises an exception we CAN catch, and once the files are in
-        # the HF cache load_ip_adapter just reads them locally (no new
-        # download, no native code path to crash).
+        # Why pre-download + manual CPU image_encoder load:
+        #
+        # 1. Prefetch via huggingface_hub.hf_hub_download (plain Python
+        #    so any download error raises a catchable exception, unlike
+        #    diffusers' native loader which has been observed to segfault
+        #    the whole process on Windows).
+        #
+        # 2. Manually load the 2.53 GB image_encoder on CPU first.
+        #    load_ip_adapter normally loads it on the pipeline's device
+        #    (CUDA), and the fp32→fp16 transient during from_pretrained
+        #    spikes VRAM by ~5 GB. On a 16 GB GPU with SD inpaint already
+        #    resident (~4-5 GB) that spike is a hard OOM and Windows
+        #    kills the process silently. Loading on CPU avoids the spike
+        #    entirely. The encoder runs ONCE per set_garment call to
+        #    compute IP embeddings — running it on CPU adds ~150 ms at
+        #    init time only, with zero inference-time cost since the
+        #    embeddings are cached.
+        #
+        # 3. Then load_ip_adapter sees pipeline.image_encoder is set and
+        #    only loads the tiny 45 MB UNet adapter weights — no big
+        #    VRAM allocation, no crash.
         if self._prefetch_ip_adapter_files():
             try:
+                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+                log.info("Loading IP-Adapter image_encoder on CPU (VRAM-safe)…")
+                self.pipeline.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                    "h94/IP-Adapter",
+                    subfolder="models/image_encoder",
+                    torch_dtype=self.dtype,
+                ).to("cpu")
+                self.pipeline.feature_extractor = CLIPImageProcessor()
+                # Free any GPU memory we don't need so load_ip_adapter
+                # has room to copy the small UNet adapter weights.
+                import gc
+                gc.collect()
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+                log.info("image_encoder ready on CPU; loading IP-Adapter UNet weights…")
                 self.pipeline.load_ip_adapter(
                     "h94/IP-Adapter", subfolder="models",
                     weight_name="ip-adapter_sd15.bin")
@@ -516,7 +543,7 @@ class TryOnModel:
                 # Known-good value from the May 26 working demo.
                 self.pipeline.set_ip_adapter_scale(1.2)
                 self._ip_loaded = True
-                log.info("IP-Adapter loaded.")
+                log.info("IP-Adapter loaded (encoder on CPU, UNet on GPU).")
             except Exception as e:
                 log.warning(
                     "IP-Adapter load step failed after successful prefetch "
@@ -780,20 +807,27 @@ class TryOnModel:
         self._garment_color_name = self._dominant_color_name(np.array(garment_sq))
         log.info(f"Garment dominant color: {self._garment_color_name}")
 
-        # Pre-compute IP-Adapter CLIP embeddings once — reused every frame instead of per-frame encoding
-        if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
+        # Pre-compute IP-Adapter CLIP embeddings once on CPU. The encoder
+        # lives on CPU (loaded that way to dodge a VRAM OOM during
+        # load_ip_adapter). Inference uses these cached embeddings via
+        # ip_adapter_image_embeds, so the per-frame path never touches
+        # the CPU encoder again — no slowdown at frame time.
+        if self._ip_loaded and self.pipeline.image_encoder is not None:
             try:
+                pixel = self.pipeline.feature_extractor(
+                    garment_sq, return_tensors="pt",
+                ).pixel_values.to("cpu", self.dtype)
                 with torch.inference_mode():
-                    self._ip_embeds = self.pipeline.prepare_ip_adapter_image_embeds(
-                        ip_adapter_image=[garment_sq],
-                        ip_adapter_image_embeds=None,
-                        device=self.device,
-                        num_images_per_prompt=1,
-                        do_classifier_free_guidance=True,  # CFG ON in inpaint path
-                    )
-                log.info("Garment IP embeddings pre-computed and cached.")
+                    image_embeds = self.pipeline.image_encoder(pixel).image_embeds
+                # Move embeddings (tiny — KB scale) onto the GPU dtype.
+                image_embeds = image_embeds.to(self.device, self.dtype)
+                # CFG inpaint path expects [neg, pos] stacked along dim 0.
+                neg_embeds = torch.zeros_like(image_embeds)
+                self._ip_embeds = [torch.cat([neg_embeds, image_embeds], dim=0)]
+                log.info("Garment IP embeddings pre-computed (CPU encode) and cached on GPU.")
             except Exception as e:
-                log.warning(f"IP embed pre-cache failed, will encode per-frame: {e}")
+                log.warning(f"IP embed pre-cache failed: {e}")
+                self._ip_embeds = None
         log.info("Garment cached.")
 
     # ── Inference ─────────────────────────────────────────────────────────────
@@ -1467,8 +1501,17 @@ class TryOnModel:
             # raw garment image so diffusers re-encodes with the right
             # CFG-shape (negative + positive concatenated).
             # Skip IP-Adapter kwarg entirely if load failed at startup
-            # (degraded mode after network hiccup during model download).
-            ip_kw = {"ip_adapter_image": garment} if self._ip_loaded else {}
+            # (degraded mode). Otherwise PREFER cached embeds — the
+            # image_encoder lives on CPU to dodge the load_ip_adapter
+            # VRAM OOM, so passing ip_adapter_image (raw PIL) would
+            # force a CPU encode every frame. Cached embeds let us skip
+            # the encoder entirely at inference time.
+            if not self._ip_loaded:
+                ip_kw = {}
+            elif self._ip_embeds is not None:
+                ip_kw = {"ip_adapter_image_embeds": self._ip_embeds}
+            else:
+                ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
             # Type-specific prompts. User picks the garment type from the
             # UI buttons (T-shirt / Shirt / Jacket); the server uses that
