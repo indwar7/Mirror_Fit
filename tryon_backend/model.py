@@ -401,6 +401,38 @@ class TryOnModel:
             log.warning(f"SD Inpainting load failed ({e}), falling back to SD+IP-Adapter…")
             self._load_sd_ipadapter()
 
+    def _prefetch_ip_adapter_files(self) -> bool:
+        """
+        Explicitly download the three IP-Adapter files (adapter weights +
+        image_encoder config + image_encoder safetensors) via huggingface_hub.
+        Returns True if all three landed in cache, False otherwise.
+
+        Done BEFORE load_ip_adapter so the slow ~600 MB image_encoder
+        download is a visible, recoverable step instead of an opaque
+        native-code download inside diffusers that has been observed to
+        kill the Python process silently on Windows.
+        """
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError:
+            log.warning("huggingface_hub not available; cannot prefetch.")
+            return False
+
+        files = [
+            "models/ip-adapter_sd15.bin",
+            "models/image_encoder/config.json",
+            "models/image_encoder/model.safetensors",
+        ]
+        for fname in files:
+            log.info("Prefetching h94/IP-Adapter / %s …", fname)
+            try:
+                hf_hub_download(repo_id="h94/IP-Adapter", filename=fname)
+            except Exception as e:
+                log.warning("Prefetch of %s failed: %s", fname, e)
+                return False
+        log.info("All IP-Adapter files cached locally.")
+        return True
+
     def _load_catvton(self):
         """
         SD Inpainting + IP-Adapter for garment reference.
@@ -430,24 +462,38 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference. load_ip_adapter
-        # downloads the image_encoder (~600 MB) on first run. Network
-        # hiccups during that download have killed the server process
-        # silently in the past. Wrap so the server survives in degraded
-        # mode (prompt-only inpainting, no garment-image conditioning).
-        try:
-            self.pipeline.load_ip_adapter(
-                "h94/IP-Adapter", subfolder="models",
-                weight_name="ip-adapter_sd15.bin")
-            # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3).
-            # Known-good value from the May 26 working demo.
-            self.pipeline.set_ip_adapter_scale(1.2)
-            self._ip_loaded = True
-        except Exception as e:
+        # IP-Adapter: garment image as visual reference.
+        #
+        # Why pre-download instead of letting load_ip_adapter download:
+        # on Windows the load_ip_adapter native code path segfaulted /
+        # killed the Python process silently the moment image_encoder
+        # download started — try/except couldn't catch it because the
+        # crash was C-level, not a Python exception. Prefetching via
+        # huggingface_hub.hf_hub_download is plain Python — any failure
+        # raises an exception we CAN catch, and once the files are in
+        # the HF cache load_ip_adapter just reads them locally (no new
+        # download, no native code path to crash).
+        if self._prefetch_ip_adapter_files():
+            try:
+                self.pipeline.load_ip_adapter(
+                    "h94/IP-Adapter", subfolder="models",
+                    weight_name="ip-adapter_sd15.bin")
+                # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3).
+                # Known-good value from the May 26 working demo.
+                self.pipeline.set_ip_adapter_scale(1.2)
+                self._ip_loaded = True
+                log.info("IP-Adapter loaded.")
+            except Exception as e:
+                log.warning(
+                    "IP-Adapter load step failed after successful prefetch "
+                    "(%s). Running in degraded mode.", e,
+                )
+                self._ip_loaded = False
+        else:
             log.warning(
-                "IP-Adapter load failed (%s). Running in degraded mode — "
-                "prompt-only inpainting, no garment-image conditioning. "
-                "Re-run the server with network connectivity to retry.", e,
+                "Skipping IP-Adapter load — prefetch failed. Running in "
+                "degraded mode (prompt-only inpainting, no garment-image "
+                "conditioning). Re-run the server with network access to retry."
             )
             self._ip_loaded = False
 
