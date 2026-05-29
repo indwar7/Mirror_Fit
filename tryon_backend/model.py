@@ -1179,13 +1179,17 @@ class TryOnModel:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
         if silhouette is None:
-            # Fallback ellipse: same shape the legacy fixed mask used.
+            # Fallback ellipse — sized to cover the full upper-body region
+            # so SD has room to paint a complete shirt / jacket / t-shirt
+            # even with no real silhouette. The old (0.40, 0.36) ellipse
+            # was too small and gave the "oval blob" output the user saw
+            # when MediaPipe was unavailable on the server's Python 3.14.
             silhouette = np.zeros((h, w), dtype=np.float32)
             cv2.ellipse(silhouette,
-                        (w // 2, int(h * 0.62)),
-                        (int(w * 0.40), int(h * 0.36)),
+                        (w // 2, int(h * 0.65)),
+                        (int(w * 0.48), int(h * 0.45)),
                         0, 0, 360, 1.0, -1)
-            silhouette = cv2.GaussianBlur(silhouette, (21, 21), 0)
+            silhouette = cv2.GaussianBlur(silhouette, (31, 31), 0)
 
         # Safety: OR a generous bbox-derived rectangle covering the
         # expected shoulders + arms + torso area. This guarantees the
@@ -1216,14 +1220,15 @@ class TryOnModel:
                               (int(w * 0.92), h), 1.0, -1)
             # Wider Gaussian (61 vs 31) so the safety rect's edges fade
             # gradually instead of forming a hard rectangle outline.
-            # Strength 0.85 -> 0.35: where MediaPipe sees background,
-            # safety contribution is much smaller, so the visible "dark
-            # square shadow behind the garment" the user reported goes
-            # away. Where MediaPipe IS confident (body), the max() still
-            # keeps silhouette ~1.0, so jacket / tshirt coverage on the
-            # actual body is unchanged.
             safety = cv2.GaussianBlur(safety, (61, 61), 0).clip(0, 1)
-            silhouette = np.maximum(silhouette, safety * 0.35)
+            # When MediaPipe segmentation IS available, the safety rect is
+            # only a small assist (0.35) so it doesn't produce a dark square
+            # halo behind the garment. When MediaPipe is unavailable (the
+            # Python-3.14 wheel ships no solutions submodule), the fallback
+            # ellipse is too small to cover a full torso, so the safety rect
+            # has to BE the mask — bump it to 0.95.
+            safety_weight = 0.35 if self._mp_seg is not None else 0.95
+            silhouette = np.maximum(silhouette, safety * safety_weight)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
