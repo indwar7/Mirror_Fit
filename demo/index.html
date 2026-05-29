@@ -256,6 +256,17 @@ header {
 }
 .btn-ghost:hover { border-color: var(--accent); background: rgba(124,58,237,0.10); }
 
+/* Garment-type selector — clear visual lock on the selected type so the
+   user can tell which one the server is being told to render. */
+.garment-type-btn { transition: all 0.15s ease; cursor: pointer; }
+.garment-type-btn.active {
+  background: rgba(124,58,237,0.18);
+  color: #fff;
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 4px 12px rgba(124,58,237,0.25);
+  transform: translateY(-1px);
+}
+
 /* ══════ Landing page (first thing a visitor sees) ══════ */
 body.landing-active header,
 body.landing-active .app { display: none !important; }
@@ -1718,7 +1729,6 @@ function selectGarmentType(type, btn) {
   toGarmentType = type;
   document.querySelectorAll('.garment-type-btn').forEach(b => {
     b.classList.toggle('active', b === btn);
-    b.classList.toggle('btn-active', b === btn);
   });
   // Live switch: if a session is running, push the new type to the
   // server immediately so the user sees the difference without
