@@ -1398,16 +1398,24 @@ class TryOnModel:
                     f"the t-shirt fits naturally on the body, "
                     f"realistic cotton folds, detailed texture, sharp focus, photorealistic"
                 )
-            # Anti-drift negatives. Includes purple/violet because at higher
-            # IP-Adapter scales grey shirts pick up a mauve tint from the
-            # mid-tone bias of the embedding.
-            neg = (
+            # Anti-drift negatives — shared core + per-type "wrong garment"
+            # tokens. Putting the OTHER garment types in the negative pulls
+            # SD away from drifting; putting the SELECTED type in the
+            # negative (the old prompt did this with "t-shirt") cancels the
+            # positive prompt and gave the user a malformed output when
+            # they picked T-shirt.
+            neg_common = (
                 "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
-                "saturated, oversaturated, tinted, faded, washed out, "
-                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "saturated, oversaturated, tinted, faded, washed out, naked, "
                 "floating clothes, shirt on background, shirt outline, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
+            if gtype == "tshirt":
+                neg = neg_common + ", jacket, hoodie, zipper, button-up, formal shirt, long sleeves"
+            elif gtype == "shirt":
+                neg = neg_common + ", t-shirt, tank top, sleeveless, jacket, hoodie, zipper"
+            else:  # jacket
+                neg = neg_common + ", bare arms, t-shirt, tank top, sleeveless"
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
             # and is what finally beats the brown-drift problem. The
