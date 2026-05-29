@@ -162,6 +162,7 @@ class TryOnModel:
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
+        self._garment_type        = "tshirt"  # "tshirt" | "shirt" | "jacket" from UI button
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -659,7 +660,12 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
-    def set_garment(self, garment_image: Image.Image):
+    def set_garment(self, garment_image: Image.Image, garment_type: str = "tshirt"):
+        # Store garment type so _infer_tier3 can pick a type-specific prompt.
+        # "tshirt" | "shirt" | "jacket" from the UI buttons. Defaults to
+        # "tshirt" for backwards compatibility with older clients.
+        self._garment_type = garment_type if garment_type in ("tshirt", "shirt", "jacket") else "tshirt"
+        log.info("Garment type set to: %s", self._garment_type)
         if garment_image.mode == 'RGBA':
             bg = Image.new('RGB', garment_image.size, (255, 255, 255))
             bg.paste(garment_image, mask=garment_image.split()[3])
@@ -1358,19 +1364,35 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            # Garment-agnostic prompt. Removed "button-up", "visible collar
-            # around the neck", and "long sleeves following the arms down
-            # to the wrists" because these biases made SD render jacket-
-            # like garments even when the uploaded image was a t-shirt
-            # (short sleeves, crew neck). The IP-Adapter carries the
-            # actual garment shape and texture so the prompt only needs
-            # to describe colour + "fits naturally on the body".
-            prompt = (
-                f"photo of a person wearing a fitted {color} garment, "
-                f"solid {color} fabric, neutral {color} colour, "
-                f"the garment fits naturally on the body, "
-                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
-            )
+            # Type-specific prompts. User picks the garment type from the
+            # UI buttons (T-shirt / Shirt / Jacket); the server uses that
+            # hint to describe the exact garment SD should render so the
+            # output matches what was uploaded.
+            gtype = getattr(self, "_garment_type", "tshirt")
+            if gtype == "jacket":
+                prompt = (
+                    f"photo of a person wearing a {color} jacket on the upper body, "
+                    f"solid {color} jacket fabric, full sleeves down to the wrists, "
+                    f"front zipper or buttons, jacket collar around the neck, "
+                    f"the jacket fits naturally over the body, "
+                    f"realistic jacket folds, detailed texture, sharp focus, photorealistic"
+                )
+            elif gtype == "shirt":
+                prompt = (
+                    f"photo of a person wearing a fitted {color} formal button-up shirt, "
+                    f"solid {color} shirt fabric, long sleeves down to the wrists, "
+                    f"visible shirt collar around the neck, front buttons, "
+                    f"the shirt fits naturally on the body, "
+                    f"realistic shirt folds, detailed texture, sharp focus, photorealistic"
+                )
+            else:  # tshirt (default)
+                prompt = (
+                    f"photo of a person wearing a fitted {color} t-shirt on the upper body, "
+                    f"solid {color} cotton fabric, short sleeves above the elbows, "
+                    f"crew-neck collar around the neck, "
+                    f"the t-shirt fits naturally on the body, "
+                    f"realistic cotton folds, detailed texture, sharp focus, photorealistic"
+                )
             # Anti-drift negatives. Includes purple/violet because at higher
             # IP-Adapter scales grey shirts pick up a mauve tint from the
             # mid-tone bias of the embedding.

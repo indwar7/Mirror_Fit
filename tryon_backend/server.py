@@ -89,13 +89,17 @@ async def tryon_ws(ws: WebSocket):
                 # Raw decode preserves RGBA so set_garment can extract the alpha mask
                 garment_img = await run_in_thread(_decode_image_raw, msg["garment_image"])
 
-                # Cache resized garment on model — avoids resize every frame
-                await run_in_thread(tryon_model.set_garment, garment_img)
+                # Garment type from UI ("tshirt" / "shirt" / "jacket"). Lets the
+                # SD prompt describe the actual garment shape SD should generate.
+                garment_type = msg.get("garment_type") or "tshirt"
+
+                # Cache resized garment + type on model — avoids resize every frame
+                await run_in_thread(tryon_model.set_garment, garment_img, garment_type)
                 # Reset temporal state for new session
                 tryon_model.reset_temporal()
 
                 await send({"type": "ready"})
-                log.info("Garment set and cached on model.")
+                log.info("Garment set (type=%s).", garment_type)
 
             # ── Frame: camera frame → try-on result ───────────────────────────
             elif kind == "frame":

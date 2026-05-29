@@ -600,7 +600,26 @@ header {
           <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph');setGarment(this)">
           <img id="gp" style="display:none;max-height:100px">
           <span class="upload-icon" id="gph">👕</span>
-          <span class="upload-hint" id="gph2">Upload shirt, jacket, dress</span>
+          <span class="upload-hint" id="gph2">Upload shirt, jacket, tshirt</span>
+        </div>
+      </div>
+
+      <!-- Step 2.5: Garment Type -->
+      <div class="card">
+        <div class="card-label">Step 2.5 · Type</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost garment-type-btn active" data-type="tshirt"
+                  onclick="selectGarmentType('tshirt', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            👕 T-shirt
+          </button>
+          <button class="btn btn-ghost garment-type-btn" data-type="shirt"
+                  onclick="selectGarmentType('shirt', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            👔 Shirt
+          </button>
+          <button class="btn btn-ghost garment-type-btn" data-type="jacket"
+                  onclick="selectGarmentType('jacket', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            🧥 Jacket
+          </button>
         </div>
       </div>
 
@@ -1312,6 +1331,9 @@ function sendLpFrame(){
 // ── Live Try-On ────────────────────────────────────────────────────────────────
 let toStream=null,toWs=null,toGarment=null,toRunning=false;
 let toLatestResult=null,toRafId=null,toSendTimer=null;
+// Default garment type — keeps current "garment-agnostic" behaviour
+// until the user explicitly clicks T-shirt / Shirt / Jacket.
+let toGarmentType='tshirt';
 
 function _checkTryOnReady(){
   // Enable Start button only when BOTH garment uploaded AND camera on.
@@ -1322,6 +1344,32 @@ function _checkTryOnReady(){
 function setGarment(inp) {
   toGarment = inp.files[0];
   _checkTryOnReady();
+  // If a live try-on is already running, re-send init so the server
+  // picks up the new garment without the user having to stop/start.
+  _resendTryOnInit();
+}
+
+function selectGarmentType(type, btn) {
+  toGarmentType = type;
+  document.querySelectorAll('.garment-type-btn').forEach(b => {
+    b.classList.toggle('active', b === btn);
+    b.classList.toggle('btn-active', b === btn);
+  });
+  // Live switch: if a session is running, push the new type to the
+  // server immediately so the user sees the difference without
+  // stopping and starting.
+  _resendTryOnInit();
+}
+
+function _resendTryOnInit() {
+  if (!(toWs && toWs.readyState === WebSocket.OPEN && toGarment)) return;
+  const r = new FileReader();
+  r.onload = e => toWs.send(JSON.stringify({
+    type: 'init',
+    garment_image: e.target.result.split(',')[1],
+    garment_type:  toGarmentType,
+  }));
+  r.readAsDataURL(toGarment);
 }
 async function startTryOnCamera() {
   try {
@@ -1346,7 +1394,11 @@ function startTryOn() {
   toWs.onopen=()=>{
     setDot('to',true);
     const r=new FileReader();
-    r.onload=e=>toWs.send(JSON.stringify({type:'init',garment_image:e.target.result.split(',')[1]}));
+    r.onload=e=>toWs.send(JSON.stringify({
+      type: 'init',
+      garment_image: e.target.result.split(',')[1],
+      garment_type:  toGarmentType,
+    }));
     r.readAsDataURL(toGarment);
     document.getElementById('tryonBtn').textContent='⏹ Stop';
     document.getElementById('tryonBtn').className='btn btn-stop';
