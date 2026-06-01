@@ -1251,6 +1251,37 @@ class TryOnModel:
             # completely and no rectangular outline remains.
             safety = cv2.GaussianBlur(safety, (71, 71), 0).clip(0, 1)
             silhouette = np.maximum(silhouette, safety * 0.85)
+
+            # ── Skin-tone hands extension (no MediaPipe needed) ────────
+            # Detect skin pixels via YCrCb (works for all skin tones)
+            # BELOW the face_cutoff_y line (so face skin is excluded).
+            # OR these into the silhouette so the painted garment can
+            # extend onto raised hands / arms. Without this the polygon
+            # only covers the chest band and hands stay un-painted when
+            # the user moves them (user: "hands cover with movements").
+            try:
+                ycrcb = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2YCrCb)
+                skin = cv2.inRange(ycrcb, (0, 133, 77), (255, 173, 127))
+                skin = skin.astype(np.float32) / 255.0
+                # Restrict to below the chin so we don't catch the face.
+                chin_y = int(fy2 + fh2 * 0.95) if len(safety_faces) > 0 else int(h * 0.30)
+                skin_mask = np.zeros_like(skin)
+                skin_mask[chin_y:, :] = skin[chin_y:, :]
+                # Clean noise, then dilate so the hand/arm region is a
+                # solid blob rather than skin-texture speckle.
+                skin_mask = cv2.morphologyEx(
+                    skin_mask, cv2.MORPH_OPEN,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+                )
+                skin_mask = cv2.dilate(
+                    skin_mask,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)),
+                    iterations=2,
+                )
+                skin_mask = cv2.GaussianBlur(skin_mask, (21, 21), 0).clip(0, 1)
+                silhouette = np.maximum(silhouette, skin_mask * 0.80)
+            except Exception as e:
+                log.debug(f"skin extension skipped: {e}")
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
@@ -1264,14 +1295,15 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff right at chin row (no gap). Old gap of 0.20*fh +
-                # max-clip 0.50h was leaving the painted t-shirt to start
-                # at mid-frame, so user saw their collared shirt on top
-                # and a teal floating rectangle pasted below mid-chest.
-                # Tight clip [0.15h, 0.40h] = painting starts just under
-                # the chin and covers full upper chest / collar area.
-                face_cutoff_y = int(np.clip(fy + fh,
-                                            h * 0.15, h * 0.40))
+                # Cutoff INSIDE the jaw (fy + fh*0.92, was fy+fh). The
+                # chin row leaves a strip of user's actual collar showing
+                # between chin and the painted garment because Gaussian
+                # feathering tapers the mask over ~15 px below the cutoff.
+                # By pulling the cutoff UP into the jaw region, the
+                # painting starts at jawline so the t-shirt 'sticks to
+                # the collar' (user request) — no gap.
+                face_cutoff_y = int(np.clip(fy + int(fh * 0.92),
+                                            h * 0.12, h * 0.38))
         except Exception:
             pass
 
