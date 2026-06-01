@@ -1327,38 +1327,50 @@ class TryOnModel:
         # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
         torso_mask = (silhouette * band).clip(0, 1)
 
-        # ── Background subtraction: kill the rectangle outside the body ──
-        # Sample background colour from the four frame corners (always
-        # off-body), build a per-pixel "distance from background" map,
-        # and use it to mask out polygon pixels that match the wall /
-        # background. This removes the visible blue/grey rectangle past
-        # the user's silhouette without needing MediaPipe segmentation.
+        # ── GrabCut body extraction: garment ONLY on body, not behind ───
+        # User: "background impaint kyu kr rhe ho jab sirf tshrt body p
+        # aani h". Polygon alone extends past the body into background;
+        # GrabCut takes the polygon as "probable foreground", the corners
+        # as "definite background", and the face area as "definite
+        # foreground" — then finds the real body silhouette. Downscale
+        # to 256x256 for speed (iterCount=1 ≈ 30 ms at that size).
         try:
-            c = 40
-            corners = np.concatenate([
-                frame_rgb[:c, :c].reshape(-1, 3),
-                frame_rgb[:c, -c:].reshape(-1, 3),
-                frame_rgb[-c:, :c].reshape(-1, 3),
-                frame_rgb[-c:, -c:].reshape(-1, 3),
-            ]).astype(np.float32)
-            bg_mean = corners.mean(axis=0)
-            # Per-pixel RGB distance from background mean. >35 = clearly
-            # not the wall colour. Gaussian-smooth so the foreground mask
-            # has soft edges (no harsh body cutout).
-            diff = np.linalg.norm(
-                frame_rgb.astype(np.float32) - bg_mean, axis=2
-            )
-            fg = np.clip((diff - 25.0) / 30.0, 0, 1)  # soft sigmoid-ish
-            fg = cv2.GaussianBlur(fg, (15, 15), 0)
-            # Dilate slightly so the body edge isn't shaved off
-            fg = cv2.dilate(
-                fg,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+            small_size = 256
+            small_rgb  = cv2.resize(frame_rgb, (small_size, small_size))
+            small_poly = cv2.resize(safety, (small_size, small_size))
+            gc_mask = np.full((small_size, small_size),
+                              cv2.GC_PR_BGD, dtype=np.uint8)
+            gc_mask[small_poly > 0.30] = cv2.GC_PR_FGD
+            # Definite background: 25 px at each corner.
+            bc = 25
+            gc_mask[:bc, :bc]  = cv2.GC_BGD
+            gc_mask[:bc, -bc:] = cv2.GC_BGD
+            gc_mask[-bc:, :bc] = cv2.GC_BGD
+            gc_mask[-bc:, -bc:] = cv2.GC_BGD
+            # Definite foreground: the detected face area (scaled).
+            if len(safety_faces) > 0:
+                s = small_size / float(h)
+                sfx = int(fx2 * s); sfy = int(fy2 * s)
+                sfw = int(fw2 * s); sfh = int(fh2 * s)
+                gc_mask[sfy:sfy+sfh, sfx:sfx+sfw] = cv2.GC_FGD
+            bgd_model = np.zeros((1, 65), np.float64)
+            fgd_model = np.zeros((1, 65), np.float64)
+            cv2.grabCut(small_rgb, gc_mask, None, bgd_model, fgd_model,
+                        iterCount=1, mode=cv2.GC_INIT_WITH_MASK)
+            body = np.where(
+                (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
+                1.0, 0.0
+            ).astype(np.float32)
+            body = cv2.resize(body, (w, h), interpolation=cv2.INTER_LINEAR)
+            body = cv2.dilate(
+                body,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
                 iterations=1,
-            ).clip(0, 1)
-            torso_mask = torso_mask * fg
+            )
+            body = cv2.GaussianBlur(body, (15, 15), 0).clip(0, 1)
+            torso_mask = torso_mask * body
         except Exception as e:
-            log.debug(f"background subtraction skipped: {e}")
+            log.debug(f"grabcut body extraction skipped: {e}")
 
         # Gentle feather so SD has a smooth boundary to denoise into.
         torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
