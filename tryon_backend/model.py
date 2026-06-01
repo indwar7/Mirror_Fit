@@ -1264,13 +1264,14 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff at chin + 0.20 * face_height gap (was 0.35). Smaller
-                # gap = collar starts higher up on the chest, so the
-                # collar/neckline actually wraps around the neck instead
-                # of leaving a band of bare chest visible between the
-                # chin and the jacket.
-                face_cutoff_y = int(np.clip(fy + fh + fh * 0.20,
-                                            h * 0.22, h * 0.50))
+                # Cutoff right at chin row (no gap). Old gap of 0.20*fh +
+                # max-clip 0.50h was leaving the painted t-shirt to start
+                # at mid-frame, so user saw their collared shirt on top
+                # and a teal floating rectangle pasted below mid-chest.
+                # Tight clip [0.15h, 0.40h] = painting starts just under
+                # the chin and covers full upper chest / collar area.
+                face_cutoff_y = int(np.clip(fy + fh,
+                                            h * 0.15, h * 0.40))
         except Exception:
             pass
 
