@@ -1332,28 +1332,31 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Hexagonal body+sleeves shape anchored to the detected
-                # face. Top = chin row, narrow at neck. Shoulder row
-                # widens to ~3.2x face width to catch natural arm-at-side
-                # and slightly-out positions (so SD paints sleeves on the
-                # actual arms instead of leaving bare skin showing past
-                # the torso). Elbow row stays wide. Waist tapers back in.
-                # Bottom extends to frame bottom.
+                # Hexagonal body shape anchored to the face. Tighter than
+                # before — the previous (1.6x shoulder) polygon was wider
+                # than the actual torso and the LAB colour lock painted
+                # those off-body pixels too, making the garment look
+                # oversized / floating beyond the body. Values now match
+                # natural human proportions:
+                #   shoulder ≈ 2.5x face width (1.25 each side)
+                #   elbow   ≈ 2.4x face width (arms-at-side, no extension)
+                #   waist   ≈ 1.7x face width
+                # Bottom extends to ~85% of frame height (was full bottom,
+                # which painted a hem off the bottom of the frame).
                 neck_y     = fy2 + fh2 + int(fh2 * 0.10)
-                shoulder_y = fy2 + fh2 + int(fh2 * 0.35)
-                elbow_y    = fy2 + fh2 + int(fh2 * 1.10)
-                hip_y      = h
-                nl = max(0, cx2 - int(fw2 * 0.95))
-                nr = min(w, cx2 + int(fw2 * 0.95))
-                sl = max(0, cx2 - int(fw2 * 1.60))
-                sr = min(w, cx2 + int(fw2 * 1.60))
-                el = max(0, cx2 - int(fw2 * 1.55))
-                er = min(w, cx2 + int(fw2 * 1.55))
-                hl = max(0, cx2 - int(fw2 * 1.00))
-                hr = min(w, cx2 + int(fw2 * 1.00))
-                # Build as two trapezoids (collar→shoulder, elbow→hip)
-                # fused into one polygon. Sweep left side top-down then
-                # right side bottom-up so the polygon is convex-traversal.
+                shoulder_y = fy2 + fh2 + int(fh2 * 0.40)
+                elbow_y    = fy2 + fh2 + int(fh2 * 1.15)
+                hip_y      = min(h, fy2 + fh2 + int(fh2 * 3.20))
+                nl = max(0, cx2 - int(fw2 * 0.70))
+                nr = min(w, cx2 + int(fw2 * 0.70))
+                sl = max(0, cx2 - int(fw2 * 1.25))
+                sr = min(w, cx2 + int(fw2 * 1.25))
+                el = max(0, cx2 - int(fw2 * 1.20))
+                er = min(w, cx2 + int(fw2 * 1.20))
+                hl = max(0, cx2 - int(fw2 * 0.85))
+                hr = min(w, cx2 + int(fw2 * 0.85))
+                # Sweep left top-down then right bottom-up so vertices
+                # form a single closed polygon.
                 poly = np.array(
                     [[nl, neck_y], [sl, shoulder_y], [el, elbow_y], [hl, hip_y],
                      [hr, hip_y], [er, elbow_y], [sr, shoulder_y], [nr, neck_y]],
@@ -1361,10 +1364,10 @@ class TryOnModel:
                 )
                 cv2.fillPoly(safety, [poly], 1.0)
             else:
-                # No face → tapered fallback band (narrower than full
-                # frame width so we don't paint corners of the room).
-                cv2.rectangle(safety, (int(w * 0.15), int(h * 0.32)),
-                              (int(w * 0.85), h), 1.0, -1)
+                # No face → conservative narrow band so a missed-detection
+                # frame doesn't paint the whole frame width.
+                cv2.rectangle(safety, (int(w * 0.25), int(h * 0.32)),
+                              (int(w * 0.75), int(h * 0.92)), 1.0, -1)
             # Gaussian softens the polygon edges so SD has a feathered
             # boundary instead of a hard trapezoid outline.
             safety = cv2.GaussianBlur(safety, (51, 51), 0).clip(0, 1)
