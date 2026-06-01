@@ -159,6 +159,8 @@ class TryOnModel:
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
+        self._prev_face_bbox   = None      # EMA-smoothed Haar face bbox (fx, fy, fw, fh)
+        self._prev_torso_mask  = None      # EMA-smoothed final torso_mask (kills jitter)
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
@@ -679,6 +681,8 @@ class TryOnModel:
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
         self._prev_silhouette  = None
+        self._prev_face_bbox   = None
+        self._prev_torso_mask  = None
 
         # Store alpha mask if original had transparency — used by geometric warp
         if garment_image.mode == 'RGBA':
@@ -1198,6 +1202,18 @@ class TryOnModel:
             )
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
+                # EMA on bbox: 70% prev + 30% new. Haar wobbles by 2-3 px
+                # per frame which propagates to the safety rect and makes
+                # the painted garment jitter / drift / ghost on the body
+                # (the "jacket not stable" the user reported when MediaPipe
+                # was unavailable). Heavy prev weight locks the rect.
+                if self._prev_face_bbox is not None:
+                    pfx, pfy, pfw, pfh = self._prev_face_bbox
+                    fx2 = int(0.7 * pfx + 0.3 * fx2)
+                    fy2 = int(0.7 * pfy + 0.3 * fy2)
+                    fw2 = int(0.7 * pfw + 0.3 * fw2)
+                    fh2 = int(0.7 * pfh + 0.3 * fh2)
+                self._prev_face_bbox = (fx2, fy2, fw2, fh2)
                 cx2 = fx2 + fw2 // 2
                 # Per-garment safety rectangle. Jacket UNTOUCHED — kept
                 # exactly at the 'jacket done' values (width 4x face,
@@ -1262,6 +1278,15 @@ class TryOnModel:
         torso_mask = (silhouette * band).clip(0, 1)
         # Gentle feather so SD has a smooth boundary to denoise into.
         torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
+        # Per-pixel EMA on the final mask (0.65 new + 0.35 prev). Even
+        # with bbox EMA above, the silhouette / safety blur can still
+        # produce 1-2 px boundary wobble between frames; the painted
+        # jacket inherits that wobble and looks unstable on the body.
+        # Mask EMA glues it down.
+        if (self._prev_torso_mask is not None
+                and self._prev_torso_mask.shape == torso_mask.shape):
+            torso_mask = (0.65 * torso_mask + 0.35 * self._prev_torso_mask).clip(0, 1)
+        self._prev_torso_mask = torso_mask
 
         # NOTE: hand exclusion was tried here (subtracting MediaPipe Hands +
         # YCrCb skin from torso_mask) but the skin detector was matching
