@@ -1223,20 +1223,22 @@ class TryOnModel:
                 # rectangle for them left an empty band SD painted as a
                 # dark rectangle ("black square behind garment"). Narrow
                 # widths kill that band.
-                # SAME width as 'jacket done' (2x face) for ALL garments.
-                # User confirmed jacket fits perfectly with this width.
-                # The only difference per garment is HOW FAR DOWN the
-                # mask extends — a tshirt ends near the waist, a shirt
-                # a bit lower, a jacket goes to the frame bottom. That
-                # way tshirt/shirt look like a shorter jacket — no new
-                # geometry, no black-square risk from a different shape.
-                half_w = fw2 * 2
+                # Per-garment polygon. Jacket gets the proven 'jacket done'
+                # width (2x face). T-shirt and shirt are slightly narrower
+                # so the polygon doesn't extend past the body into the
+                # background — that was leaving a blue/teal rectangle
+                # visible behind the user (user: "yeh blue rectangle
+                # hatado"). Skin-tone hand extension below still gives
+                # arm/hand coverage on movement.
                 gtype  = getattr(self, "_garment_type", "tshirt")
                 if gtype == "jacket":
+                    half_w     = fw2 * 2
                     rect_bottom = h
                 elif gtype == "shirt":
+                    half_w     = int(fw2 * 1.65)
                     rect_bottom = int(h * 0.88)
                 else:  # tshirt
+                    half_w     = int(fw2 * 1.50)
                     rect_bottom = int(h * 0.80)
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
