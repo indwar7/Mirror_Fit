@@ -1332,31 +1332,39 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Body-shaped trapezoid anchored to the detected face.
-                # Shoulders ≈ 1.1x face width on each side (≈2.2x total),
-                # waist ≈ 0.85x. Top = just under chin; bottom = down to
-                # bottom of frame. Much tighter than the old 4x face-width
-                # rectangle, so when the safety mask is the only mask we
-                # have (MediaPipe unavailable on Py-3.14) the SD paint
-                # region stays close to the actual body — no dark square
-                # halo behind the user.
-                shoulder_y = fy2 + fh2 + int(fh2 * 0.10)
+                # Hexagonal body+sleeves shape anchored to the detected
+                # face. Top = chin row, narrow at neck. Shoulder row
+                # widens to ~3.2x face width to catch natural arm-at-side
+                # and slightly-out positions (so SD paints sleeves on the
+                # actual arms instead of leaving bare skin showing past
+                # the torso). Elbow row stays wide. Waist tapers back in.
+                # Bottom extends to frame bottom.
+                neck_y     = fy2 + fh2 + int(fh2 * 0.10)
+                shoulder_y = fy2 + fh2 + int(fh2 * 0.35)
+                elbow_y    = fy2 + fh2 + int(fh2 * 1.10)
                 hip_y      = h
-                sl = max(0, cx2 - int(fw2 * 1.10))
-                sr = min(w, cx2 + int(fw2 * 1.10))
-                hl = max(0, cx2 - int(fw2 * 0.85))
-                hr = min(w, cx2 + int(fw2 * 0.85))
+                nl = max(0, cx2 - int(fw2 * 0.95))
+                nr = min(w, cx2 + int(fw2 * 0.95))
+                sl = max(0, cx2 - int(fw2 * 1.60))
+                sr = min(w, cx2 + int(fw2 * 1.60))
+                el = max(0, cx2 - int(fw2 * 1.55))
+                er = min(w, cx2 + int(fw2 * 1.55))
+                hl = max(0, cx2 - int(fw2 * 1.00))
+                hr = min(w, cx2 + int(fw2 * 1.00))
+                # Build as two trapezoids (collar→shoulder, elbow→hip)
+                # fused into one polygon. Sweep left side top-down then
+                # right side bottom-up so the polygon is convex-traversal.
                 poly = np.array(
-                    [[sl, shoulder_y], [sr, shoulder_y],
-                     [hr, hip_y],      [hl, hip_y]],
+                    [[nl, neck_y], [sl, shoulder_y], [el, elbow_y], [hl, hip_y],
+                     [hr, hip_y], [er, elbow_y], [sr, shoulder_y], [nr, neck_y]],
                     dtype=np.int32,
                 )
-                cv2.fillConvexPoly(safety, poly, 1.0)
+                cv2.fillPoly(safety, [poly], 1.0)
             else:
                 # No face → tapered fallback band (narrower than full
                 # frame width so we don't paint corners of the room).
-                cv2.rectangle(safety, (int(w * 0.20), int(h * 0.32)),
-                              (int(w * 0.80), h), 1.0, -1)
+                cv2.rectangle(safety, (int(w * 0.15), int(h * 0.32)),
+                              (int(w * 0.85), h), 1.0, -1)
             # Gaussian softens the polygon edges so SD has a feathered
             # boundary instead of a hard trapezoid outline.
             safety = cv2.GaussianBlur(safety, (51, 51), 0).clip(0, 1)
@@ -1488,10 +1496,17 @@ class TryOnModel:
                 mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
                 seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
                 seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                # Blend the seed colour into the orig_arr ONLY where the
-                # torso mask is high — outside the mask we keep the camera
-                # pixels untouched so the seed colour doesn't leak.
-                m = torso_mask[:, :, np.newaxis]
+                # Hard-threshold the anchor: only fill seed colour where
+                # the mask is confidently inside the body (> 0.45), then
+                # feather a 5-px ring so the boundary still blends
+                # smoothly. Using the raw soft mask let the seed colour
+                # bleed into the feathered edge zone, painting a coloured
+                # halo a few px outside the body that SD then dutifully
+                # inpainted as a "dark square shadow" the user kept
+                # complaining about.
+                hard = (torso_mask > 0.45).astype(np.float32)
+                hard = cv2.GaussianBlur(hard, (5, 5), 0).clip(0, 1)
+                m    = hard[:, :, np.newaxis]
                 anchor = (
                     seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
                     + orig_arr.astype(np.float32) * (1.0 - m)
