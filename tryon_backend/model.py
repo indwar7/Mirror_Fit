@@ -1255,7 +1255,7 @@ class TryOnModel:
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
-    def _build_body_mask(self, frame_rgb: np.ndarray):
+    def _build_body_mask(self, frame_rgb: np.ndarray, garment_type: str = "tshirt"):
         """
         Build three masks from a 512x512 RGB person frame:
           torso_mask       — soft mask passed to SD inpainting (where to paint)
@@ -1332,29 +1332,33 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Hexagonal body shape anchored to the face. Tighter than
-                # before — the previous (1.6x shoulder) polygon was wider
-                # than the actual torso and the LAB colour lock painted
-                # those off-body pixels too, making the garment look
-                # oversized / floating beyond the body. Values now match
-                # natural human proportions:
-                #   shoulder ≈ 2.5x face width (1.25 each side)
-                #   elbow   ≈ 2.4x face width (arms-at-side, no extension)
-                #   waist   ≈ 1.7x face width
-                # Bottom extends to ~85% of frame height (was full bottom,
-                # which painted a hem off the bottom of the frame).
+                # Per-garment polygon proportions. Tshirt = tightest
+                # (close-fit, short sleeves, ends at waist). Shirt =
+                # slightly looser, longer sleeves, ends near waist.
+                # Jacket = loosest (outerwear), longest length. All
+                # values multiply face width / face height so they
+                # scale with how close the person is to the camera.
+                if garment_type == "tshirt":
+                    neck_w, sh_w, el_w, hp_w = 0.65, 1.05, 0.95, 0.80
+                    sh_y_f, el_y_f, hp_y_f   = 0.35, 0.90, 2.70
+                elif garment_type == "shirt":
+                    neck_w, sh_w, el_w, hp_w = 0.68, 1.15, 1.10, 0.85
+                    sh_y_f, el_y_f, hp_y_f   = 0.38, 1.05, 2.90
+                else:  # jacket
+                    neck_w, sh_w, el_w, hp_w = 0.70, 1.25, 1.20, 0.90
+                    sh_y_f, el_y_f, hp_y_f   = 0.40, 1.15, 3.20
                 neck_y     = fy2 + fh2 + int(fh2 * 0.10)
-                shoulder_y = fy2 + fh2 + int(fh2 * 0.40)
-                elbow_y    = fy2 + fh2 + int(fh2 * 1.15)
-                hip_y      = min(h, fy2 + fh2 + int(fh2 * 3.20))
-                nl = max(0, cx2 - int(fw2 * 0.70))
-                nr = min(w, cx2 + int(fw2 * 0.70))
-                sl = max(0, cx2 - int(fw2 * 1.25))
-                sr = min(w, cx2 + int(fw2 * 1.25))
-                el = max(0, cx2 - int(fw2 * 1.20))
-                er = min(w, cx2 + int(fw2 * 1.20))
-                hl = max(0, cx2 - int(fw2 * 0.85))
-                hr = min(w, cx2 + int(fw2 * 0.85))
+                shoulder_y = fy2 + fh2 + int(fh2 * sh_y_f)
+                elbow_y    = fy2 + fh2 + int(fh2 * el_y_f)
+                hip_y      = min(h, fy2 + fh2 + int(fh2 * hp_y_f))
+                nl = max(0, cx2 - int(fw2 * neck_w))
+                nr = min(w, cx2 + int(fw2 * neck_w))
+                sl = max(0, cx2 - int(fw2 * sh_w))
+                sr = min(w, cx2 + int(fw2 * sh_w))
+                el = max(0, cx2 - int(fw2 * el_w))
+                er = min(w, cx2 + int(fw2 * el_w))
+                hl = max(0, cx2 - int(fw2 * hp_w))
+                hr = min(w, cx2 + int(fw2 * hp_w))
                 # Sweep left top-down then right bottom-up so vertices
                 # form a single closed polygon.
                 poly = np.array(
@@ -1477,7 +1481,9 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
+        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(
+            orig_arr, garment_type=getattr(self, "_garment_type", "tshirt")
+        )
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
