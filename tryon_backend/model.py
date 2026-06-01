@@ -1318,6 +1318,40 @@ class TryOnModel:
 
         # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
         torso_mask = (silhouette * band).clip(0, 1)
+
+        # ── Background subtraction: kill the rectangle outside the body ──
+        # Sample background colour from the four frame corners (always
+        # off-body), build a per-pixel "distance from background" map,
+        # and use it to mask out polygon pixels that match the wall /
+        # background. This removes the visible blue/grey rectangle past
+        # the user's silhouette without needing MediaPipe segmentation.
+        try:
+            c = 40
+            corners = np.concatenate([
+                frame_rgb[:c, :c].reshape(-1, 3),
+                frame_rgb[:c, -c:].reshape(-1, 3),
+                frame_rgb[-c:, :c].reshape(-1, 3),
+                frame_rgb[-c:, -c:].reshape(-1, 3),
+            ]).astype(np.float32)
+            bg_mean = corners.mean(axis=0)
+            # Per-pixel RGB distance from background mean. >35 = clearly
+            # not the wall colour. Gaussian-smooth so the foreground mask
+            # has soft edges (no harsh body cutout).
+            diff = np.linalg.norm(
+                frame_rgb.astype(np.float32) - bg_mean, axis=2
+            )
+            fg = np.clip((diff - 25.0) / 30.0, 0, 1)  # soft sigmoid-ish
+            fg = cv2.GaussianBlur(fg, (15, 15), 0)
+            # Dilate slightly so the body edge isn't shaved off
+            fg = cv2.dilate(
+                fg,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                iterations=1,
+            ).clip(0, 1)
+            torso_mask = torso_mask * fg
+        except Exception as e:
+            log.debug(f"background subtraction skipped: {e}")
+
         # Gentle feather so SD has a smooth boundary to denoise into.
         torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
         # Per-pixel EMA on the final mask (0.65 new + 0.35 prev). Even
