@@ -659,7 +659,10 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
-    def set_garment(self, garment_image: Image.Image):
+    def set_garment(self, garment_image: Image.Image, garment_type: str = "tshirt"):
+        self._garment_type = (
+            garment_type if garment_type in ("tshirt", "shirt", "jacket") else "tshirt"
+        )
         if garment_image.mode == 'RGBA':
             bg = Image.new('RGB', garment_image.size, (255, 255, 255))
             bg.paste(garment_image, mask=garment_image.split()[3])
@@ -1196,12 +1199,27 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Width = 4x face width (covers full shoulder-to-shoulder
-                # + extended arms). Height = chin to bottom of frame.
+                # Per-garment safety rectangle. Jacket UNTOUCHED — kept
+                # exactly at the 'jacket done' values (width 4x face,
+                # height chin → frame bottom) because the user confirmed
+                # jacket renders perfectly with these. T-shirt and shirt
+                # are narrower / shorter than a jacket; using the jacket
+                # rectangle for them left an empty band SD painted as a
+                # dark rectangle ("black square behind garment"). Narrow
+                # widths kill that band.
+                gtype = getattr(self, "_garment_type", "tshirt")
+                if gtype == "jacket":
+                    half_w     = fw2 * 2          # original
+                    rect_bottom = h               # original
+                elif gtype == "shirt":
+                    half_w     = int(fw2 * 1.7)
+                    rect_bottom = int(h * 0.92)
+                else:  # tshirt
+                    half_w     = int(fw2 * 1.4)
+                    rect_bottom = int(h * 0.88)
                 rect_top    = fy2 + fh2                          # chin row
-                rect_bottom = h
-                rect_left   = max(0, cx2 - fw2 * 2)
-                rect_right  = min(w, cx2 + fw2 * 2)
+                rect_left   = max(0, cx2 - half_w)
+                rect_right  = min(w, cx2 + half_w)
                 cv2.rectangle(safety, (rect_left, rect_top),
                               (rect_right, rect_bottom), 1.0, -1)
             else:
