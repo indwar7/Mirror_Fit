@@ -1200,6 +1200,14 @@ class TryOnModel:
                 cv2.equalizeHist(gray_for_safety), scaleFactor=1.1,
                 minNeighbors=4, minSize=(40, 40),
             )
+            # If Haar fails on this frame (user too close / tilt / motion
+            # blur), reuse the last successful bbox instead of falling
+            # back to the wide horizontal band. Without this fallback,
+            # one missed-detection frame painted a giant teal rectangle
+            # because the fallback band is 64% of frame width.
+            if len(safety_faces) == 0 and self._prev_face_bbox is not None:
+                pfx, pfy, pfw, pfh = self._prev_face_bbox
+                safety_faces = np.array([[pfx, pfy, pfw, pfh]])
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 # EMA on bbox: 70% prev + 30% new. Haar wobbles by 2-3 px
