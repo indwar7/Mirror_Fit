@@ -1228,11 +1228,11 @@ class TryOnModel:
                     half_w     = fw2 * 2          # original 'jacket done'
                     rect_bottom = h               # original 'jacket done'
                 elif gtype == "shirt":
-                    half_w     = int(fw2 * 1.45)
-                    rect_bottom = int(h * 0.82)
-                else:  # tshirt — tightest, shortest
-                    half_w     = int(fw2 * 1.20)
-                    rect_bottom = int(h * 0.75)
+                    half_w     = int(fw2 * 1.75)
+                    rect_bottom = int(h * 0.90)
+                else:  # tshirt
+                    half_w     = int(fw2 * 1.60)
+                    rect_bottom = int(h * 0.85)
                 rect_top    = fy2 + fh2                          # chin row
                 # Tapered trapezoid instead of a hard rectangle. The
                 # rectangle was leaving a visible hard-edge dark band
@@ -1243,7 +1243,7 @@ class TryOnModel:
                 # rectangular outline.
                 shoulder_l = max(0, cx2 - half_w)
                 shoulder_r = min(w, cx2 + half_w)
-                hip_half   = int(half_w * 0.70)   # waist 30% narrower
+                hip_half   = int(half_w * 0.85)   # waist 15% narrower
                 hip_l      = max(0, cx2 - hip_half)
                 hip_r      = min(w, cx2 + hip_half)
                 trap = np.array(
