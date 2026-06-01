@@ -44,13 +44,6 @@ VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 # overlay if the AI path is misbehaving.
 TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 
-# Explicit IP-Adapter kill-switch. Set VTON_DISABLE_IP_ADAPTER=1 to skip
-# the load_ip_adapter step entirely. Use when the Windows native code
-# path for IP-Adapter keeps segfaulting on cold start (corrupt cache,
-# CLIPVisionModel VRAM crash, etc.) — server starts in degraded mode
-# (prompt-only inpaint, no garment-image conditioning) but stays alive.
-VTON_DISABLE_IP_ADAPTER   = os.environ.get("VTON_DISABLE_IP_ADAPTER", "0") == "1"
-
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -169,7 +162,6 @@ class TryOnModel:
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
-        self._garment_type        = "tshirt"  # "tshirt" | "shirt" | "jacket" from UI button
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -408,38 +400,6 @@ class TryOnModel:
             log.warning(f"SD Inpainting load failed ({e}), falling back to SD+IP-Adapter…")
             self._load_sd_ipadapter()
 
-    def _prefetch_ip_adapter_files(self) -> bool:
-        """
-        Explicitly download the three IP-Adapter files (adapter weights +
-        image_encoder config + image_encoder safetensors) via huggingface_hub.
-        Returns True if all three landed in cache, False otherwise.
-
-        Done BEFORE load_ip_adapter so the slow ~600 MB image_encoder
-        download is a visible, recoverable step instead of an opaque
-        native-code download inside diffusers that has been observed to
-        kill the Python process silently on Windows.
-        """
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError:
-            log.warning("huggingface_hub not available; cannot prefetch.")
-            return False
-
-        files = [
-            "models/ip-adapter_sd15.bin",
-            "models/image_encoder/config.json",
-            "models/image_encoder/model.safetensors",
-        ]
-        for fname in files:
-            log.info("Prefetching h94/IP-Adapter / %s …", fname)
-            try:
-                hf_hub_download(repo_id="h94/IP-Adapter", filename=fname)
-            except Exception as e:
-                log.warning("Prefetch of %s failed: %s", fname, e)
-                return False
-        log.info("All IP-Adapter files cached locally.")
-        return True
-
     def _load_catvton(self):
         """
         SD Inpainting + IP-Adapter for garment reference.
@@ -469,104 +429,23 @@ class TryOnModel:
         self.pipeline.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         self.pipeline.fuse_lora()
 
-        # IP-Adapter: garment image as visual reference.
-        #
-        # Explicit kill-switch first: VTON_DISABLE_IP_ADAPTER=1 skips the
-        # entire load. Use this on Windows where the native loader has
-        # been observed to segfault even after a successful prefetch
-        # (likely due to a corrupted cache blob or a CLIPVisionModel
-        # VRAM crash). Degraded mode = text-prompt + colour anchor only.
-        if VTON_DISABLE_IP_ADAPTER:
-            log.warning(
-                "VTON_DISABLE_IP_ADAPTER=1 — skipping IP-Adapter load. "
-                "Running in degraded mode (prompt-only inpaint)."
-            )
-            self._ip_loaded = False
-            self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
-            self._catvton   = True
-            if self.device == "cuda":
-                try:
-                    self.pipeline.enable_xformers_memory_efficient_attention()
-                except Exception:
-                    pass
-                try:
-                    self.pipeline.unet.to(memory_format=torch.channels_last)
-                    self.pipeline.vae.to(memory_format=torch.channels_last)
-                except Exception:
-                    pass
-            log.info("Inpainting try-on ready (degraded) — %d-step LCM.",
-                     self._steps)
-            return
-
-        # Why pre-download + manual CPU image_encoder load:
-        #
-        # 1. Prefetch via huggingface_hub.hf_hub_download (plain Python
-        #    so any download error raises a catchable exception, unlike
-        #    diffusers' native loader which has been observed to segfault
-        #    the whole process on Windows).
-        #
-        # 2. Manually load the 2.53 GB image_encoder on CPU first.
-        #    load_ip_adapter normally loads it on the pipeline's device
-        #    (CUDA), and the fp32→fp16 transient during from_pretrained
-        #    spikes VRAM by ~5 GB. On a 16 GB GPU with SD inpaint already
-        #    resident (~4-5 GB) that spike is a hard OOM and Windows
-        #    kills the process silently. Loading on CPU avoids the spike
-        #    entirely. The encoder runs ONCE per set_garment call to
-        #    compute IP embeddings — running it on CPU adds ~150 ms at
-        #    init time only, with zero inference-time cost since the
-        #    embeddings are cached.
-        #
-        # 3. Then load_ip_adapter sees pipeline.image_encoder is set and
-        #    only loads the tiny 45 MB UNet adapter weights — no big
-        #    VRAM allocation, no crash.
-        if self._prefetch_ip_adapter_files():
-            try:
-                from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
-                log.info("Loading IP-Adapter image_encoder on CPU (avoids fp32->fp16 transient OOM)…")
-                self.pipeline.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-                    "h94/IP-Adapter",
-                    subfolder="models/image_encoder",
-                    torch_dtype=self.dtype,
-                ).to("cpu")
-                self.pipeline.feature_extractor = CLIPImageProcessor()
-                import gc
-                gc.collect()
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
-                log.info("image_encoder ready on CPU; loading IP-Adapter UNet weights…")
-                self.pipeline.load_ip_adapter(
-                    "h94/IP-Adapter", subfolder="models",
-                    weight_name="ip-adapter_sd15.bin")
-                # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3).
-                self.pipeline.set_ip_adapter_scale(1.2)
-                # Now move encoder onto GPU — the dangerous step was the
-                # from_pretrained fp32->fp16 conversion transient. Once
-                # weights are settled in fp16 on the CPU side, moving to
-                # GPU is just a clean ~1.27 GB device copy with no spike.
-                # Required because the pipeline runs text_encoder / UNet
-                # on cuda; mixing devices triggers the runtime
-                # "tensors on cuda:0 and cpu" error in nn.embedding.
-                if self.device == "cuda":
-                    log.info("Moving image_encoder onto GPU (settled fp16 weights, no transient)…")
-                    self.pipeline.image_encoder.to(self.device)
-                    torch.cuda.empty_cache()
-                self._ip_loaded = True
-                log.info("IP-Adapter loaded (encoder + UNet on %s).", self.device)
-            except Exception as e:
-                log.warning(
-                    "IP-Adapter load step failed after successful prefetch "
-                    "(%s). Running in degraded mode.", e,
-                )
-                self._ip_loaded = False
-        else:
-            log.warning(
-                "Skipping IP-Adapter load — prefetch failed. Running in "
-                "degraded mode (prompt-only inpainting, no garment-image "
-                "conditioning). Re-run the server with network access to retry."
-            )
-            self._ip_loaded = False
+        # IP-Adapter: garment image as visual reference. Scale 1.5 is the
+        # sweet spot — high enough to anchor colour/texture, low enough that
+        # the model still generates real garment structure (collar, zipper,
+        # sleeves). Higher scales (2.0+) collapse the mask into a flat colour
+        # blob instead of a real jacket.
+        self.pipeline.load_ip_adapter(
+            "h94/IP-Adapter", subfolder="models",
+            weight_name="ip-adapter_sd15.bin")
+        # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3). The
+        # IP-Adapter back to 1.2 — the working value that produced clean
+        # jacket results in the user's May 26 screenshot. 1.5 was tried
+        # for stronger garment lock and produced over-saturated garbage
+        # output (rainbow stripes / random colors). Reverted to known good.
+        self.pipeline.set_ip_adapter_scale(1.2)
 
         self._steps     = VTON_STEPS if VTON_STEPS > 0 else 6
+        self._ip_loaded = True
         self._catvton   = True   # use inpainting path
 
         if self.device == "cuda":
@@ -780,12 +659,7 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
-    def set_garment(self, garment_image: Image.Image, garment_type: str = "tshirt"):
-        # Store garment type so _infer_tier3 can pick a type-specific prompt.
-        # "tshirt" | "shirt" | "jacket" from the UI buttons. Defaults to
-        # "tshirt" for backwards compatibility with older clients.
-        self._garment_type = garment_type if garment_type in ("tshirt", "shirt", "jacket") else "tshirt"
-        log.info("Garment type set to: %s", self._garment_type)
+    def set_garment(self, garment_image: Image.Image):
         if garment_image.mode == 'RGBA':
             bg = Image.new('RGB', garment_image.size, (255, 255, 255))
             bg.paste(garment_image, mask=garment_image.split()[3])
@@ -815,11 +689,7 @@ class TryOnModel:
         self._garment_color_name = self._dominant_color_name(np.array(garment_sq))
         log.info(f"Garment dominant color: {self._garment_color_name}")
 
-        # Pre-compute IP-Adapter CLIP embeddings once via diffusers'
-        # standard path. The encoder lives on GPU now (moved there after
-        # load_ip_adapter completed), so prepare_ip_adapter_image_embeds
-        # returns properly shaped tensors. Caching here means inference
-        # never re-encodes per frame.
+        # Pre-compute IP-Adapter CLIP embeddings once — reused every frame instead of per-frame encoding
         if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
             try:
                 with torch.inference_mode():
@@ -828,13 +698,11 @@ class TryOnModel:
                         ip_adapter_image_embeds=None,
                         device=self.device,
                         num_images_per_prompt=1,
-                        do_classifier_free_guidance=True,
+                        do_classifier_free_guidance=True,  # CFG ON in inpaint path
                     )
-                log.info("Garment IP embeddings pre-computed and cached. Shape=%s",
-                         tuple(self._ip_embeds[0].shape))
+                log.info("Garment IP embeddings pre-computed and cached.")
             except Exception as e:
-                log.warning(f"IP embed pre-cache failed: {e}")
-                self._ip_embeds = None
+                log.warning(f"IP embed pre-cache failed, will encode per-frame: {e}")
         log.info("Garment cached.")
 
     # ── Inference ─────────────────────────────────────────────────────────────
@@ -1255,7 +1123,7 @@ class TryOnModel:
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
-    def _build_body_mask(self, frame_rgb: np.ndarray, garment_type: str = "tshirt"):
+    def _build_body_mask(self, frame_rgb: np.ndarray):
         """
         Build three masks from a 512x512 RGB person frame:
           torso_mask       — soft mask passed to SD inpainting (where to paint)
@@ -1305,14 +1173,13 @@ class TryOnModel:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
         if silhouette is None:
-            # MediaPipe unavailable (Py3.14 wheel issue). Start from an
-            # empty mask — the safety polygon below becomes the entire
-            # mask. The old fallback was a wide ellipse (0.48w * 0.45h)
-            # that covered most of the frame; combined with the polygon
-            # OR, the result was a mask much wider than the actual body
-            # and the painted garment looked oversized. With silhouette
-            # empty, only the type-aware body polygon defines paint area.
+            # Fallback ellipse: same shape the legacy fixed mask used.
             silhouette = np.zeros((h, w), dtype=np.float32)
+            cv2.ellipse(silhouette,
+                        (w // 2, int(h * 0.62)),
+                        (int(w * 0.40), int(h * 0.36)),
+                        0, 0, 360, 1.0, -1)
+            silhouette = cv2.GaussianBlur(silhouette, (21, 21), 0)
 
         # Safety: OR a generous bbox-derived rectangle covering the
         # expected shoulders + arms + torso area. This guarantees the
@@ -1329,58 +1196,20 @@ class TryOnModel:
             if len(safety_faces) > 0:
                 fx2, fy2, fw2, fh2 = max(safety_faces, key=lambda r: r[2] * r[3])
                 cx2 = fx2 + fw2 // 2
-                # Per-garment polygon proportions. Tshirt = tightest
-                # (close-fit, short sleeves, ends at waist). Shirt =
-                # slightly looser, longer sleeves, ends near waist.
-                # Jacket = loosest (outerwear), longest length. All
-                # values multiply face width / face height so they
-                # scale with how close the person is to the camera.
-                if garment_type == "tshirt":
-                    neck_w, sh_w, el_w, hp_w = 0.65, 1.05, 0.95, 0.80
-                    sh_y_f, el_y_f, hp_y_f   = 0.35, 0.90, 2.70
-                elif garment_type == "shirt":
-                    neck_w, sh_w, el_w, hp_w = 0.68, 1.15, 1.10, 0.85
-                    sh_y_f, el_y_f, hp_y_f   = 0.38, 1.05, 2.90
-                else:  # jacket
-                    neck_w, sh_w, el_w, hp_w = 0.70, 1.25, 1.20, 0.90
-                    sh_y_f, el_y_f, hp_y_f   = 0.40, 1.15, 3.20
-                neck_y     = fy2 + fh2 + int(fh2 * 0.10)
-                shoulder_y = fy2 + fh2 + int(fh2 * sh_y_f)
-                elbow_y    = fy2 + fh2 + int(fh2 * el_y_f)
-                hip_y      = min(h, fy2 + fh2 + int(fh2 * hp_y_f))
-                nl = max(0, cx2 - int(fw2 * neck_w))
-                nr = min(w, cx2 + int(fw2 * neck_w))
-                sl = max(0, cx2 - int(fw2 * sh_w))
-                sr = min(w, cx2 + int(fw2 * sh_w))
-                el = max(0, cx2 - int(fw2 * el_w))
-                er = min(w, cx2 + int(fw2 * el_w))
-                hl = max(0, cx2 - int(fw2 * hp_w))
-                hr = min(w, cx2 + int(fw2 * hp_w))
-                # Sweep left top-down then right bottom-up so vertices
-                # form a single closed polygon.
-                poly = np.array(
-                    [[nl, neck_y], [sl, shoulder_y], [el, elbow_y], [hl, hip_y],
-                     [hr, hip_y], [er, elbow_y], [sr, shoulder_y], [nr, neck_y]],
-                    dtype=np.int32,
-                )
-                cv2.fillPoly(safety, [poly], 1.0)
+                # Width = 4x face width (covers full shoulder-to-shoulder
+                # + extended arms). Height = chin to bottom of frame.
+                rect_top    = fy2 + fh2                          # chin row
+                rect_bottom = h
+                rect_left   = max(0, cx2 - fw2 * 2)
+                rect_right  = min(w, cx2 + fw2 * 2)
+                cv2.rectangle(safety, (rect_left, rect_top),
+                              (rect_right, rect_bottom), 1.0, -1)
             else:
-                # No face → conservative narrow band so a missed-detection
-                # frame doesn't paint the whole frame width.
-                cv2.rectangle(safety, (int(w * 0.25), int(h * 0.32)),
-                              (int(w * 0.75), int(h * 0.92)), 1.0, -1)
-            # Gaussian softens the polygon edges so SD has a feathered
-            # boundary instead of a hard trapezoid outline.
-            safety = cv2.GaussianBlur(safety, (51, 51), 0).clip(0, 1)
-            # When MediaPipe segmentation IS available, the safety rect is
-            # only a small assist (0.35) on top of the real silhouette.
-            # When MediaPipe is unavailable (Python-3.14 wheel ships no
-            # solutions submodule), the safety polygon has to BE the mask,
-            # so we bump it to 0.95. The polygon now tracks the actual body
-            # shape so this stronger weight no longer leaks a dark halo
-            # past the user's silhouette.
-            safety_weight = 0.35 if self._mp_seg is not None else 0.95
-            silhouette = np.maximum(silhouette, safety * safety_weight)
+                # No face → fallback to wide horizontal band
+                cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
+                              (int(w * 0.92), h), 1.0, -1)
+            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
+            silhouette = np.maximum(silhouette, safety * 0.85)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
 
@@ -1478,9 +1307,7 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(
-            orig_arr, garment_type=getattr(self, "_garment_type", "tshirt")
-        )
+        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -1502,17 +1329,10 @@ class TryOnModel:
                 mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
                 seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
                 seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                # Hard-threshold the anchor: only fill seed colour where
-                # the mask is confidently inside the body (> 0.45), then
-                # feather a 5-px ring so the boundary still blends
-                # smoothly. Using the raw soft mask let the seed colour
-                # bleed into the feathered edge zone, painting a coloured
-                # halo a few px outside the body that SD then dutifully
-                # inpainted as a "dark square shadow" the user kept
-                # complaining about.
-                hard = (torso_mask > 0.45).astype(np.float32)
-                hard = cv2.GaussianBlur(hard, (5, 5), 0).clip(0, 1)
-                m    = hard[:, :, np.newaxis]
+                # Blend the seed colour into the orig_arr ONLY where the
+                # torso mask is high — outside the mask we keep the camera
+                # pixels untouched so the seed colour doesn't leak.
+                m = torso_mask[:, :, np.newaxis]
                 anchor = (
                     seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
                     + orig_arr.astype(np.float32) * (1.0 - m)
@@ -1528,65 +1348,25 @@ class TryOnModel:
             # embeds were prepared with CFG=False (shape [1,…]) — pass the
             # raw garment image so diffusers re-encodes with the right
             # CFG-shape (negative + positive concatenated).
-            # Skip IP-Adapter kwarg entirely if load failed at startup
-            # (degraded mode). Otherwise PREFER cached embeds — the
-            # image_encoder lives on CPU to dodge the load_ip_adapter
-            # VRAM OOM, so passing ip_adapter_image (raw PIL) would
-            # force a CPU encode every frame. Cached embeds let us skip
-            # the encoder entirely at inference time.
-            if not self._ip_loaded:
-                ip_kw = {}
-            elif self._ip_embeds is not None:
-                ip_kw = {"ip_adapter_image_embeds": self._ip_embeds}
-            else:
-                ip_kw = {"ip_adapter_image": garment}
+            ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            # Type-specific prompts. User picks the garment type from the
-            # UI buttons (T-shirt / Shirt / Jacket); the server uses that
-            # hint to describe the exact garment SD should render so the
-            # output matches what was uploaded.
-            gtype = getattr(self, "_garment_type", "tshirt")
-            if gtype == "jacket":
-                prompt = (
-                    f"photo of a person wearing a {color} jacket on the upper body, "
-                    f"solid {color} jacket fabric, full sleeves down to the wrists, "
-                    f"front zipper or buttons, jacket collar around the neck, "
-                    f"the jacket fits naturally over the body, "
-                    f"realistic jacket folds, detailed texture, sharp focus, photorealistic"
-                )
-            elif gtype == "shirt":
-                prompt = (
-                    f"photo of a person wearing a fitted {color} formal button-up shirt, "
-                    f"solid {color} shirt fabric, long sleeves down to the wrists, "
-                    f"visible shirt collar around the neck, front buttons, "
-                    f"the shirt fits naturally on the body, "
-                    f"realistic shirt folds, detailed texture, sharp focus, photorealistic"
-                )
-            else:  # tshirt (default)
-                prompt = (
-                    f"photo of a person wearing a fitted {color} t-shirt on the upper body, "
-                    f"solid {color} cotton fabric, short sleeves above the elbows, "
-                    f"crew-neck collar around the neck, "
-                    f"the t-shirt fits naturally on the body, "
-                    f"realistic cotton folds, detailed texture, sharp focus, photorealistic"
-                )
-            # Negatives: anatomy + quality only. Colour drift terms (brown,
-            # purple, mauve, etc.) were REMOVED because the LAB colour
-            # lock further down hard-replaces the result's chromaticity
-            # with the garment's a/b channels — so SD can drift to any
-            # colour and we still end up with the right one. Listing
-            # "brown" here used to repel a brown jacket from being a
-            # brown jacket, which is exactly what user reported.
-            neg_common = (
-                "naked, floating clothes, shirt on background, shirt outline, "
+            prompt = (
+                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"solid {color} fabric, neutral {color} colour, "
+                f"the shirt fits naturally on the body, visible collar around the neck, "
+                f"long sleeves following the arms down to the wrists, "
+                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
+            )
+            # Anti-drift negatives. Includes purple/violet because at higher
+            # IP-Adapter scales grey shirts pick up a mauve tint from the
+            # mid-tone bias of the embedding.
+            neg = (
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
+                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "floating clothes, shirt on background, shirt outline, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
-            if gtype == "tshirt":
-                neg = neg_common + ", jacket, hoodie, zipper, button-up, formal shirt, long sleeves"
-            elif gtype == "shirt":
-                neg = neg_common + ", t-shirt, tank top, sleeveless, jacket, hoodie, zipper"
-            else:  # jacket
-                neg = neg_common + ", bare arms, t-shirt, tank top, sleeveless"
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
             # and is what finally beats the brown-drift problem. The
@@ -1620,45 +1400,6 @@ class TryOnModel:
             # (face, background, hair, legs) stays pixel-identical to the
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
-
-            # ── LAB colour lock — guarantees garment colour is preserved ─────
-            # Even with IP-Adapter + colour-anchor + colour-named prompt +
-            # anti-drift negatives, SD still drifts black to grey, grey to
-            # mauve, etc. Demo-day insurance: in LAB space, replace the
-            # a/b (colour) channels of the SD result inside the torso with
-            # the garment's a/b. Blend L (lightness) 50/50 with garment L
-            # so shading stays but black stays BLACK and grey stays GREY.
-            try:
-                g_arr_full = np.array(garment.convert("RGB"))
-                gh, gw = g_arr_full.shape[:2]
-                gcx0, gcx1 = int(gw * 0.30), int(gw * 0.70)
-                gcy0, gcy1 = int(gh * 0.30), int(gh * 0.70)
-                centre = g_arr_full[gcy0:gcy1, gcx0:gcx1].reshape(-1, 3).astype(np.float32)
-                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
-                garm_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
-                garm_rgb = np.clip(garm_rgb, 0, 255).astype(np.uint8)
-                garm_lab = cv2.cvtColor(
-                    garm_rgb[np.newaxis, np.newaxis, :], cv2.COLOR_RGB2LAB,
-                ).astype(np.float32)[0, 0]
-                result_lab = cv2.cvtColor(
-                    result_arr.astype(np.uint8), cv2.COLOR_RGB2LAB,
-                ).astype(np.float32)
-                lock_m = (torso_mask > 0.45)
-                # a/b channels: hard replace with garment's chromaticity.
-                result_lab[lock_m, 1] = garm_lab[1]
-                result_lab[lock_m, 2] = garm_lab[2]
-                # L channel: 60% garment + 40% SD so dark garments stay
-                # dark (black t-shirt issue) but folds / lighting from SD
-                # still come through.
-                result_lab[lock_m, 0] = (
-                    0.60 * garm_lab[0] + 0.40 * result_lab[lock_m, 0]
-                )
-                result_arr = cv2.cvtColor(
-                    result_lab.clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB,
-                ).astype(np.float32)
-            except Exception as e:
-                log.debug(f"LAB colour lock skipped: {e}")
-
             orig_f     = orig_arr.astype(np.float32)
             # Compose ONLY inside the torso_mask (the same region SD was
             # actually told to paint). Using body_silhouette here was
