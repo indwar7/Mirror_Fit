@@ -522,15 +522,13 @@ class TryOnModel:
         if self._prefetch_ip_adapter_files():
             try:
                 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
-                log.info("Loading IP-Adapter image_encoder on CPU (VRAM-safe)…")
+                log.info("Loading IP-Adapter image_encoder on CPU (avoids fp32->fp16 transient OOM)…")
                 self.pipeline.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                     "h94/IP-Adapter",
                     subfolder="models/image_encoder",
                     torch_dtype=self.dtype,
                 ).to("cpu")
                 self.pipeline.feature_extractor = CLIPImageProcessor()
-                # Free any GPU memory we don't need so load_ip_adapter
-                # has room to copy the small UNet adapter weights.
                 import gc
                 gc.collect()
                 if self.device == "cuda":
@@ -540,10 +538,20 @@ class TryOnModel:
                     "h94/IP-Adapter", subfolder="models",
                     weight_name="ip-adapter_sd15.bin")
                 # IP-Adapter scale 1.2 paired with CFG 2.5 (see _infer_tier3).
-                # Known-good value from the May 26 working demo.
                 self.pipeline.set_ip_adapter_scale(1.2)
+                # Now move encoder onto GPU — the dangerous step was the
+                # from_pretrained fp32->fp16 conversion transient. Once
+                # weights are settled in fp16 on the CPU side, moving to
+                # GPU is just a clean ~1.27 GB device copy with no spike.
+                # Required because the pipeline runs text_encoder / UNet
+                # on cuda; mixing devices triggers the runtime
+                # "tensors on cuda:0 and cpu" error in nn.embedding.
+                if self.device == "cuda":
+                    log.info("Moving image_encoder onto GPU (settled fp16 weights, no transient)…")
+                    self.pipeline.image_encoder.to(self.device)
+                    torch.cuda.empty_cache()
                 self._ip_loaded = True
-                log.info("IP-Adapter loaded (encoder on CPU, UNet on GPU).")
+                log.info("IP-Adapter loaded (encoder + UNet on %s).", self.device)
             except Exception as e:
                 log.warning(
                     "IP-Adapter load step failed after successful prefetch "
@@ -807,30 +815,22 @@ class TryOnModel:
         self._garment_color_name = self._dominant_color_name(np.array(garment_sq))
         log.info(f"Garment dominant color: {self._garment_color_name}")
 
-        # Pre-compute IP-Adapter CLIP embeddings once on CPU. The encoder
-        # lives on CPU (loaded that way to dodge a VRAM OOM during
-        # load_ip_adapter). Inference uses these cached embeddings via
-        # ip_adapter_image_embeds, so the per-frame path never touches
-        # the CPU encoder again — no slowdown at frame time.
-        if self._ip_loaded and self.pipeline.image_encoder is not None:
+        # Pre-compute IP-Adapter CLIP embeddings once via diffusers'
+        # standard path. The encoder lives on GPU now (moved there after
+        # load_ip_adapter completed), so prepare_ip_adapter_image_embeds
+        # returns properly shaped tensors. Caching here means inference
+        # never re-encodes per frame.
+        if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
             try:
-                pixel = self.pipeline.feature_extractor(
-                    garment_sq, return_tensors="pt",
-                ).pixel_values.to("cpu", self.dtype)
                 with torch.inference_mode():
-                    image_embeds = self.pipeline.image_encoder(pixel).image_embeds
-                # Encoder returns 2D [batch, embed_dim]. Diffusers'
-                # ip_adapter_image_embeds expects a list of 3D tensors
-                # shaped [2 * batch, num_images_per_prompt, embed_dim]
-                # when CFG is on — matching what
-                # prepare_ip_adapter_image_embeds emits internally.
-                image_embeds = image_embeds.to(self.device, self.dtype)
-                image_embeds = image_embeds.unsqueeze(0)            # [1, 1, 1024]
-                neg_embeds   = torch.zeros_like(image_embeds)       # [1, 1, 1024]
-                self._ip_embeds = [
-                    torch.cat([neg_embeds, image_embeds], dim=0),   # [2, 1, 1024]
-                ]
-                log.info("Garment IP embeddings pre-computed (CPU encode) and cached on GPU. Shape=%s",
+                    self._ip_embeds = self.pipeline.prepare_ip_adapter_image_embeds(
+                        ip_adapter_image=[garment_sq],
+                        ip_adapter_image_embeds=None,
+                        device=self.device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                    )
+                log.info("Garment IP embeddings pre-computed and cached. Shape=%s",
                          tuple(self._ip_embeds[0].shape))
             except Exception as e:
                 log.warning(f"IP embed pre-cache failed: {e}")
