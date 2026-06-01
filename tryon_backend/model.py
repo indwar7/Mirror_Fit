@@ -1223,35 +1223,26 @@ class TryOnModel:
                 # rectangle for them left an empty band SD painted as a
                 # dark rectangle ("black square behind garment"). Narrow
                 # widths kill that band.
-                gtype = getattr(self, "_garment_type", "tshirt")
+                # SAME width as 'jacket done' (2x face) for ALL garments.
+                # User confirmed jacket fits perfectly with this width.
+                # The only difference per garment is HOW FAR DOWN the
+                # mask extends — a tshirt ends near the waist, a shirt
+                # a bit lower, a jacket goes to the frame bottom. That
+                # way tshirt/shirt look like a shorter jacket — no new
+                # geometry, no black-square risk from a different shape.
+                half_w = fw2 * 2
+                gtype  = getattr(self, "_garment_type", "tshirt")
                 if gtype == "jacket":
-                    half_w     = fw2 * 2          # original 'jacket done'
-                    rect_bottom = h               # original 'jacket done'
+                    rect_bottom = h
                 elif gtype == "shirt":
-                    half_w     = int(fw2 * 1.75)
-                    rect_bottom = int(h * 0.90)
+                    rect_bottom = int(h * 0.88)
                 else:  # tshirt
-                    half_w     = int(fw2 * 1.60)
-                    rect_bottom = int(h * 0.85)
-                rect_top    = fy2 + fh2                          # chin row
-                # Tapered trapezoid instead of a hard rectangle. The
-                # rectangle was leaving a visible hard-edge dark band
-                # (user: "remove the black square completely") because
-                # the corners are sharp and the Gaussian feather wasn't
-                # heavy enough to dissolve them. Trapezoid + heavy blur
-                # below produces a soft body-shaped paint area with no
-                # rectangular outline.
-                shoulder_l = max(0, cx2 - half_w)
-                shoulder_r = min(w, cx2 + half_w)
-                hip_half   = int(half_w * 0.85)   # waist 15% narrower
-                hip_l      = max(0, cx2 - hip_half)
-                hip_r      = min(w, cx2 + hip_half)
-                trap = np.array(
-                    [[shoulder_l, rect_top], [shoulder_r, rect_top],
-                     [hip_r, rect_bottom], [hip_l, rect_bottom]],
-                    dtype=np.int32,
-                )
-                cv2.fillPoly(safety, [trap], 1.0)
+                    rect_bottom = int(h * 0.80)
+                rect_top   = fy2 + fh2                         # chin row
+                rect_left  = max(0, cx2 - half_w)
+                rect_right = min(w, cx2 + half_w)
+                cv2.rectangle(safety, (rect_left, rect_top),
+                              (rect_right, rect_bottom), 1.0, -1)
             else:
                 # No face → soft tapered band (narrower than full width)
                 cv2.rectangle(safety, (int(w * 0.18), int(h * 0.32)),
