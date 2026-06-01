@@ -1225,24 +1225,40 @@ class TryOnModel:
                 # widths kill that band.
                 gtype = getattr(self, "_garment_type", "tshirt")
                 if gtype == "jacket":
-                    half_w     = fw2 * 2          # original
-                    rect_bottom = h               # original
+                    half_w     = fw2 * 2          # original 'jacket done'
+                    rect_bottom = h               # original 'jacket done'
                 elif gtype == "shirt":
-                    half_w     = int(fw2 * 1.7)
-                    rect_bottom = int(h * 0.92)
-                else:  # tshirt
-                    half_w     = int(fw2 * 1.4)
-                    rect_bottom = int(h * 0.88)
+                    half_w     = int(fw2 * 1.45)
+                    rect_bottom = int(h * 0.82)
+                else:  # tshirt — tightest, shortest
+                    half_w     = int(fw2 * 1.20)
+                    rect_bottom = int(h * 0.75)
                 rect_top    = fy2 + fh2                          # chin row
-                rect_left   = max(0, cx2 - half_w)
-                rect_right  = min(w, cx2 + half_w)
-                cv2.rectangle(safety, (rect_left, rect_top),
-                              (rect_right, rect_bottom), 1.0, -1)
+                # Tapered trapezoid instead of a hard rectangle. The
+                # rectangle was leaving a visible hard-edge dark band
+                # (user: "remove the black square completely") because
+                # the corners are sharp and the Gaussian feather wasn't
+                # heavy enough to dissolve them. Trapezoid + heavy blur
+                # below produces a soft body-shaped paint area with no
+                # rectangular outline.
+                shoulder_l = max(0, cx2 - half_w)
+                shoulder_r = min(w, cx2 + half_w)
+                hip_half   = int(half_w * 0.70)   # waist 30% narrower
+                hip_l      = max(0, cx2 - hip_half)
+                hip_r      = min(w, cx2 + hip_half)
+                trap = np.array(
+                    [[shoulder_l, rect_top], [shoulder_r, rect_top],
+                     [hip_r, rect_bottom], [hip_l, rect_bottom]],
+                    dtype=np.int32,
+                )
+                cv2.fillPoly(safety, [trap], 1.0)
             else:
-                # No face → fallback to wide horizontal band
-                cv2.rectangle(safety, (int(w * 0.08), int(h * 0.30)),
-                              (int(w * 0.92), h), 1.0, -1)
-            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
+                # No face → soft tapered band (narrower than full width)
+                cv2.rectangle(safety, (int(w * 0.18), int(h * 0.32)),
+                              (int(w * 0.82), int(h * 0.92)), 1.0, -1)
+            # Much heavier feather (71,71 vs 31,31) so corners dissolve
+            # completely and no rectangular outline remains.
+            safety = cv2.GaussianBlur(safety, (71, 71), 0).clip(0, 1)
             silhouette = np.maximum(silhouette, safety * 0.85)
         except Exception as e:
             log.debug(f"safety rect skipped: {e}")
