@@ -1305,17 +1305,14 @@ class TryOnModel:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
         if silhouette is None:
-            # Fallback ellipse — sized to cover the full upper-body region
-            # so SD has room to paint a complete shirt / jacket / t-shirt
-            # even with no real silhouette. The old (0.40, 0.36) ellipse
-            # was too small and gave the "oval blob" output the user saw
-            # when MediaPipe was unavailable on the server's Python 3.14.
+            # MediaPipe unavailable (Py3.14 wheel issue). Start from an
+            # empty mask — the safety polygon below becomes the entire
+            # mask. The old fallback was a wide ellipse (0.48w * 0.45h)
+            # that covered most of the frame; combined with the polygon
+            # OR, the result was a mask much wider than the actual body
+            # and the painted garment looked oversized. With silhouette
+            # empty, only the type-aware body polygon defines paint area.
             silhouette = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(silhouette,
-                        (w // 2, int(h * 0.65)),
-                        (int(w * 0.48), int(h * 0.45)),
-                        0, 0, 360, 1.0, -1)
-            silhouette = cv2.GaussianBlur(silhouette, (31, 31), 0)
 
         # Safety: OR a generous bbox-derived rectangle covering the
         # expected shoulders + arms + torso area. This guarantees the
