@@ -1564,16 +1564,15 @@ class TryOnModel:
                     f"the t-shirt fits naturally on the body, "
                     f"realistic cotton folds, detailed texture, sharp focus, photorealistic"
                 )
-            # Anti-drift negatives — shared core + per-type "wrong garment"
-            # tokens. Putting the OTHER garment types in the negative pulls
-            # SD away from drifting; putting the SELECTED type in the
-            # negative (the old prompt did this with "t-shirt") cancels the
-            # positive prompt and gave the user a malformed output when
-            # they picked T-shirt.
+            # Negatives: anatomy + quality only. Colour drift terms (brown,
+            # purple, mauve, etc.) were REMOVED because the LAB colour
+            # lock further down hard-replaces the result's chromaticity
+            # with the garment's a/b channels — so SD can drift to any
+            # colour and we still end up with the right one. Listing
+            # "brown" here used to repel a brown jacket from being a
+            # brown jacket, which is exactly what user reported.
             neg_common = (
-                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
-                "saturated, oversaturated, tinted, faded, washed out, naked, "
-                "floating clothes, shirt on background, shirt outline, "
+                "naked, floating clothes, shirt on background, shirt outline, "
                 "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
             if gtype == "tshirt":
@@ -1615,6 +1614,45 @@ class TryOnModel:
             # (face, background, hair, legs) stays pixel-identical to the
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
+
+            # ── LAB colour lock — guarantees garment colour is preserved ─────
+            # Even with IP-Adapter + colour-anchor + colour-named prompt +
+            # anti-drift negatives, SD still drifts black to grey, grey to
+            # mauve, etc. Demo-day insurance: in LAB space, replace the
+            # a/b (colour) channels of the SD result inside the torso with
+            # the garment's a/b. Blend L (lightness) 50/50 with garment L
+            # so shading stays but black stays BLACK and grey stays GREY.
+            try:
+                g_arr_full = np.array(garment.convert("RGB"))
+                gh, gw = g_arr_full.shape[:2]
+                gcx0, gcx1 = int(gw * 0.30), int(gw * 0.70)
+                gcy0, gcy1 = int(gh * 0.30), int(gh * 0.70)
+                centre = g_arr_full[gcy0:gcy1, gcx0:gcx1].reshape(-1, 3).astype(np.float32)
+                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+                garm_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
+                garm_rgb = np.clip(garm_rgb, 0, 255).astype(np.uint8)
+                garm_lab = cv2.cvtColor(
+                    garm_rgb[np.newaxis, np.newaxis, :], cv2.COLOR_RGB2LAB,
+                ).astype(np.float32)[0, 0]
+                result_lab = cv2.cvtColor(
+                    result_arr.astype(np.uint8), cv2.COLOR_RGB2LAB,
+                ).astype(np.float32)
+                lock_m = (torso_mask > 0.45)
+                # a/b channels: hard replace with garment's chromaticity.
+                result_lab[lock_m, 1] = garm_lab[1]
+                result_lab[lock_m, 2] = garm_lab[2]
+                # L channel: 60% garment + 40% SD so dark garments stay
+                # dark (black t-shirt issue) but folds / lighting from SD
+                # still come through.
+                result_lab[lock_m, 0] = (
+                    0.60 * garm_lab[0] + 0.40 * result_lab[lock_m, 0]
+                )
+                result_arr = cv2.cvtColor(
+                    result_lab.clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB,
+                ).astype(np.float32)
+            except Exception as e:
+                log.debug(f"LAB colour lock skipped: {e}")
+
             orig_f     = orig_arr.astype(np.float32)
             # Compose ONLY inside the torso_mask (the same region SD was
             # actually told to paint). Using body_silhouette here was
