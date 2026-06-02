@@ -41,6 +41,22 @@ AVATARS = [
     ("gen_g_02", "female", "young girl aged 9, south asian, warm brown skin, long dark hair, bright eyes"),
     ("gen_g_03", "female", "young girl aged 11, east asian, light skin, sleek black hair, gentle smile"),
     ("gen_g_04", "female", "young girl aged 10, african, deep brown skin, braided hair, joyful expression"),
+    # ── Indian avatars across age groups ──────────────────────────────────────
+    # Indian — Kids (8-12)
+    ("gen_ib_01", "male",   "indian boy aged 10, warm brown skin, neat short black hair, bright eyes, gentle smile"),
+    ("gen_ig_01", "female", "indian girl aged 9, warm brown skin, long braided black hair, bright eyes, soft smile"),
+    # Indian — Teens (15-17)
+    ("gen_ib_02", "male",   "indian teenage boy aged 16, warm brown skin, neat hair, light stubble, confident expression"),
+    ("gen_ig_02", "female", "indian teenage girl aged 16, warm brown skin, long straight black hair, friendly smile"),
+    # Indian — Young adults (25-30)
+    ("gen_im_01", "male",   "indian man aged 27, warm brown skin, neat black hair, trimmed beard, confident smile"),
+    ("gen_if_01", "female", "indian woman aged 26, warm brown skin, long dark wavy hair, soft smile"),
+    # Indian — Middle-aged (45-50)
+    ("gen_im_02", "male",   "indian man aged 47, warm brown skin, salt and pepper hair, full beard, kind expression"),
+    ("gen_if_02", "female", "indian woman aged 46, warm brown skin, dark hair tied back with some grey, warm smile"),
+    # Indian — Elderly (65-75)
+    ("gen_im_03", "male",   "indian elderly man aged 70, weathered brown skin, fully white hair and beard, deep eyes, dignified expression"),
+    ("gen_if_03", "female", "indian elderly woman aged 68, weathered brown skin, silver hair, warm gentle expression"),
 ]
 
 POSITIVE_TEMPLATE = (

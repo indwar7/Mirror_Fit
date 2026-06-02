@@ -108,6 +108,44 @@ _AVATARS = [
     {"id": "gen_g_04", "name": "Amara",  "category": "Kids",
      "ethnicity": "African",      "gender": "female",
      "voice_ref": "en_default_female"},
+    # ─────────────────────────────────────────────────────────────────────────
+    # Indian avatars across age groups (Kids → Teens → Men/Women → Elderly)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Indian — Kids
+    {"id": "gen_ib_01", "name": "Aarav",  "category": "Kids",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_ig_01", "name": "Diya",   "category": "Kids",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
+    # Indian — Teens
+    {"id": "gen_ib_02", "name": "Vihaan", "category": "Teens",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_ig_02", "name": "Ananya", "category": "Teens",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
+    # Indian — Young adults
+    {"id": "gen_im_01", "name": "Rohan",  "category": "Men",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_if_01", "name": "Isha",   "category": "Women",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
+    # Indian — Middle-aged
+    {"id": "gen_im_02", "name": "Rajesh", "category": "Men",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_if_02", "name": "Meera",  "category": "Women",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
+    # Indian — Elderly
+    {"id": "gen_im_03", "name": "Dadaji", "category": "Elderly",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_if_03", "name": "Dadiji", "category": "Elderly",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
 ]
 _AVATAR_MAP = {a["id"]: a for a in _AVATARS}
 
