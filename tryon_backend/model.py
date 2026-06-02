@@ -1331,13 +1331,13 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff right at the chin row (fy + fh). Tried higher
-                # (inside jaw) → paint on face. Tried lower (1.05*fh) →
-                # collar dropped to mid-chest with a wallpaper gap above.
-                # Exact chin = collar sits at the neck like a real
-                # crew-neck (user: "collar sahi karo sabka").
-                face_cutoff_y = int(np.clip(fy + fh,
-                                            h * 0.20, h * 0.48))
+                # Cutoff well below the chin (fy + 1.20*fh). User said a
+                # visible line was cutting across the chin — that happens
+                # when cutoff sits on / very near the chin row. Pushing
+                # it to 20% past the chin guarantees the seam is on the
+                # neck/upper chest, hidden by the painted collar.
+                face_cutoff_y = int(np.clip(fy + int(fh * 1.20),
+                                            h * 0.22, h * 0.55))
         except Exception:
             pass
 
@@ -1588,7 +1588,16 @@ class TryOnModel:
             # smearing the chin row by 7 px and making the collar look
             # half-transparent.
             blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
+            # Soft fade above the cutoff instead of a hard 0.0 cut.
+            # The hard cut produced a visible horizontal line on the
+            # chin (user: "face p chin ko ek line cut kr rhi hai").
+            # 25-pixel linear ramp blends paint smoothly into face.
             blend_mask[:face_cutoff_y] = 0.0
+            fade_band = 25
+            for i in range(fade_band):
+                y = face_cutoff_y + i
+                if 0 <= y < blend_mask.shape[0]:
+                    blend_mask[y] *= (i / fade_band)
 
             # Edge contact shadow — narrow ring just INSIDE the alpha
             # gets darkened to 85% in the SD result. Fakes the depth
