@@ -663,45 +663,63 @@ class TryOnModel:
 
     def recolor_garment(self, color: str):
         """Recolour the cached garment to a hex colour while preserving
-        the original shading / texture. Called live when the user clicks
-        a swatch in the colour palette. 'original' restores the original."""
+        the original shading / texture. Re-encodes IP-Adapter embeds and
+        updates the dominant colour name so the SD prompt also reflects
+        the new colour. 'original' restores the original garment."""
         if not hasattr(self, "_garment_original") or self._garment_original is None:
             self._garment_original = self._garment_cache
+        if self._garment_original is None:
+            log.warning("recolor_garment: no garment uploaded yet")
+            return
+
         if color == "original" or not color:
-            self._garment_cache = self._garment_original
-            self._ip_embeds     = None
-            return
-        try:
-            tr = int(color[1:3], 16)
-            tg = int(color[3:5], 16)
-            tb = int(color[5:7], 16)
-        except Exception:
-            log.warning("recolor_garment: bad hex %r, ignoring", color)
-            return
-        src = np.array(self._garment_original).astype(np.float32)
-        # Mask out the white square padding background (keep only the
-        # actual garment pixels — anything with all RGB > 240 is the
-        # padded white). We tint only the garment, not the bg.
-        is_garment = ~((src[:, :, 0] > 240)
-                       & (src[:, :, 1] > 240)
-                       & (src[:, :, 2] > 240))
-        # Get original luminance and use it as a multiplier on the target
-        # colour. Brightness/shading from the original photo is kept;
-        # only the hue changes.
-        lum = src.mean(axis=2) / 255.0  # 0..1
-        tint = np.stack([
-            np.full_like(lum, tr),
-            np.full_like(lum, tg),
-            np.full_like(lum, tb),
-        ], axis=2) * lum[:, :, None]
-        # Blend: 75% tinted target, 25% original luminance grey (keeps
-        # texture detail / wrinkles visible).
-        recolored = (0.75 * tint + 0.25 * src) .clip(0, 255)
-        out = src.copy()
-        out[is_garment] = recolored[is_garment]
-        self._garment_cache = Image.fromarray(out.astype(np.uint8))
-        self._ip_embeds     = None  # force IP-Adapter to re-encode
-        log.info("Garment recoloured to %s.", color)
+            new_garment = self._garment_original
+        else:
+            try:
+                tr = int(color[1:3], 16)
+                tg = int(color[3:5], 16)
+                tb = int(color[5:7], 16)
+            except Exception:
+                log.warning("recolor_garment: bad hex %r, ignoring", color)
+                return
+            src = np.array(self._garment_original).astype(np.float32)
+            # Mask out the white padding bg — only tint the garment.
+            is_garment = ~((src[:, :, 0] > 240)
+                           & (src[:, :, 1] > 240)
+                           & (src[:, :, 2] > 240))
+            # Apply tint in HSV: replace hue+sat with target, keep value.
+            src_hsv = cv2.cvtColor(src.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+            tgt_rgb = np.array([[[tr, tg, tb]]], dtype=np.uint8)
+            tgt_hsv = cv2.cvtColor(tgt_rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+            th, ts, _ = tgt_hsv[0, 0]
+            out_hsv = src_hsv.copy()
+            out_hsv[is_garment, 0] = th
+            # Keep some original saturation so dark/light tones don't
+            # collapse to flat colour. Mix 70% target sat + 30% original.
+            out_hsv[is_garment, 1] = 0.70 * ts + 0.30 * src_hsv[is_garment, 1]
+            # value unchanged → shading / wrinkles preserved
+            recolored = cv2.cvtColor(out_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+            new_garment = Image.fromarray(recolored)
+
+        self._garment_cache = new_garment
+        # Update dominant-colour name so the SD prompt picks up the change.
+        self._garment_color_name = self._dominant_color_name(np.array(new_garment))
+        # Re-encode IP-Adapter embeds with the new-colour garment.
+        if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
+            try:
+                with torch.inference_mode():
+                    self._ip_embeds = self.pipeline.prepare_ip_adapter_image_embeds(
+                        ip_adapter_image=[new_garment],
+                        ip_adapter_image_embeds=None,
+                        device=self.device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                    )
+            except Exception as e:
+                log.warning(f"recolor: IP embed re-cache failed: {e}")
+                self._ip_embeds = None
+        log.info("Garment recoloured to %s (prompt colour=%s).",
+                 color, self._garment_color_name)
 
     def set_garment(self, garment_image: Image.Image, garment_type: str = "tshirt"):
         self._garment_type = (
