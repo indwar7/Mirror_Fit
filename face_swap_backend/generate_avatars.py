@@ -31,6 +31,16 @@ AVATARS = [
     ("gen_m_03", "male",   "african man, deep brown skin, short hair, clean shaven, late 20s"),
     ("gen_m_04", "male",   "east asian man, light skin, neat black hair, early 30s"),
     ("gen_m_05", "male",   "hispanic man, olive skin, dark hair, light stubble, mid 30s"),
+    # Kids — boys (ages 8-12)
+    ("gen_b_01", "male",   "young boy aged 10, mixed ethnicity, light skin, curly brown hair, freckles, gentle smile"),
+    ("gen_b_02", "male",   "young boy aged 9, south asian, warm brown skin, neat short dark hair, bright eyes"),
+    ("gen_b_03", "male",   "young boy aged 11, east asian, light skin, straight black hair, soft smile"),
+    ("gen_b_04", "male",   "young boy aged 10, african, deep brown skin, short curly hair, cheerful expression"),
+    # Kids — girls (ages 8-12)
+    ("gen_g_01", "female", "young girl aged 10, european, fair skin, long blonde hair, blue eyes, friendly smile"),
+    ("gen_g_02", "female", "young girl aged 9, south asian, warm brown skin, long dark hair, bright eyes"),
+    ("gen_g_03", "female", "young girl aged 11, east asian, light skin, sleek black hair, gentle smile"),
+    ("gen_g_04", "female", "young girl aged 10, african, deep brown skin, braided hair, joyful expression"),
 ]
 
 POSITIVE_TEMPLATE = (

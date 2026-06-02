@@ -82,6 +82,32 @@ _AVATARS = [
     {"id": "gen_m_05", "name": "Diego",  "category": "Men",
      "ethnicity": "Hispanic",     "gender": "male",
      "voice_ref": "en_default_male"},
+    # Kids — boys
+    {"id": "gen_b_01", "name": "Leo",    "category": "Kids",
+     "ethnicity": "Mixed",        "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_b_02", "name": "Arjun",  "category": "Kids",
+     "ethnicity": "South Asian",  "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_b_03", "name": "Hiro",   "category": "Kids",
+     "ethnicity": "East Asian",   "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "gen_b_04", "name": "Jamal",  "category": "Kids",
+     "ethnicity": "African",      "gender": "male",
+     "voice_ref": "en_default_male"},
+    # Kids — girls
+    {"id": "gen_g_01", "name": "Emma",   "category": "Kids",
+     "ethnicity": "European",     "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "gen_g_02", "name": "Priya",  "category": "Kids",
+     "ethnicity": "South Asian",  "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "gen_g_03", "name": "Mei-Lin","category": "Kids",
+     "ethnicity": "East Asian",   "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "gen_g_04", "name": "Amara",  "category": "Kids",
+     "ethnicity": "African",      "gender": "female",
+     "voice_ref": "en_default_female"},
 ]
 _AVATAR_MAP = {a["id"]: a for a in _AVATARS}
 
