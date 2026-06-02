@@ -1251,14 +1251,21 @@ class TryOnModel:
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
                 rect_right = min(w, cx2 + half_w)
-                # Build mask as a polygon with a U-shaped neckline.
-                # Centre near the neck dips DOWN so the painted garment
-                # has a natural crew-neck curve instead of a horizontal
-                # line at the chin (user: "make the collar totally fit
-                # on me"). The dip is ~30% of face height.
-                neck_dip = int(fh2 * 0.30)
-                neck_l   = max(0, cx2 - int(fw2 * 0.55))
-                neck_r   = min(w, cx2 + int(fw2 * 0.55))
+                # Per-garment collar geometry on the top edge:
+                #   tshirt — wide round (U) crew-neck
+                #   shirt  — narrow V notch (button-down)
+                #   jacket — almost straight (closed collar / zip)
+                if gtype == "tshirt":
+                    neck_dip  = int(fh2 * 0.25)
+                    neck_half = int(fw2 * 0.55)
+                elif gtype == "shirt":
+                    neck_dip  = int(fh2 * 0.18)
+                    neck_half = int(fw2 * 0.38)
+                else:  # jacket
+                    neck_dip  = int(fh2 * 0.08)
+                    neck_half = int(fw2 * 0.30)
+                neck_l = max(0, cx2 - neck_half)
+                neck_r = min(w, cx2 + neck_half)
                 poly = np.array(
                     [[rect_left, rect_top],
                      [neck_l, rect_top],
@@ -1322,14 +1329,13 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff just BELOW the chin (fy + fh*1.05). Previously
-                # tried fy + 0.92*fh (inside jaw) → paint bled onto face
-                # (user: "mere face pe black black aa rha hai"). Now
-                # cutoff sits a hair below the chin so face stays clean.
-                # Range [0.20h, 0.50h] keeps it sane even for very close
-                # or very distant faces.
-                face_cutoff_y = int(np.clip(fy + int(fh * 1.05),
-                                            h * 0.20, h * 0.50))
+                # Cutoff right at the chin row (fy + fh). Tried higher
+                # (inside jaw) → paint on face. Tried lower (1.05*fh) →
+                # collar dropped to mid-chest with a wallpaper gap above.
+                # Exact chin = collar sits at the neck like a real
+                # crew-neck (user: "collar sahi karo sabka").
+                face_cutoff_y = int(np.clip(fy + fh,
+                                            h * 0.20, h * 0.48))
         except Exception:
             pass
 
@@ -1363,12 +1369,24 @@ class TryOnModel:
             gc_mask[:bc, -bc:] = cv2.GC_BGD
             gc_mask[-bc:, :bc] = cv2.GC_BGD
             gc_mask[-bc:, -bc:] = cv2.GC_BGD
-            # Definite foreground: the detected face area (scaled).
+            # Definite foreground: face bbox + a chest band BELOW the
+            # face. The chest band guarantees GrabCut keeps the neck/
+            # upper chest as foreground — without it the neck-skin region
+            # sometimes got classified as background and the painted
+            # garment dropped to mid-chest with a visible gap above.
             if len(safety_faces) > 0:
                 s = small_size / float(h)
                 sfx = int(fx2 * s); sfy = int(fy2 * s)
                 sfw = int(fw2 * s); sfh = int(fh2 * s)
                 gc_mask[sfy:sfy+sfh, sfx:sfx+sfw] = cv2.GC_FGD
+                # Chest stripe: half-face-width wide, from chin down 1.5x
+                # face height. Definite foreground hint.
+                cx_s = sfx + sfw // 2
+                stripe_l = max(0, cx_s - sfw // 2)
+                stripe_r = min(small_size, cx_s + sfw // 2)
+                stripe_t = sfy + sfh
+                stripe_b = min(small_size, stripe_t + int(sfh * 1.5))
+                gc_mask[stripe_t:stripe_b, stripe_l:stripe_r] = cv2.GC_FGD
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             cv2.grabCut(small_rgb, gc_mask, None, bgd_model, fgd_model,
