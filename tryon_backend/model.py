@@ -1251,19 +1251,19 @@ class TryOnModel:
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
                 rect_right = min(w, cx2 + half_w)
-                # Per-garment collar geometry on the top edge:
-                #   tshirt — wide round (U) crew-neck
-                #   shirt  — narrow V notch (button-down)
-                #   jacket — almost straight (closed collar / zip)
+                # Per-garment collar geometry on the top edge. Notch
+                # depths bumped UP because the 31px Gaussian below
+                # softens them — shallower notches were dissolving into
+                # a flat horizontal line.
                 if gtype == "tshirt":
-                    neck_dip  = int(fh2 * 0.25)
-                    neck_half = int(fw2 * 0.55)
+                    neck_dip  = int(fh2 * 0.55)
+                    neck_half = int(fw2 * 0.65)
                 elif gtype == "shirt":
-                    neck_dip  = int(fh2 * 0.18)
-                    neck_half = int(fw2 * 0.38)
+                    neck_dip  = int(fh2 * 0.40)
+                    neck_half = int(fw2 * 0.45)
                 else:  # jacket
-                    neck_dip  = int(fh2 * 0.08)
-                    neck_half = int(fw2 * 0.30)
+                    neck_dip  = int(fh2 * 0.20)
+                    neck_half = int(fw2 * 0.35)
                 neck_l = max(0, cx2 - neck_half)
                 neck_r = min(w, cx2 + neck_half)
                 poly = np.array(
@@ -1281,9 +1281,11 @@ class TryOnModel:
                 # No face → soft tapered band (narrower than full width)
                 cv2.rectangle(safety, (int(w * 0.18), int(h * 0.32)),
                               (int(w * 0.82), int(h * 0.92)), 1.0, -1)
-            # Much heavier feather (71,71 vs 31,31) so corners dissolve
-            # completely and no rectangular outline remains.
-            safety = cv2.GaussianBlur(safety, (71, 71), 0).clip(0, 1)
+            # 31px feather — heavy enough to soften corners but small
+            # enough to preserve the per-garment U/V neckline notch
+            # carved into the polygon top. 71px was dissolving the notch
+            # into a flat horizontal line at the chin.
+            safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
             silhouette = np.maximum(silhouette, safety * 0.85)
 
             # ── Skin-tone hands extension (no MediaPipe needed) ────────
