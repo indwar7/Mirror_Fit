@@ -1,0 +1,61 @@
+name: lucy_tryon
+description: LUCY - Virtual Try-On App
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.0.7
+  cached_network_image: ^3.3.1
+  http: ^1.2.0
+  animate_do: ^3.3.4
+  shimmer: ^3.0.0
+  provider: ^6.1.2
+  shared_preferences: ^2.2.2
+  path_provider: ^2.1.2
+  google_fonts: ^8.0.2
+  flutter_staggered_animations: ^1.1.1
+  confetti: ^0.7.0
+  share_plus: ^10.0.0
+  url_launcher: ^6.2.5
+  smooth_page_indicator: ^1.2.0+3
+  record: ^5.1.2
+  audioplayers: ^6.1.0
+
+  # ── Decart Realtime WebRTC ──────────────────────────────────
+  flutter_inappwebview: ^6.1.5               # WebRTC camera streaming via WebView
+
+  # ── AR Try-On Pipeline ──────────────────────────────────────
+  camera: ^0.12.0+1                        # Real-time camera stream
+  model_viewer_plus: ^1.8.1                 # 3D .glb model viewer
+  # google_mlkit_pose_detection: ^0.14.1    # disabled — crashes on iOS 26
+  # tflite_flutter: ^0.12.1                 # disabled — crashes on iOS 26
+  # flutter_unity_widget: ^2022.2.1        # Unity 3D renderer (uncomment when Unity project ready)
+  # ar_flutter_plugin: ^0.7.3              # ARCore/ARKit (optional AR layer)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  adaptive_icon_background: "#6C63FF"
+  adaptive_icon_foreground: "assets/icons/app_icon.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/
+    - assets/models/
+    - assets/ml_models/
