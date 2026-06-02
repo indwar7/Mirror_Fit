@@ -1251,8 +1251,25 @@ class TryOnModel:
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
                 rect_right = min(w, cx2 + half_w)
-                cv2.rectangle(safety, (rect_left, rect_top),
-                              (rect_right, rect_bottom), 1.0, -1)
+                # Build mask as a polygon with a U-shaped neckline.
+                # Centre near the neck dips DOWN so the painted garment
+                # has a natural crew-neck curve instead of a horizontal
+                # line at the chin (user: "make the collar totally fit
+                # on me"). The dip is ~30% of face height.
+                neck_dip = int(fh2 * 0.30)
+                neck_l   = max(0, cx2 - int(fw2 * 0.55))
+                neck_r   = min(w, cx2 + int(fw2 * 0.55))
+                poly = np.array(
+                    [[rect_left, rect_top],
+                     [neck_l, rect_top],
+                     [cx2, rect_top + neck_dip],
+                     [neck_r, rect_top],
+                     [rect_right, rect_top],
+                     [rect_right, rect_bottom],
+                     [rect_left, rect_bottom]],
+                    dtype=np.int32,
+                )
+                cv2.fillPoly(safety, [poly], 1.0)
             else:
                 # No face → soft tapered band (narrower than full width)
                 cv2.rectangle(safety, (int(w * 0.18), int(h * 0.32)),
@@ -1305,15 +1322,14 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff INSIDE the jaw (fy + fh*0.92, was fy+fh). The
-                # chin row leaves a strip of user's actual collar showing
-                # between chin and the painted garment because Gaussian
-                # feathering tapers the mask over ~15 px below the cutoff.
-                # By pulling the cutoff UP into the jaw region, the
-                # painting starts at jawline so the t-shirt 'sticks to
-                # the collar' (user request) — no gap.
-                face_cutoff_y = int(np.clip(fy + int(fh * 0.92),
-                                            h * 0.12, h * 0.38))
+                # Cutoff just BELOW the chin (fy + fh*1.05). Previously
+                # tried fy + 0.92*fh (inside jaw) → paint bled onto face
+                # (user: "mere face pe black black aa rha hai"). Now
+                # cutoff sits a hair below the chin so face stays clean.
+                # Range [0.20h, 0.50h] keeps it sane even for very close
+                # or very distant faces.
+                face_cutoff_y = int(np.clip(fy + int(fh * 1.05),
+                                            h * 0.20, h * 0.50))
         except Exception:
             pass
 
