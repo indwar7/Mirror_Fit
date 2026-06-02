@@ -661,6 +661,48 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
+    def recolor_garment(self, color: str):
+        """Recolour the cached garment to a hex colour while preserving
+        the original shading / texture. Called live when the user clicks
+        a swatch in the colour palette. 'original' restores the original."""
+        if not hasattr(self, "_garment_original") or self._garment_original is None:
+            self._garment_original = self._garment_cache
+        if color == "original" or not color:
+            self._garment_cache = self._garment_original
+            self._ip_embeds     = None
+            return
+        try:
+            tr = int(color[1:3], 16)
+            tg = int(color[3:5], 16)
+            tb = int(color[5:7], 16)
+        except Exception:
+            log.warning("recolor_garment: bad hex %r, ignoring", color)
+            return
+        src = np.array(self._garment_original).astype(np.float32)
+        # Mask out the white square padding background (keep only the
+        # actual garment pixels — anything with all RGB > 240 is the
+        # padded white). We tint only the garment, not the bg.
+        is_garment = ~((src[:, :, 0] > 240)
+                       & (src[:, :, 1] > 240)
+                       & (src[:, :, 2] > 240))
+        # Get original luminance and use it as a multiplier on the target
+        # colour. Brightness/shading from the original photo is kept;
+        # only the hue changes.
+        lum = src.mean(axis=2) / 255.0  # 0..1
+        tint = np.stack([
+            np.full_like(lum, tr),
+            np.full_like(lum, tg),
+            np.full_like(lum, tb),
+        ], axis=2) * lum[:, :, None]
+        # Blend: 75% tinted target, 25% original luminance grey (keeps
+        # texture detail / wrinkles visible).
+        recolored = (0.75 * tint + 0.25 * src) .clip(0, 255)
+        out = src.copy()
+        out[is_garment] = recolored[is_garment]
+        self._garment_cache = Image.fromarray(out.astype(np.uint8))
+        self._ip_embeds     = None  # force IP-Adapter to re-encode
+        log.info("Garment recoloured to %s.", color)
+
     def set_garment(self, garment_image: Image.Image, garment_type: str = "tshirt"):
         self._garment_type = (
             garment_type if garment_type in ("tshirt", "shirt", "jacket") else "tshirt"
@@ -677,6 +719,7 @@ class TryOnModel:
         padded.paste(g, ((sq - gw) // 2, (sq - gh) // 2))
         garment_sq = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         self._garment_cache    = garment_sq
+        self._garment_original = garment_sq   # for recolor_garment()
         self._ip_embeds        = None
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
@@ -1331,13 +1374,11 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                # Cutoff well below the chin (fy + 1.20*fh). User said a
-                # visible line was cutting across the chin — that happens
-                # when cutoff sits on / very near the chin row. Pushing
-                # it to 20% past the chin guarantees the seam is on the
-                # neck/upper chest, hidden by the painted collar.
-                face_cutoff_y = int(np.clip(fy + int(fh * 1.20),
-                                            h * 0.22, h * 0.55))
+                # Cutoff at chin row. The 25-px soft fade below (in the
+                # blend block) hides the seam, so we can keep the cutoff
+                # right at the chin — collar sits at the neck naturally.
+                face_cutoff_y = int(np.clip(fy + fh,
+                                            h * 0.20, h * 0.48))
         except Exception:
             pass
 
