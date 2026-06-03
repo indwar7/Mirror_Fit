@@ -692,13 +692,11 @@ class TryOnModel:
                 fabric_rgb = bg
             else:
                 fabric_rgb = fabric_image.convert("RGB")
-            tile_size = LIVE_SIZE // 3
-            fabric_tile = fabric_rgb.resize((tile_size, tile_size), Image.LANCZOS)
-            # Build a full-size fabric texture by tiling.
-            fabric_full = Image.new("RGB", (LIVE_SIZE, LIVE_SIZE))
-            for y in range(0, LIVE_SIZE, tile_size):
-                for x in range(0, LIVE_SIZE, tile_size):
-                    fabric_full.paste(fabric_tile, (x, y))
+            # Single full-size paste — no tiling. Tiled (1/3) fabric
+            # created tight high-frequency repetition that SD denoise
+            # interpreted as noise and turned into psychedelic chaos.
+            # One clean paste = the pattern stays legible.
+            fabric_full = fabric_rgb.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
             fabric_arr  = np.array(fabric_full).astype(np.float32)
             garment_arr = np.array(self._garment_original).astype(np.float32)
             # Garment mask = anything that isn't the white padding bg
@@ -1716,17 +1714,37 @@ class TryOnModel:
             # user's working May 26 demo state. Bumping to 6/4.0 with
             # IP scale 1.5 produced over-conditioning + rainbow-output
             # corruption. Reverted to known good.
+            # Fabric mode: very light SD touch so the prefilled fabric
+            # pattern survives almost untouched. The 4-step / CFG 2.5
+            # combo (good for solid colours) was over-denoising the
+            # fabric pattern into chaotic noise (user screenshot).
+            steps_v = 2 if getattr(self, "_has_fabric", False) else 4
+            cfg_v   = 1.5 if getattr(self, "_has_fabric", False) else 2.5
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=4,
-                    guidance_scale=2.5,
+                    num_inference_steps=steps_v,
+                    guidance_scale=cfg_v,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
+            # Fabric mode: blend the prefilled fabric back into the SD
+            # output at 60% so the pattern stays sharp even if SD added
+            # smoothing. The 40% SD contribution carries body folds /
+            # shading. Only inside the torso mask.
+            if getattr(self, "_has_fabric", False):
+                try:
+                    r_arr = np.array(result).astype(np.float32)
+                    p_arr = np.array(person).astype(np.float32)
+                    if r_arr.shape == p_arr.shape:
+                        m = torso_mask[:, :, np.newaxis]
+                        mixed = (0.60 * p_arr + 0.40 * r_arr) * m + r_arr * (1.0 - m)
+                        result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
+                except Exception as e:
+                    log.debug(f"fabric post-blend skipped: {e}")
 
             # ── Composite result back onto original via body silhouette ──────
             # SD output can bleed slightly past the mask edge. We blend the
