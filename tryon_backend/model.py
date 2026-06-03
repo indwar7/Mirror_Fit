@@ -661,6 +661,8 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
+    _has_fabric = False
+
     def set_fabric(self, fabric_image):
         """Apply a fabric / design pattern onto the cached garment.
 
@@ -678,7 +680,9 @@ class TryOnModel:
             self._garment_color_name = self._dominant_color_name(
                 np.array(self._garment_original)
             )
+            self._has_fabric = False
         else:
+            self._has_fabric = True
             # Prepare fabric: convert to RGB, resize to a tile that
             # covers the garment image. Tile at ~1/3 the garment size
             # so multiple repeats are visible (proper fabric look).
@@ -807,6 +811,7 @@ class TryOnModel:
         garment_sq = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         self._garment_cache    = garment_sq
         self._garment_original = garment_sq   # for recolor_garment()
+        self._has_fabric       = False        # reset on new garment upload
         self._ip_embeds        = None
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
@@ -1623,23 +1628,35 @@ class TryOnModel:
             # cheapest fix for the brown-drift we were seeing.
             try:
                 g_arr = np.array(garment.convert("RGB"))
-                # Use the dark/saturated centre of the garment as the seed
-                # (skip white/transparent edges).
-                gh, gw = g_arr.shape[:2]
-                cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
-                cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
-                centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
-                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
-                seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
-                seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                # Blend the seed colour into the orig_arr ONLY where the
-                # torso mask is high — outside the mask we keep the camera
-                # pixels untouched so the seed colour doesn't leak.
-                m = torso_mask[:, :, np.newaxis]
-                anchor = (
-                    seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
-                    + orig_arr.astype(np.float32) * (1.0 - m)
-                ).astype(np.uint8)
+                if getattr(self, "_has_fabric", False):
+                    # FABRIC PRESENT: prefill the masked area with the actual
+                    # garment image (with fabric pattern) resized to torso
+                    # area. SD denoises from the fabric texture so the
+                    # pattern survives the diffusion. Flat-colour prefill
+                    # erased the pattern → user: "fabric isn't blending".
+                    g_h, g_w = g_arr.shape[:2]
+                    target_h, target_w = orig_arr.shape[:2]
+                    fabric_layer = cv2.resize(g_arr, (target_w, target_h),
+                                              interpolation=cv2.INTER_LINEAR)
+                    m = torso_mask[:, :, np.newaxis]
+                    anchor = (
+                        fabric_layer.astype(np.float32) * m
+                        + orig_arr.astype(np.float32) * (1.0 - m)
+                    ).astype(np.uint8)
+                else:
+                    # No fabric: mean-colour prefill (original behaviour).
+                    gh, gw = g_arr.shape[:2]
+                    cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
+                    cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
+                    centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+                    mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+                    seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
+                    seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
+                    m = torso_mask[:, :, np.newaxis]
+                    anchor = (
+                        seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
+                        + orig_arr.astype(np.float32) * (1.0 - m)
+                    ).astype(np.uint8)
                 person = Image.fromarray(anchor)
             except Exception as e:
                 log.debug(f"colour anchor prefill failed (using raw frame): {e}")
@@ -1653,23 +1670,38 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            prompt = (
-                f"photo of a person wearing a fitted {color} button-up shirt, "
-                f"solid {color} fabric, neutral {color} colour, "
-                f"the shirt fits naturally on the body, visible collar around the neck, "
-                f"long sleeves following the arms down to the wrists, "
-                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
-            )
-            # Anti-drift negatives. Includes purple/violet because at higher
-            # IP-Adapter scales grey shirts pick up a mauve tint from the
-            # mid-tone bias of the embedding.
-            neg = (
-                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
-                "saturated, oversaturated, tinted, faded, washed out, "
-                "bare arms, t-shirt, tank top, sleeveless, naked, "
-                "floating clothes, shirt on background, shirt outline, "
-                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
-            )
+            if getattr(self, "_has_fabric", False):
+                # Fabric uploaded — prompt must NOT lock to a solid colour,
+                # and must explicitly invite a pattern/print so SD doesn't
+                # smooth the fabric texture out during denoising.
+                prompt = (
+                    "photo of a person wearing a fitted patterned fabric shirt, "
+                    "rich fabric print, detailed textile pattern, intricate design, "
+                    "the shirt fits naturally on the body, visible collar around the neck, "
+                    "long sleeves following the arms down to the wrists, "
+                    "realistic fabric folds, sharp focus, photorealistic"
+                )
+                neg = (
+                    "plain solid colour, flat colour, blank shirt, "
+                    "bare arms, tank top, sleeveless, naked, "
+                    "floating clothes, shirt on background, shirt outline, "
+                    "deformed body, extra limbs, blurry, low quality, painting, cartoon"
+                )
+            else:
+                prompt = (
+                    f"photo of a person wearing a fitted {color} button-up shirt, "
+                    f"solid {color} fabric, neutral {color} colour, "
+                    f"the shirt fits naturally on the body, visible collar around the neck, "
+                    f"long sleeves following the arms down to the wrists, "
+                    f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
+                )
+                neg = (
+                    "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                    "saturated, oversaturated, tinted, faded, washed out, "
+                    "bare arms, t-shirt, tank top, sleeveless, naked, "
+                    "floating clothes, shirt on background, shirt outline, "
+                    "deformed body, extra limbs, blurry, low quality, painting, cartoon"
+                )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
             # and is what finally beats the brown-drift problem. The
