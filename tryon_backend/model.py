@@ -1660,9 +1660,9 @@ class TryOnModel:
             # ── Fabric overlay (post-SD) ─────────────────────────────────
             # HSV composite: take FABRIC's hue + saturation (the colour /
             # pattern) and SD result's value (the body folds / shading).
-            # Multiply-blend was distorting fabric colour (red fabric on
-            # teal garment came out green). HSV-from-fabric keeps the
-            # fabric's true colour while SD's lighting is preserved.
+            # Uses a SHIFTED-DOWN mask so the fabric starts at the
+            # collar/clavicle, not at the chin (user: "yeh mere neck pe
+            # fabric overlay ho rhi hai, it should be only till collar").
             if self._fabric_overlay is not None:
                 try:
                     r_arr = np.array(result).astype(np.uint8)
@@ -1681,10 +1681,22 @@ class TryOnModel:
                     out_hsv[:, :, 0] = f_hsv[:, :, 0]
                     out_hsv[:, :, 1] = f_hsv[:, :, 1]
                     out_rgb = cv2.cvtColor(out_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
-                    # Blend 80% fabric-coloured / 20% raw SD inside mask
-                    # so a touch of garment colour comes through for
-                    # natural body folds; outside mask = pure SD/orig.
-                    m = torso_mask[:, :, np.newaxis]
+                    # Fabric mask = torso_mask with the neck strip zeroed
+                    # out. The 'neck band' is the region from face_cutoff_y
+                    # down to clavicle (~80 px). A linear ramp 0->1 lets
+                    # the fabric fade in at the clavicle so there's no
+                    # hard edge.
+                    fabric_mask = torso_mask.copy()
+                    H_im = fabric_mask.shape[0]
+                    band_top = max(0, int(face_cutoff_y))
+                    band_bot = min(H_im, band_top + 80)
+                    if band_bot > band_top:
+                        ramp = np.linspace(0, 1, band_bot - band_top,
+                                           dtype=np.float32)
+                        fabric_mask[band_top:band_bot] = \
+                            fabric_mask[band_top:band_bot] * ramp[:, None]
+                        fabric_mask[:band_top] = 0
+                    m = fabric_mask[:, :, np.newaxis]
                     mixed = (0.80 * out_rgb + 0.20 * r_arr.astype(np.float32)) * m \
                             + r_arr.astype(np.float32) * (1.0 - m)
                     result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
