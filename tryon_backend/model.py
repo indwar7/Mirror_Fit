@@ -1340,19 +1340,18 @@ class TryOnModel:
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
                 rect_right = min(w, cx2 + half_w)
-                # Per-garment collar geometry on the top edge. Notch
-                # depths bumped UP because the 31px Gaussian below
-                # softens them — shallower notches were dissolving into
-                # a flat horizontal line.
+                # Per-garment collar — deeper / wider notches for clearer
+                # neckline definition (user: "make the collar more clear
+                # and defined").
                 if gtype == "tshirt":
-                    neck_dip  = int(fh2 * 0.55)
-                    neck_half = int(fw2 * 0.65)
+                    neck_dip  = int(fh2 * 0.70)
+                    neck_half = int(fw2 * 0.75)
                 elif gtype == "shirt":
-                    neck_dip  = int(fh2 * 0.40)
-                    neck_half = int(fw2 * 0.45)
+                    neck_dip  = int(fh2 * 0.55)
+                    neck_half = int(fw2 * 0.55)
                 else:  # jacket
-                    neck_dip  = int(fh2 * 0.20)
-                    neck_half = int(fw2 * 0.35)
+                    neck_dip  = int(fh2 * 0.30)
+                    neck_half = int(fw2 * 0.40)
                 neck_l = max(0, cx2 - neck_half)
                 neck_r = min(w, cx2 + neck_half)
                 poly = np.array(
@@ -1479,18 +1478,29 @@ class TryOnModel:
             bgd_model = np.zeros((1, 65), np.float64)
             fgd_model = np.zeros((1, 65), np.float64)
             cv2.grabCut(small_rgb, gc_mask, None, bgd_model, fgd_model,
-                        iterCount=1, mode=cv2.GC_INIT_WITH_MASK)
+                        iterCount=2, mode=cv2.GC_INIT_WITH_MASK)
             body = np.where(
                 (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
                 1.0, 0.0
             ).astype(np.float32)
             body = cv2.resize(body, (w, h), interpolation=cv2.INTER_LINEAR)
+            # Tight body silhouette: 3x3 dilation (was 9x9) so the
+            # painted garment hugs the body edge without extending into
+            # background. 9x9 was over-dilating and leaving a soft halo
+            # past the body — user: "stick to body no extra square".
             body = cv2.dilate(
                 body,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
                 iterations=1,
             )
-            body = cv2.GaussianBlur(body, (15, 15), 0).clip(0, 1)
+            body = cv2.GaussianBlur(body, (7, 7), 0).clip(0, 1)
+            # Temporal EMA on the body mask — body doesn't change shape
+            # per frame, so blending the previous body mask kills the
+            # 1-2 px GrabCut wobble that otherwise jiggles the garment.
+            if (getattr(self, "_prev_body_mask", None) is not None
+                    and self._prev_body_mask.shape == body.shape):
+                body = (0.6 * body + 0.4 * self._prev_body_mask).clip(0, 1)
+            self._prev_body_mask = body
             torso_mask = torso_mask * body
         except Exception as e:
             log.debug(f"grabcut body extraction skipped: {e}")
