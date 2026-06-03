@@ -661,6 +661,75 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
+    def set_fabric(self, fabric_image):
+        """Apply a fabric / design pattern onto the cached garment.
+
+        User uploads BOTH a garment shape (tshirt / shirt / jacket) AND
+        a fabric pattern. This method tiles the fabric inside the
+        garment's silhouette so the painted garment has that texture.
+        Passing None restores the original garment.
+        """
+        if not hasattr(self, "_garment_original") or self._garment_original is None:
+            log.warning("set_fabric: no garment uploaded yet")
+            return
+
+        if fabric_image is None:
+            self._garment_cache = self._garment_original
+            self._garment_color_name = self._dominant_color_name(
+                np.array(self._garment_original)
+            )
+        else:
+            # Prepare fabric: convert to RGB, resize to a tile that
+            # covers the garment image. Tile at ~1/3 the garment size
+            # so multiple repeats are visible (proper fabric look).
+            if fabric_image.mode == "RGBA":
+                bg = Image.new("RGB", fabric_image.size, (255, 255, 255))
+                bg.paste(fabric_image, mask=fabric_image.split()[3])
+                fabric_rgb = bg
+            else:
+                fabric_rgb = fabric_image.convert("RGB")
+            tile_size = LIVE_SIZE // 3
+            fabric_tile = fabric_rgb.resize((tile_size, tile_size), Image.LANCZOS)
+            # Build a full-size fabric texture by tiling.
+            fabric_full = Image.new("RGB", (LIVE_SIZE, LIVE_SIZE))
+            for y in range(0, LIVE_SIZE, tile_size):
+                for x in range(0, LIVE_SIZE, tile_size):
+                    fabric_full.paste(fabric_tile, (x, y))
+            fabric_arr  = np.array(fabric_full).astype(np.float32)
+            garment_arr = np.array(self._garment_original).astype(np.float32)
+            # Garment mask = anything that isn't the white padding bg
+            is_garment = ~((garment_arr[:, :, 0] > 240)
+                           & (garment_arr[:, :, 1] > 240)
+                           & (garment_arr[:, :, 2] > 240))
+            # Multiply-blend: fabric colour * garment luminance.
+            # Keeps the garment's shading / folds and overlays the
+            # fabric pattern as the surface texture.
+            lum = (garment_arr.mean(axis=2) / 255.0).clip(0.25, 1.0)
+            shaded = fabric_arr * lum[:, :, None]
+            out = garment_arr.copy()
+            out[is_garment] = (0.85 * shaded[is_garment]
+                               + 0.15 * garment_arr[is_garment]).clip(0, 255)
+            self._garment_cache = Image.fromarray(out.astype(np.uint8))
+            self._garment_color_name = self._dominant_color_name(
+                np.array(self._garment_cache)
+            )
+
+        # Re-encode IP-Adapter embeds with the new garment.
+        if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
+            try:
+                with torch.inference_mode():
+                    self._ip_embeds = self.pipeline.prepare_ip_adapter_image_embeds(
+                        ip_adapter_image=[self._garment_cache],
+                        ip_adapter_image_embeds=None,
+                        device=self.device,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                    )
+            except Exception as e:
+                log.warning(f"fabric: IP embed re-cache failed: {e}")
+                self._ip_embeds = None
+        log.info("Fabric applied — prompt colour=%s.", self._garment_color_name)
+
     def recolor_garment(self, color: str):
         """Recolour the cached garment to a hex colour while preserving
         the original shading / texture. Re-encodes IP-Adapter embeds and

@@ -931,6 +931,20 @@ body.landing-active .app { display: none !important; }
         </div>
       </div>
 
+      <!-- Step 2.1: Fabric / Design -->
+      <div class="card">
+        <div class="card-label">Step 2.1 · Fabric (optional)</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'fp','fph');setFabric(this)">
+          <img id="fp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="fph">🧵</span>
+          <span class="upload-hint" id="fph2">Upload fabric pattern / design</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearFabric()" style="font-size:11px;padding:6px;margin-top:6px;width:100%">
+          ✖ Remove fabric
+        </button>
+      </div>
+
       <!-- Step 2.5: Garment Type -->
       <div class="card">
         <div class="card-label">Step 2.5 · Type</div>
@@ -1765,6 +1779,31 @@ function selectGarmentType(type, btn) {
   // server immediately so the user sees the difference without
   // stopping and starting.
   _resendTryOnInit();
+}
+
+let toFabric = null;
+function setFabric(inp) {
+  toFabric = inp.files[0];
+  if (!toFabric) return;
+  const r = new FileReader();
+  r.onload = e => {
+    if (toWs && toWs.readyState === WebSocket.OPEN) {
+      toWs.send(JSON.stringify({
+        type: 'fabric',
+        fabric_image: e.target.result.split(',')[1],
+      }));
+    }
+  };
+  r.readAsDataURL(toFabric);
+}
+function clearFabric() {
+  toFabric = null;
+  document.querySelector('input[onchange*="setFabric"]').value = '';
+  document.getElementById('fp').style.display = 'none';
+  document.getElementById('fph').style.display = '';
+  if (toWs && toWs.readyState === WebSocket.OPEN) {
+    toWs.send(JSON.stringify({ type: 'fabric_clear' }));
+  }
 }
 
 let toGarmentColor = 'original';

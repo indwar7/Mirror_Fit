@@ -111,6 +111,20 @@ async def tryon_ws(ws: WebSocket):
                 tryon_model.reset_temporal()
                 await send({"type": "recolored", "color": color})
 
+            # ── Fabric: apply uploaded fabric pattern onto cached garment ────
+            elif kind == "fabric":
+                fabric_img = await run_in_thread(_decode_image_raw, msg["fabric_image"])
+                await run_in_thread(tryon_model.set_fabric, fabric_img)
+                tryon_model.reset_temporal()
+                await send({"type": "fabric_set"})
+                log.info("Fabric applied to garment.")
+
+            elif kind == "fabric_clear":
+                await run_in_thread(tryon_model.set_fabric, None)
+                tryon_model.reset_temporal()
+                await send({"type": "fabric_cleared"})
+                log.info("Fabric cleared, garment restored.")
+
             # ── Frame: camera frame → try-on result ───────────────────────────
             elif kind == "frame":
                 if garment_img is None:
