@@ -661,76 +661,32 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
-    _has_fabric = False
+    _fabric_overlay = None    # numpy RGB (LIVE_SIZE, LIVE_SIZE, 3) or None
 
     def set_fabric(self, fabric_image):
-        """Apply a fabric / design pattern onto the cached garment.
+        """Store a fabric pattern to overlay on top of the final SD result.
 
-        User uploads BOTH a garment shape (tshirt / shirt / jacket) AND
-        a fabric pattern. This method tiles the fabric inside the
-        garment's silhouette so the painted garment has that texture.
-        Passing None restores the original garment.
+        The garment (tshirt / shirt / jacket) is left COMPLETELY untouched
+        — the SD pipeline still produces the clean garment on the body
+        as before. Only the final composited result gets a multiply
+        overlay of the fabric pattern inside the torso mask. Result:
+        garment fit/shape stays correct, fabric design shows on top.
+
+        Passing None clears the overlay.
         """
-        if not hasattr(self, "_garment_original") or self._garment_original is None:
-            log.warning("set_fabric: no garment uploaded yet")
-            return
-
         if fabric_image is None:
-            self._garment_cache = self._garment_original
-            self._garment_color_name = self._dominant_color_name(
-                np.array(self._garment_original)
-            )
-            self._has_fabric = False
+            self._fabric_overlay = None
+            log.info("Fabric overlay cleared.")
+            return
+        if fabric_image.mode == "RGBA":
+            bg = Image.new("RGB", fabric_image.size, (255, 255, 255))
+            bg.paste(fabric_image, mask=fabric_image.split()[3])
+            fabric_rgb = bg
         else:
-            self._has_fabric = True
-            # Prepare fabric: convert to RGB, resize to a tile that
-            # covers the garment image. Tile at ~1/3 the garment size
-            # so multiple repeats are visible (proper fabric look).
-            if fabric_image.mode == "RGBA":
-                bg = Image.new("RGB", fabric_image.size, (255, 255, 255))
-                bg.paste(fabric_image, mask=fabric_image.split()[3])
-                fabric_rgb = bg
-            else:
-                fabric_rgb = fabric_image.convert("RGB")
-            # Single full-size paste — no tiling. Tiled (1/3) fabric
-            # created tight high-frequency repetition that SD denoise
-            # interpreted as noise and turned into psychedelic chaos.
-            # One clean paste = the pattern stays legible.
-            fabric_full = fabric_rgb.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
-            fabric_arr  = np.array(fabric_full).astype(np.float32)
-            garment_arr = np.array(self._garment_original).astype(np.float32)
-            # Garment mask = anything that isn't the white padding bg
-            is_garment = ~((garment_arr[:, :, 0] > 240)
-                           & (garment_arr[:, :, 1] > 240)
-                           & (garment_arr[:, :, 2] > 240))
-            # Multiply-blend: fabric colour * garment luminance.
-            # Keeps the garment's shading / folds and overlays the
-            # fabric pattern as the surface texture.
-            lum = (garment_arr.mean(axis=2) / 255.0).clip(0.25, 1.0)
-            shaded = fabric_arr * lum[:, :, None]
-            out = garment_arr.copy()
-            out[is_garment] = (0.85 * shaded[is_garment]
-                               + 0.15 * garment_arr[is_garment]).clip(0, 255)
-            self._garment_cache = Image.fromarray(out.astype(np.uint8))
-            self._garment_color_name = self._dominant_color_name(
-                np.array(self._garment_cache)
-            )
-
-        # Re-encode IP-Adapter embeds with the new garment.
-        if self._ip_loaded and hasattr(self.pipeline, "prepare_ip_adapter_image_embeds"):
-            try:
-                with torch.inference_mode():
-                    self._ip_embeds = self.pipeline.prepare_ip_adapter_image_embeds(
-                        ip_adapter_image=[self._garment_cache],
-                        ip_adapter_image_embeds=None,
-                        device=self.device,
-                        num_images_per_prompt=1,
-                        do_classifier_free_guidance=True,
-                    )
-            except Exception as e:
-                log.warning(f"fabric: IP embed re-cache failed: {e}")
-                self._ip_embeds = None
-        log.info("Fabric applied — prompt colour=%s.", self._garment_color_name)
+            fabric_rgb = fabric_image.convert("RGB")
+        fabric_full = fabric_rgb.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
+        self._fabric_overlay = np.array(fabric_full).astype(np.float32)
+        log.info("Fabric overlay stored — will composite over SD result.")
 
     def recolor_garment(self, color: str):
         """Recolour the cached garment to a hex colour while preserving
@@ -809,7 +765,7 @@ class TryOnModel:
         garment_sq = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         self._garment_cache    = garment_sq
         self._garment_original = garment_sq   # for recolor_garment()
-        self._has_fabric       = False        # reset on new garment upload
+        self._fabric_overlay   = None         # reset on new garment upload
         self._ip_embeds        = None
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
@@ -1626,35 +1582,18 @@ class TryOnModel:
             # cheapest fix for the brown-drift we were seeing.
             try:
                 g_arr = np.array(garment.convert("RGB"))
-                if getattr(self, "_has_fabric", False):
-                    # FABRIC PRESENT: prefill the masked area with the actual
-                    # garment image (with fabric pattern) resized to torso
-                    # area. SD denoises from the fabric texture so the
-                    # pattern survives the diffusion. Flat-colour prefill
-                    # erased the pattern → user: "fabric isn't blending".
-                    g_h, g_w = g_arr.shape[:2]
-                    target_h, target_w = orig_arr.shape[:2]
-                    fabric_layer = cv2.resize(g_arr, (target_w, target_h),
-                                              interpolation=cv2.INTER_LINEAR)
-                    m = torso_mask[:, :, np.newaxis]
-                    anchor = (
-                        fabric_layer.astype(np.float32) * m
-                        + orig_arr.astype(np.float32) * (1.0 - m)
-                    ).astype(np.uint8)
-                else:
-                    # No fabric: mean-colour prefill (original behaviour).
-                    gh, gw = g_arr.shape[:2]
-                    cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
-                    cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
-                    centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
-                    mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
-                    seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
-                    seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
-                    m = torso_mask[:, :, np.newaxis]
-                    anchor = (
-                        seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
-                        + orig_arr.astype(np.float32) * (1.0 - m)
-                    ).astype(np.uint8)
+                gh, gw = g_arr.shape[:2]
+                cx0, cx1 = int(gw * 0.30), int(gw * 0.70)
+                cy0, cy1 = int(gh * 0.30), int(gh * 0.70)
+                centre = g_arr[cy0:cy1, cx0:cx1].reshape(-1, 3).astype(np.float32)
+                mk = (centre.max(axis=1) < 245) & (centre.min(axis=1) > 8)
+                seed_rgb = centre[mk].mean(axis=0) if mk.any() else centre.mean(axis=0)
+                seed_rgb = np.clip(seed_rgb, 0, 255).astype(np.uint8)
+                m = torso_mask[:, :, np.newaxis]
+                anchor = (
+                    seed_rgb[np.newaxis, np.newaxis, :].astype(np.float32) * m
+                    + orig_arr.astype(np.float32) * (1.0 - m)
+                ).astype(np.uint8)
                 person = Image.fromarray(anchor)
             except Exception as e:
                 log.debug(f"colour anchor prefill failed (using raw frame): {e}")
@@ -1668,38 +1607,20 @@ class TryOnModel:
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
             color = self._garment_color_name or "matching"
-            if getattr(self, "_has_fabric", False):
-                # Fabric uploaded — prompt must NOT lock to a solid colour,
-                # and must explicitly invite a pattern/print so SD doesn't
-                # smooth the fabric texture out during denoising.
-                prompt = (
-                    "photo of a person wearing a fitted patterned fabric shirt, "
-                    "rich fabric print, detailed textile pattern, intricate design, "
-                    "the shirt fits naturally on the body, visible collar around the neck, "
-                    "long sleeves following the arms down to the wrists, "
-                    "realistic fabric folds, sharp focus, photorealistic"
-                )
-                neg = (
-                    "plain solid colour, flat colour, blank shirt, "
-                    "bare arms, tank top, sleeveless, naked, "
-                    "floating clothes, shirt on background, shirt outline, "
-                    "deformed body, extra limbs, blurry, low quality, painting, cartoon"
-                )
-            else:
-                prompt = (
-                    f"photo of a person wearing a fitted {color} button-up shirt, "
-                    f"solid {color} fabric, neutral {color} colour, "
-                    f"the shirt fits naturally on the body, visible collar around the neck, "
-                    f"long sleeves following the arms down to the wrists, "
-                    f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
-                )
-                neg = (
-                    "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
-                    "saturated, oversaturated, tinted, faded, washed out, "
-                    "bare arms, t-shirt, tank top, sleeveless, naked, "
-                    "floating clothes, shirt on background, shirt outline, "
-                    "deformed body, extra limbs, blurry, low quality, painting, cartoon"
-                )
+            prompt = (
+                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"solid {color} fabric, neutral {color} colour, "
+                f"the shirt fits naturally on the body, visible collar around the neck, "
+                f"long sleeves following the arms down to the wrists, "
+                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
+            )
+            neg = (
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
+                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "floating clothes, shirt on background, shirt outline, "
+                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
+            )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
             # and is what finally beats the brown-drift problem. The
@@ -1714,37 +1635,45 @@ class TryOnModel:
             # user's working May 26 demo state. Bumping to 6/4.0 with
             # IP scale 1.5 produced over-conditioning + rainbow-output
             # corruption. Reverted to known good.
-            # Fabric mode: very light SD touch so the prefilled fabric
-            # pattern survives almost untouched. The 4-step / CFG 2.5
-            # combo (good for solid colours) was over-denoising the
-            # fabric pattern into chaotic noise (user screenshot).
-            steps_v = 2 if getattr(self, "_has_fabric", False) else 4
-            cfg_v   = 1.5 if getattr(self, "_has_fabric", False) else 2.5
             with torch.inference_mode():
                 result = self.pipeline(
                     prompt=prompt,
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    num_inference_steps=steps_v,
-                    guidance_scale=cfg_v,
+                    num_inference_steps=4,
+                    guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
-            # Fabric mode: blend the prefilled fabric back into the SD
-            # output at 60% so the pattern stays sharp even if SD added
-            # smoothing. The 40% SD contribution carries body folds /
-            # shading. Only inside the torso mask.
-            if getattr(self, "_has_fabric", False):
+
+            # ── Fabric overlay (post-SD) ─────────────────────────────────
+            # Multiply-blend the uploaded fabric pattern onto the SD
+            # result inside the torso mask only. This keeps the garment
+            # shape / fit / collar produced by SD, and just adds the
+            # fabric design as a surface texture on top.
+            if self._fabric_overlay is not None:
                 try:
                     r_arr = np.array(result).astype(np.float32)
-                    p_arr = np.array(person).astype(np.float32)
-                    if r_arr.shape == p_arr.shape:
-                        m = torso_mask[:, :, np.newaxis]
-                        mixed = (0.60 * p_arr + 0.40 * r_arr) * m + r_arr * (1.0 - m)
-                        result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
+                    if self._fabric_overlay.shape == r_arr.shape:
+                        f_arr = self._fabric_overlay
+                    else:
+                        f_arr = cv2.resize(
+                            self._fabric_overlay,
+                            (r_arr.shape[1], r_arr.shape[0]),
+                            interpolation=cv2.INTER_LINEAR,
+                        )
+                    # Multiply blend keeps SD's shading (folds, shadows)
+                    # and tints with the fabric colour/pattern.
+                    multiplied = (r_arr * f_arr / 255.0).clip(0, 255)
+                    # 70% multiplied, 30% original SD — pattern strong but
+                    # garment body folds still visible.
+                    overlaid = (0.70 * multiplied + 0.30 * r_arr)
+                    m = torso_mask[:, :, np.newaxis]
+                    mixed = overlaid * m + r_arr * (1.0 - m)
+                    result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
                 except Exception as e:
-                    log.debug(f"fabric post-blend skipped: {e}")
+                    log.debug(f"fabric overlay skipped: {e}")
 
             # ── Composite result back onto original via body silhouette ──────
             # SD output can bleed slightly past the mask edge. We blend the
