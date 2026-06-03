@@ -95,11 +95,20 @@ async def tryon_ws(ws: WebSocket):
 
                 # Cache resized garment + type on model — avoids resize every frame
                 await run_in_thread(tryon_model.set_garment, garment_img, garment_type)
+
+                # Optional fabric / design pattern in same init message.
+                fabric_b64 = msg.get("fabric_image")
+                if fabric_b64:
+                    fabric_img = await run_in_thread(_decode_image_raw, fabric_b64)
+                    await run_in_thread(tryon_model.set_fabric, fabric_img)
+                    log.info("Fabric applied in init.")
+
                 # Reset temporal state for new session
                 tryon_model.reset_temporal()
 
                 await send({"type": "ready"})
-                log.info("Garment set (type=%s).", garment_type)
+                log.info("Garment set (type=%s, fabric=%s).",
+                         garment_type, bool(fabric_b64))
 
             # ── Fabric: apply uploaded fabric pattern onto cached garment ────
             elif kind == "fabric":

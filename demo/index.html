@@ -1754,23 +1754,24 @@ function selectGarmentType(type, btn) {
   _resendTryOnInit();
 }
 
-let toFabric = null;
+let toFabric = null;          // File object
+let toFabricB64 = null;       // Cached base64 — survives across WS reconnects
 function setFabric(inp) {
   toFabric = inp.files[0];
   if (!toFabric) return;
   const r = new FileReader();
   r.onload = e => {
+    toFabricB64 = e.target.result.split(',')[1];
+    // If session already running, push fabric live.
     if (toWs && toWs.readyState === WebSocket.OPEN) {
-      toWs.send(JSON.stringify({
-        type: 'fabric',
-        fabric_image: e.target.result.split(',')[1],
-      }));
+      toWs.send(JSON.stringify({ type: 'fabric', fabric_image: toFabricB64 }));
     }
   };
   r.readAsDataURL(toFabric);
 }
 function clearFabric() {
-  toFabric = null;
+  toFabric    = null;
+  toFabricB64 = null;
   document.querySelector('input[onchange*="setFabric"]').value = '';
   document.getElementById('fp').style.display = 'none';
   document.getElementById('fph').style.display = '';
@@ -1782,11 +1783,14 @@ function clearFabric() {
 function _resendTryOnInit() {
   if (!(toWs && toWs.readyState === WebSocket.OPEN && toGarment)) return;
   const r = new FileReader();
-  r.onload = e => toWs.send(JSON.stringify({
-    type: 'init',
-    garment_image: e.target.result.split(',')[1],
-    garment_type:  toGarmentType,
-  }));
+  r.onload = e => {
+    toWs.send(JSON.stringify({
+      type: 'init',
+      garment_image: e.target.result.split(',')[1],
+      garment_type:  toGarmentType,
+      fabric_image:  toFabricB64,   // include fabric in init if uploaded
+    }));
+  };
   r.readAsDataURL(toGarment);
 }
 async function startTryOnCamera() {
@@ -1816,6 +1820,7 @@ function startTryOn() {
       type: 'init',
       garment_image: e.target.result.split(',')[1],
       garment_type:  toGarmentType,
+      fabric_image:  toFabricB64,    // include fabric so it's applied at session start
     }));
     r.readAsDataURL(toGarment);
     document.getElementById('tryonBtn').textContent='⏹ Stop';
