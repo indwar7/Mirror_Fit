@@ -92,24 +92,14 @@ async def tryon_ws(ws: WebSocket):
                 # Garment type from UI ("tshirt" / "shirt" / "jacket"). Lets the
                 # SD prompt describe the actual garment shape SD should generate.
                 garment_type = msg.get("garment_type") or "tshirt"
-                color        = msg.get("color") or "original"
 
                 # Cache resized garment + type on model — avoids resize every frame
                 await run_in_thread(tryon_model.set_garment, garment_img, garment_type)
-                if color and color != "original":
-                    await run_in_thread(tryon_model.recolor_garment, color)
                 # Reset temporal state for new session
                 tryon_model.reset_temporal()
 
                 await send({"type": "ready"})
-                log.info("Garment set (type=%s, color=%s).", garment_type, color)
-
-            # ── Recolour: live garment colour change ─────────────────────────
-            elif kind == "recolor":
-                color = msg.get("color") or "original"
-                await run_in_thread(tryon_model.recolor_garment, color)
-                tryon_model.reset_temporal()
-                await send({"type": "recolored", "color": color})
+                log.info("Garment set (type=%s).", garment_type)
 
             # ── Fabric: apply uploaded fabric pattern onto cached garment ────
             elif kind == "fabric":

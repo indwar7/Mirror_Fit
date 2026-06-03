@@ -964,33 +964,6 @@ body.landing-active .app { display: none !important; }
         </div>
       </div>
 
-      <!-- Step 2.6: Colour Palette -->
-      <div class="card">
-        <div class="card-label">Step 2.6 · Colour</div>
-        <div id="colorPalette" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between">
-          <div class="color-swatch active" data-color="original" title="Original"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red);border:2px solid #a855f7"
-               onclick="selectColor('original', this)"></div>
-          <div class="color-swatch" data-color="#000000" title="Black"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#000;border:2px solid transparent"
-               onclick="selectColor('#000000', this)"></div>
-          <div class="color-swatch" data-color="#ffffff" title="White"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#fff;border:2px solid #444"
-               onclick="selectColor('#ffffff', this)"></div>
-          <div class="color-swatch" data-color="#e11d48" title="Red"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#e11d48;border:2px solid transparent"
-               onclick="selectColor('#e11d48', this)"></div>
-          <div class="color-swatch" data-color="#1d4ed8" title="Blue"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#1d4ed8;border:2px solid transparent"
-               onclick="selectColor('#1d4ed8', this)"></div>
-          <div class="color-swatch" data-color="#16a34a" title="Green"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#16a34a;border:2px solid transparent"
-               onclick="selectColor('#16a34a', this)"></div>
-          <div class="color-swatch" data-color="#a855f7" title="Purple"
-               style="width:32px;height:32px;border-radius:50%;cursor:pointer;background:#a855f7;border:2px solid transparent"
-               onclick="selectColor('#a855f7', this)"></div>
-        </div>
-      </div>
 
       <!-- Step 3: Start (sticky) -->
       <div class="sticky-action">
@@ -1806,18 +1779,6 @@ function clearFabric() {
   }
 }
 
-let toGarmentColor = 'original';
-function selectColor(color, el) {
-  toGarmentColor = color;
-  document.querySelectorAll('#colorPalette .color-swatch').forEach(s => {
-    s.style.borderColor = (s === el) ? '#a855f7' : (s.dataset.color === '#ffffff' ? '#444' : 'transparent');
-  });
-  // Live push the recolour message to the server.
-  if (toWs && toWs.readyState === WebSocket.OPEN) {
-    toWs.send(JSON.stringify({ type: 'recolor', color: toGarmentColor }));
-  }
-}
-
 function _resendTryOnInit() {
   if (!(toWs && toWs.readyState === WebSocket.OPEN && toGarment)) return;
   const r = new FileReader();
@@ -1825,7 +1786,6 @@ function _resendTryOnInit() {
     type: 'init',
     garment_image: e.target.result.split(',')[1],
     garment_type:  toGarmentType,
-    color:         toGarmentColor,
   }));
   r.readAsDataURL(toGarment);
 }
