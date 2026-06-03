@@ -1648,29 +1648,35 @@ class TryOnModel:
                 ).images[0]
 
             # ── Fabric overlay (post-SD) ─────────────────────────────────
-            # Multiply-blend the uploaded fabric pattern onto the SD
-            # result inside the torso mask only. This keeps the garment
-            # shape / fit / collar produced by SD, and just adds the
-            # fabric design as a surface texture on top.
+            # HSV composite: take FABRIC's hue + saturation (the colour /
+            # pattern) and SD result's value (the body folds / shading).
+            # Multiply-blend was distorting fabric colour (red fabric on
+            # teal garment came out green). HSV-from-fabric keeps the
+            # fabric's true colour while SD's lighting is preserved.
             if self._fabric_overlay is not None:
                 try:
-                    r_arr = np.array(result).astype(np.float32)
+                    r_arr = np.array(result).astype(np.uint8)
                     if self._fabric_overlay.shape == r_arr.shape:
-                        f_arr = self._fabric_overlay
+                        f_arr = self._fabric_overlay.astype(np.uint8)
                     else:
                         f_arr = cv2.resize(
                             self._fabric_overlay,
                             (r_arr.shape[1], r_arr.shape[0]),
                             interpolation=cv2.INTER_LINEAR,
-                        )
-                    # Multiply blend keeps SD's shading (folds, shadows)
-                    # and tints with the fabric colour/pattern.
-                    multiplied = (r_arr * f_arr / 255.0).clip(0, 255)
-                    # 70% multiplied, 30% original SD — pattern strong but
-                    # garment body folds still visible.
-                    overlaid = (0.70 * multiplied + 0.30 * r_arr)
+                        ).astype(np.uint8)
+                    r_hsv = cv2.cvtColor(r_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    f_hsv = cv2.cvtColor(f_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    # H + S from fabric, V from SD (keeps SD's shading).
+                    out_hsv = r_hsv.copy()
+                    out_hsv[:, :, 0] = f_hsv[:, :, 0]
+                    out_hsv[:, :, 1] = f_hsv[:, :, 1]
+                    out_rgb = cv2.cvtColor(out_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+                    # Blend 80% fabric-coloured / 20% raw SD inside mask
+                    # so a touch of garment colour comes through for
+                    # natural body folds; outside mask = pure SD/orig.
                     m = torso_mask[:, :, np.newaxis]
-                    mixed = overlaid * m + r_arr * (1.0 - m)
+                    mixed = (0.80 * out_rgb + 0.20 * r_arr.astype(np.float32)) * m \
+                            + r_arr.astype(np.float32) * (1.0 - m)
                     result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
                 except Exception as e:
                     log.debug(f"fabric overlay skipped: {e}")
