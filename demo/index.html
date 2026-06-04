@@ -1141,39 +1141,12 @@ const TRYON_WS = 'ws://13.203.194.128:8000/ws/tryon';
 // independent UI so operator can demo either without touching the other.
 const SWAP_WS_V1      = 'ws://13.203.194.128:7860/ws/live-swap';
 const SWAP_WS_V2      = 'ws://13.203.194.128:7860/ws/live-swap-v2';
-const LIVEPORTRAIT_WS = 'ws://13.203.194.128:7862/ws/liveportrait-swap';
-
-// AI-category avatars (Pixar / Snapchat-style cartoons) silently route to
-// the LivePortrait engine instead of inswapper. Inswapper is photoreal-only
-// and cannot transfer identity from a cartoon source — LivePortrait does
-// motion transfer, which produces the "avatar's face moves with you" effect
-// the user actually wants when they pick an AI avatar.
-function isAiAvatarSelected() {
-  if (!_selectedAvatar || !_allAvatars) return false;
-  const av = _allAvatars.find(a => a.id === _selectedAvatar);
-  return !!(av && av.category === 'AI');
-}
-
+// Read the engine radio at connect time; default V1 if nothing selected.
 function selectedSwapWs() {
-  if (isAiAvatarSelected()) return LIVEPORTRAIT_WS;
   const el = document.querySelector('input[name="swapEngine"]:checked');
   return el && el.value === 'v2' ? SWAP_WS_V2 : SWAP_WS_V1;
 }
-
-// LivePortrait expects `source_image` as base64 — it does not accept
-// avatar_id. Fetch the avatar JPG from the backend and base64-encode so we
-// can ship the same image either way.
-async function fetchAvatarBase64(avatar_id) {
-  const resp = await fetch(`${FACE_API}/avatars/${avatar_id}/image`);
-  if (!resp.ok) throw new Error('avatar fetch failed: ' + resp.status);
-  const blob = await resp.blob();
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result).split(',')[1]);
-    reader.onerror   = reject;
-    reader.readAsDataURL(blob);
-  });
-}
+const LIVEPORTRAIT_WS = 'ws://13.203.194.128:7862/ws/liveportrait-swap';
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
@@ -1584,43 +1557,16 @@ async function startLiveCamera() {
   } catch(e) { alert('Camera error: '+e.message); }
 }
 function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
-async function startLiveSwap() {
+function startLiveSwap() {
   if (!liveSource) { setStatus('liveStatus','error','Select a face first'); return; }
   liveLatestResult=null;
-  // Decide which backend BEFORE opening the socket (selectedSwapWs reads
-  // the current avatar selection). AI category → LivePortrait route, which
-  // needs the avatar bytes as base64 because it has no avatar_id catalogue.
-  const _wsUrl   = selectedSwapWs();
-  const _routeLp = (_wsUrl === LIVEPORTRAIT_WS);
-
-  // For the LP route, fetch the avatar JPG now so we can include it in the
-  // init message. For the regular face-swap route we keep sending avatar_id
-  // (server-side cache lookup is faster than re-uploading bytes per session).
-  let _initSrcImage = null;
-  if (_routeLp && liveSource && liveSource.avatar_id) {
-    try {
-      _initSrcImage = await fetchAvatarBase64(liveSource.avatar_id);
-    } catch (e) {
-      setStatus('liveStatus','error','Could not load AI avatar image: ' + e.message);
-      return;
-    }
-  }
-
-  liveWs = new WebSocket(_wsUrl);
+  liveWs = new WebSocket(selectedSwapWs());
   liveWs.onopen = () => {
     setDot('ls',true);
     const baseInit = { type:'init', session_id: LUCY_SESSION_ID };
-    let initMsg;
-    if (_routeLp) {
-      // LivePortrait protocol — always wants raw base64 source_image.
-      initMsg = Object.assign(baseInit, {
-        source_image: _initSrcImage || (liveSource && liveSource.split ? liveSource.split(',')[1] : liveSource),
-      });
-    } else if (liveSource && liveSource.avatar_id) {
-      initMsg = Object.assign(baseInit, { avatar_id: liveSource.avatar_id });
-    } else {
-      initMsg = Object.assign(baseInit, { source_image: liveSource });
-    }
+    const initMsg = (liveSource&&liveSource.avatar_id)
+      ? Object.assign(baseInit, { avatar_id: liveSource.avatar_id })
+      : Object.assign(baseInit, { source_image: liveSource });
     liveWs.send(JSON.stringify(initMsg));
     document.getElementById('liveSwapBtn').textContent='⏹ Stop';
     document.getElementById('liveSwapBtn').className='btn btn-stop';
