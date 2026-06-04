@@ -210,10 +210,11 @@ class LivePortraitEngine:
         # is computed from a properly aligned face — otherwise downstream
         # expression deltas are noise. last_bbox is also updated here (with
         # EMA blend) and used by the fast path on subsequent frames.
-        # Detection runs every 30th frame (~2.4s @ 12.5 FPS) to cap the
-        # numpy buffer churn — the cropper allocates a 512x512x3 float32
-        # per call and the CPU fallback path leaks pressure into system RAM.
-        if sess["frame_n"] % 30 == 1 or sess["last_bbox"] is None:
+        # Detect every 10 frames — rarer than this and the face position
+        # drifts off-center between detections, feeding the motion extractor
+        # a misaligned crop and producing noisy expression coefficients.
+        # OOM is handled by the MemoryError branch below.
+        if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
                 driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
                 out = self.cropper.crop_driving_video([driving_rgb])
@@ -295,17 +296,12 @@ class LivePortraitEngine:
         # movement on the rendered portrait. Eyes / lips / mouth still animate
         # because delta_exp is independent of pose.
         R_new = sess["R_s"]
-        # Near-pass-through EMA on the raw expression delta. alpha=0.85
-        # arrives at 85% on frame 1, 98% on frame 2 — fast blinks and lip
-        # closures retain their full amplitude. Only single-frame landmark
-        # outliers get knocked down. Amp 1.25 is the sweet spot between
-        # cartoony (1.6) and under-read (1.15).
-        raw_delta = x_d_info["exp"] - x_d_0["exp"]
-        if sess["exp_smooth"] is None:
-            sess["exp_smooth"] = raw_delta.clone()
-        else:
-            sess["exp_smooth"] = 0.85 * raw_delta + 0.15 * sess["exp_smooth"]
-        delta_exp = 1.25 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
+        # Direct pass-through of the expression delta — no EMA. With head
+        # pose locked there's no zoom pulse to filter, and EMA was muting
+        # the very thing the user wants: fast eye/lip movement at full
+        # amplitude. Amp 1.35 sits between under-read (1.15) and cartoony
+        # (1.6), giving clearer muscle articulation.
+        delta_exp = 1.35 * (x_d_info["exp"] - x_d_0["exp"]) + sess["x_s_info"]["exp"]
         scale_new = sess["x_s_info"]["scale"]
         t_new = sess["x_s_info"]["t"].clone()
         t_new[..., 2] = 0
