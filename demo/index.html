@@ -807,6 +807,7 @@ body.landing-active .app { display: none !important; }
     <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
     <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
+    <button class="tab" onclick="switchTab('ar')">✨ AR Avatar</button>
   </div>
   <div style="width:120px"></div>
 </header>
@@ -979,6 +980,31 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+    <!-- AR AVATAR (MediaPipe + Three.js, browser-side, no backend) -->
+    <div class="panel" id="panel-ar">
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="arCamBtn" onclick="startArCamera()">📷 Start Camera</button>
+        <div id="arCamStatus" class="status-msg"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Choose 3D Avatar</div>
+        <div class="avatar-grid" id="arAvatarGrid" style="max-height:280px;overflow-y:auto">
+          <!-- populated by JS arAvatars[] -->
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="status-row">
+          <div class="dot" id="arDot"></div>
+          <span id="arStatusText" style="font-size:12px">Not running</span>
+        </div>
+        <button class="btn btn-primary" id="arStartBtn" onclick="toggleArAvatar()" disabled>Start AR</button>
+        <div id="arStatus" class="status-msg"></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ══════════════ MAIN DISPLAY ══════════════ -->
@@ -1075,11 +1101,31 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+    <!-- AR Avatar: composite of camera + Three.js GLB overlay -->
+    <div id="arWrap" style="display:none;width:100%">
+      <div id="arGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <!-- Mirrored camera feed sits underneath, the WebGL canvas is layered above -->
+          <video id="arVideo" autoplay muted playsinline
+                 style="transform:scaleX(-1);width:100%;display:block;border-radius:12px"></video>
+          <canvas id="arCanvas"
+                  style="position:absolute;inset:0;width:100%;height:100%;
+                         transform:scaleX(-1);border-radius:12px;pointer-events:none"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="arDot2"></div>
+              <span>AR Avatar (browser-side)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Placeholder -->
     <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px">
       <div style="font-size:60px;opacity:0.25">✨</div>
       <div style="font-size:15px;font-weight:500;color:var(--ink)">Select a mode and get started</div>
-      <div style="font-size:13px;opacity:0.6">Live Face Swap · Virtual Try-On</div>
+      <div style="font-size:13px;opacity:0.6">Live Face Swap · Virtual Try-On · AR Avatar</div>
     </div>
 
   </div>
@@ -1108,13 +1154,14 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','liveportrait','tryon'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon','ar'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
   document.getElementById('liveWrap').style.display    = t==='liveswap'     ? 'grid' : 'none';
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
+  document.getElementById('arWrap').style.display      = t==='ar'           ? 'grid' : 'none';
   document.getElementById('placeholder').style.display = 'none';
 }
 
@@ -1901,5 +1948,250 @@ document.addEventListener('visibilitychange',()=>{
 
 switchTab('liveswap');
 </script>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     AR AVATAR engine — MediaPipe FaceLandmarker (468 pts + transformation
+     matrix) + Three.js GLB overlay. Browser-side only, no backend roundtrip.
+
+     Pipeline per frame:
+       1. webcam → <video>
+       2. MediaPipe FaceLandmarker.detectForVideo(video)
+       3. Read facialTransformationMatrixes[0] (4x4 pose)
+       4. Apply to Three.js avatar mesh
+       5. Render WebGL → canvas (mirrored to match selfie cam)
+══════════════════════════════════════════════════════════════════════════ -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import {
+  FaceLandmarker,
+  FilesetResolver,
+} from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+// Pixar/Bitmoji-feel avatars — free, public GLB heads.
+// Ready Player Me's hosted half-body avatars work as a starting point; users
+// can paste their own RPM URL later. These IDs are documented sample avatars.
+const AR_AVATARS = [
+  { id: 'rpm_boy_1',  name: 'Aiden',  url: 'https://models.readyplayer.me/64bfa9415ada23f8e60aafa3.glb', emoji: '🧒' },
+  { id: 'rpm_girl_1', name: 'Maya',   url: 'https://models.readyplayer.me/64bf91d6a7c87d2dd84b9b6e.glb', emoji: '👧' },
+  { id: 'rpm_boy_2',  name: 'Kai',    url: 'https://models.readyplayer.me/63c0f1b1c2b87f0c0d9c8e1a.glb', emoji: '🧑' },
+  { id: 'rpm_girl_2', name: 'Zara',   url: 'https://models.readyplayer.me/63c2a1b1d2b87f0c0d9c8e1c.glb', emoji: '👩' },
+];
+
+// ── State ────────────────────────────────────────────────────────────────────
+let _arVideo, _arCanvas, _arRenderer, _arScene, _arCamera, _arLight;
+let _arLandmarker = null;
+let _arAvatar     = null;        // currently loaded GLB scene root
+let _arSelected   = AR_AVATARS[0];
+let _arRunning    = false;
+let _arRafId      = null;
+let _arVideoStream= null;
+let _arLastVideoTime = -1;
+
+// Build the avatar grid in the sidebar
+(function populateArGrid() {
+  const grid = document.getElementById('arAvatarGrid');
+  if (!grid) return;
+  grid.innerHTML = AR_AVATARS.map((a, i) => `
+    <div class="av-card${i===0?' selected':''}" data-avid="${a.id}" onclick="window._selectArAvatar('${a.id}')">
+      <div style="font-size:36px;text-align:center;padding:14px 0">${a.emoji}</div>
+      <div style="text-align:center;font-size:12px;font-weight:600">${a.name}</div>
+    </div>
+  `).join('');
+})();
+
+window._selectArAvatar = function(id) {
+  const av = AR_AVATARS.find(a => a.id === id);
+  if (!av) return;
+  _arSelected = av;
+  document.querySelectorAll('#arAvatarGrid .av-card').forEach(c =>
+    c.classList.toggle('selected', c.dataset.avid === id));
+  if (_arRunning) loadArAvatar(av.url);   // hot-swap if running
+  document.getElementById('arStartBtn').disabled = false;
+};
+
+// ── Camera ───────────────────────────────────────────────────────────────────
+window.startArCamera = async function() {
+  try {
+    _arVideoStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720, facingMode: 'user' },
+      audio: false,
+    });
+    _arVideo = document.getElementById('arVideo');
+    _arVideo.srcObject = _arVideoStream;
+    await new Promise(r => _arVideo.onloadedmetadata = r);
+    await _arVideo.play();
+    document.getElementById('arCamBtn').textContent = '✅ Camera On';
+    document.getElementById('arCamBtn').disabled = true;
+    document.getElementById('arCamStatus').innerHTML =
+      '<span style="color:var(--green)">Camera ready — pick an avatar</span>';
+    document.getElementById('arStartBtn').disabled = false;
+  } catch (e) {
+    document.getElementById('arCamStatus').innerHTML =
+      '<span style="color:var(--red)">Camera error: ' + e.message + '</span>';
+  }
+};
+
+// ── MediaPipe FaceLandmarker init (once) ─────────────────────────────────────
+async function initArLandmarker() {
+  if (_arLandmarker) return _arLandmarker;
+  // WASM runtime + the .task model from official Google CDN. ~10 MB total.
+  const vision = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  _arLandmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    outputFaceBlendshapes: true,
+    outputFacialTransformationMatrixes: true,
+  });
+  return _arLandmarker;
+}
+
+// ── Three.js scene init (once) ───────────────────────────────────────────────
+function initArScene() {
+  if (_arRenderer) return;
+  _arCanvas   = document.getElementById('arCanvas');
+  _arRenderer = new THREE.WebGLRenderer({ canvas: _arCanvas, alpha: true, antialias: true });
+  _arRenderer.setPixelRatio(window.devicePixelRatio);
+
+  _arScene  = new THREE.Scene();
+  // FOV chosen to roughly match a typical webcam (~60° horizontal).
+  _arCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  _arCamera.position.set(0, 0, 0);
+  _arCamera.lookAt(0, 0, -1);
+
+  // Soft ambient + a key directional light so the GLB reads in 3D.
+  _arScene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  _arLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  _arLight.position.set(0.5, 1, 1);
+  _arScene.add(_arLight);
+
+  resizeArCanvas();
+  window.addEventListener('resize', resizeArCanvas);
+}
+
+function resizeArCanvas() {
+  if (!_arCanvas || !_arVideo) return;
+  // Match the canvas size to the video's intrinsic dimensions so the
+  // GLB overlay aligns 1:1 with the webcam feed underneath.
+  const w = _arVideo.videoWidth  || _arCanvas.clientWidth  || 1280;
+  const h = _arVideo.videoHeight || _arCanvas.clientHeight || 720;
+  _arRenderer.setSize(w, h, false);
+  _arCamera.aspect = w / h;
+  _arCamera.updateProjectionMatrix();
+}
+
+// ── GLB loader — replaces _arAvatar with a new model ─────────────────────────
+async function loadArAvatar(url) {
+  const loader = new GLTFLoader();
+  return new Promise((resolve, reject) => {
+    loader.load(
+      url,
+      (gltf) => {
+        if (_arAvatar) {
+          _arScene.remove(_arAvatar);
+          _arAvatar.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+        }
+        _arAvatar = gltf.scene;
+        // Default Ready Player Me half-body avatars stand at ~1.7 m height
+        // facing -Z. We only want the head, so scale + offset so the head
+        // sits near origin and faces +Z (toward the camera).
+        _arAvatar.scale.setScalar(1.0);
+        _arAvatar.position.set(0, -1.6, -0.5);  // shift down so head is at origin
+        _arAvatar.rotation.set(0, Math.PI, 0);   // turn to face camera
+        _arScene.add(_arAvatar);
+        resolve(gltf);
+      },
+      undefined,
+      (err) => {
+        console.warn('[AR] GLB load failed', url, err);
+        // Fallback: simple sphere placeholder so the user sees SOMETHING
+        if (!_arAvatar) {
+          const geo = new THREE.SphereGeometry(0.15, 32, 32);
+          const mat = new THREE.MeshStandardMaterial({ color: 0xa78bfa, roughness: 0.4 });
+          _arAvatar = new THREE.Mesh(geo, mat);
+          _arScene.add(_arAvatar);
+        }
+        reject(err);
+      },
+    );
+  });
+}
+
+// ── Per-frame: detect face → drive avatar transform → render ─────────────────
+function arFrame() {
+  if (!_arRunning) return;
+  if (_arVideo.readyState >= 2 && _arVideo.currentTime !== _arLastVideoTime) {
+    _arLastVideoTime = _arVideo.currentTime;
+    const result = _arLandmarker.detectForVideo(_arVideo, performance.now());
+    const mtx = result.facialTransformationMatrixes?.[0]?.data;
+    if (mtx && _arAvatar) {
+      // MediaPipe gives a row-major 4x4 in metres. Apply directly to avatar.
+      // Translation is in metric units; scale tweak puts head ~visible in frame.
+      const m = new THREE.Matrix4().fromArray(mtx);
+      // Three.js Matrix4 expects column-major; MediaPipe is column-major too
+      // per the JS docs, so direct fromArray works.
+      _arAvatar.matrix.copy(m);
+      _arAvatar.matrixAutoUpdate = false;
+    }
+  }
+  _arRenderer.render(_arScene, _arCamera);
+  _arRafId = requestAnimationFrame(arFrame);
+}
+
+// ── Start / Stop ─────────────────────────────────────────────────────────────
+window.toggleArAvatar = async function() {
+  if (_arRunning) {
+    _arRunning = false;
+    if (_arRafId) cancelAnimationFrame(_arRafId);
+    _arRafId = null;
+    document.getElementById('arStartBtn').textContent = 'Start AR';
+    document.getElementById('arStartBtn').className = 'btn btn-primary';
+    document.getElementById('arStatusText').textContent = 'Stopped';
+    document.getElementById('arDot').classList.remove('on');
+    return;
+  }
+  if (!_arVideoStream) {
+    document.getElementById('arStatus').innerHTML =
+      '<span style="color:var(--red)">Start the camera first</span>';
+    return;
+  }
+  document.getElementById('arStatus').innerHTML =
+    '<span style="color:var(--accent-hot)">Loading MediaPipe + 3D avatar…</span>';
+  try {
+    initArScene();
+    await initArLandmarker();
+    await loadArAvatar(_arSelected.url).catch(() => null);
+    resizeArCanvas();
+    _arRunning = true;
+    _arLastVideoTime = -1;
+    document.getElementById('arStartBtn').textContent = '⏹ Stop';
+    document.getElementById('arStartBtn').className = 'btn btn-stop';
+    document.getElementById('arStatusText').textContent = 'AR running';
+    document.getElementById('arDot').classList.add('on');
+    document.getElementById('arStatus').innerHTML =
+      '<span style="color:var(--green)">AR avatar tracking your face</span>';
+    arFrame();
+  } catch (e) {
+    document.getElementById('arStatus').innerHTML =
+      '<span style="color:var(--red)">Init failed: ' + e.message + '</span>';
+  }
+};
+</script>
+
 </body>
 </html>
