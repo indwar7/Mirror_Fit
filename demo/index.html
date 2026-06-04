@@ -808,6 +808,7 @@ body.landing-active .app { display: none !important; }
     <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
     <button class="tab" onclick="switchTab('ar')">✨ AR Avatar</button>
+    <button class="tab" onclick="switchTab('twin')">🎬 AI Twin</button>
   </div>
   <div style="width:120px"></div>
 </header>
@@ -1005,6 +1006,59 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+    <!-- AI TWIN — SadTalker backend (port 7863), offline talking-head generation -->
+    <div class="panel" id="panel-twin">
+      <div class="card">
+        <div class="card-label">Step 1 · Portrait Image</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" id="twinImgInput"
+                 onchange="twinPreviewImg(this)">
+          <img id="twinImgPreview" style="display:none;max-height:120px;border-radius:8px">
+          <span class="upload-icon" id="twinImgPh">🖼️</span>
+          <span class="upload-hint">Upload a clear face photo (jpg / png)</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Driving Audio</div>
+        <div class="upload-zone">
+          <input type="file" accept="audio/*" id="twinAudioInput"
+                 onchange="twinPreviewAudio(this)">
+          <audio id="twinAudioPreview" controls style="display:none;width:100%;margin-top:6px"></audio>
+          <span class="upload-icon" id="twinAudPh">🎙️</span>
+          <span class="upload-hint">Upload a wav / mp3 of the voice (≤ 20 s)</span>
+        </div>
+        <button class="btn btn-ghost" id="twinRecBtn" onclick="twinToggleRecord()"
+                style="margin-top:8px;font-size:12px">🎤 Or record from mic</button>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 3 · Quality</div>
+        <div style="display:flex;gap:6px;font-size:12px">
+          <label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="twinSize" value="256"> 256 px · fast
+          </label>
+          <label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="twinSize" value="512" checked> 512 px · sharp
+          </label>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="twinEnhancer" checked> GFPGAN face enhancer
+        </label>
+      </div>
+
+      <div class="card">
+        <div class="status-row">
+          <div class="dot" id="twinDot"></div>
+          <span id="twinStatusText" style="font-size:12px">Idle</span>
+        </div>
+        <button class="btn btn-primary" id="twinGenBtn" onclick="twinGenerate()" disabled>
+          Generate Talking Avatar
+        </button>
+        <div id="twinStatus" class="status-msg"></div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ══════════════ MAIN DISPLAY ══════════════ -->
@@ -1121,6 +1175,40 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+    <!-- AI TWIN — result video player -->
+    <div id="twinWrap" style="display:none;width:100%">
+      <div id="twinGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:900px">
+        <div class="canvas-wrap" style="max-width:100%;position:relative;background:#0a0a14;
+                                         border-radius:12px;min-height:300px;display:flex;
+                                         align-items:center;justify-content:center;flex-direction:column;gap:14px">
+          <div id="twinPlaceholder" style="text-align:center;color:var(--muted)">
+            <div style="font-size:50px;opacity:0.4">🎬</div>
+            <div style="font-size:14px;margin-top:10px">Upload photo + audio, click Generate</div>
+            <div style="font-size:11px;opacity:0.6;margin-top:4px">
+              ~30–80 s on A10G for a 5 s clip
+            </div>
+          </div>
+          <video id="twinResultVideo" controls style="display:none;max-width:100%;
+                                                      max-height:560px;border-radius:12px"></video>
+          <div id="twinSpinner" style="display:none;flex-direction:column;align-items:center;gap:12px">
+            <div style="width:48px;height:48px;border:3px solid rgba(255,255,255,0.15);
+                        border-top-color:#a78bfa;border-radius:50%;
+                        animation:spin 0.9s linear infinite"></div>
+            <div id="twinSpinnerMsg" style="font-size:13px;color:var(--ink-soft)">
+              Generating talking avatar…
+            </div>
+            <div id="twinSpinnerSub" style="font-size:11px;color:var(--muted)"></div>
+          </div>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="twinDot2"></div>
+              <span>AI Twin</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Placeholder -->
     <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px">
       <div style="font-size:60px;opacity:0.25">✨</div>
@@ -1154,7 +1242,7 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','liveportrait','tryon','ar'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon','ar','twin'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
@@ -1162,6 +1250,7 @@ function switchTab(t) {
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('arWrap').style.display      = t==='ar'           ? 'grid' : 'none';
+  document.getElementById('twinWrap').style.display    = t==='twin'         ? 'grid' : 'none';
   document.getElementById('placeholder').style.display = 'none';
 }
 
@@ -1947,6 +2036,139 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 switchTab('liveswap');
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AI Twin (SadTalker) — upload image + audio → talking head mp4 from /generate-
+// talking-avatar on port 7863. Offline generation, ~30-80 s on A10G for a
+// 5-10 s clip. No live tracking, no WebSocket — just a single multipart POST.
+// ══════════════════════════════════════════════════════════════════════════════
+const TWIN_API = 'http://13.203.194.128:7863';
+let _twinImgFile  = null;
+let _twinAudioFile = null;
+let _twinRecorder = null;
+let _twinRecChunks = [];
+let _twinSpinnerTimer = null;
+let _twinT0 = 0;
+
+function _twinReady() {
+  const ok = !!_twinImgFile && !!_twinAudioFile;
+  const btn = document.getElementById('twinGenBtn');
+  if (btn) btn.disabled = !ok;
+  return ok;
+}
+
+window.twinPreviewImg = function(inp) {
+  const f = inp.files && inp.files[0];
+  if (!f) return;
+  _twinImgFile = f;
+  const r = new FileReader();
+  r.onload = e => {
+    const img = document.getElementById('twinImgPreview');
+    img.src = e.target.result;
+    img.style.display = 'block';
+    document.getElementById('twinImgPh').style.display = 'none';
+  };
+  r.readAsDataURL(f);
+  _twinReady();
+};
+
+window.twinPreviewAudio = function(inp) {
+  const f = inp.files && inp.files[0];
+  if (!f) return;
+  _twinAudioFile = f;
+  const a = document.getElementById('twinAudioPreview');
+  a.src = URL.createObjectURL(f);
+  a.style.display = 'block';
+  document.getElementById('twinAudPh').style.display = 'none';
+  _twinReady();
+};
+
+window.twinToggleRecord = async function() {
+  const btn = document.getElementById('twinRecBtn');
+  if (_twinRecorder && _twinRecorder.state === 'recording') {
+    _twinRecorder.stop();
+    btn.textContent = '🎤 Or record from mic';
+    btn.classList.remove('btn-stop');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _twinRecChunks = [];
+    _twinRecorder = new MediaRecorder(stream);
+    _twinRecorder.ondataavailable = e => { if (e.data.size > 0) _twinRecChunks.push(e.data); };
+    _twinRecorder.onstop = () => {
+      const blob = new Blob(_twinRecChunks, { type: 'audio/webm' });
+      _twinAudioFile = new File([blob], 'recorded.webm', { type: 'audio/webm' });
+      const a = document.getElementById('twinAudioPreview');
+      a.src = URL.createObjectURL(blob);
+      a.style.display = 'block';
+      document.getElementById('twinAudPh').style.display = 'none';
+      stream.getTracks().forEach(t => t.stop());
+      _twinReady();
+    };
+    _twinRecorder.start();
+    btn.textContent = '⏹ Stop recording';
+    btn.classList.add('btn-stop');
+  } catch (e) {
+    setStatus('twinStatus', 'error', 'Mic access denied: ' + e.message);
+  }
+};
+
+window.twinGenerate = async function() {
+  if (!_twinReady()) return;
+  const size = document.querySelector('input[name="twinSize"]:checked').value;
+  const useEnh = document.getElementById('twinEnhancer').checked;
+
+  document.getElementById('twinGenBtn').disabled = true;
+  document.getElementById('twinResultVideo').style.display = 'none';
+  document.getElementById('twinPlaceholder').style.display = 'none';
+  document.getElementById('twinSpinner').style.display = 'flex';
+  document.getElementById('twinDot').classList.add('on');
+  document.getElementById('twinStatusText').textContent = 'Generating…';
+  setStatus('twinStatus', 'info', `SadTalker running on the GPU — ~30-80 s for a 5-10 s clip…`);
+
+  _twinT0 = Date.now();
+  _twinSpinnerTimer = setInterval(() => {
+    const secs = Math.round((Date.now() - _twinT0) / 1000);
+    document.getElementById('twinSpinnerSub').textContent = `${secs}s elapsed`;
+  }, 500);
+
+  const fd = new FormData();
+  fd.append('image', _twinImgFile, _twinImgFile.name || 'source.png');
+  fd.append('audio', _twinAudioFile, _twinAudioFile.name || 'driven.wav');
+
+  try {
+    // Quality knobs go on as query string so we don't need a separate
+    // multipart field for each.
+    const qs = new URLSearchParams({ size, enhancer: useEnh ? 'gfpgan' : '' });
+    const resp = await fetch(`${TWIN_API}/generate-talking-avatar?` + qs, {
+      method: 'POST',
+      body:   fd,
+    });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`server ${resp.status}: ${txt.slice(0, 200)}`);
+    }
+    const elapsed = resp.headers.get('X-Inference-Seconds') || '?';
+    const blob = await resp.blob();
+    const url  = URL.createObjectURL(blob);
+    const video = document.getElementById('twinResultVideo');
+    video.src = url;
+    video.style.display = 'block';
+    video.play().catch(() => {});
+    setStatus('twinStatus', 'success', `Done in ${elapsed} s — video ready`);
+    document.getElementById('twinStatusText').textContent = 'Idle';
+  } catch (e) {
+    setStatus('twinStatus', 'error', 'Generation failed: ' + e.message);
+    document.getElementById('twinPlaceholder').style.display = 'block';
+    document.getElementById('twinStatusText').textContent = 'Error';
+  } finally {
+    clearInterval(_twinSpinnerTimer);
+    document.getElementById('twinSpinner').style.display = 'none';
+    document.getElementById('twinDot').classList.remove('on');
+    document.getElementById('twinGenBtn').disabled = false;
+  }
+};
 </script>
 
 <!-- ══════════════════════════════════════════════════════════════════════════

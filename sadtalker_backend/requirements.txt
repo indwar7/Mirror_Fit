@@ -1,0 +1,6 @@
+# Minimal extras on top of SadTalker's own requirements.txt — these are
+# what THIS FastAPI wrapper needs. SadTalker pulls in everything else when
+# you install ../SadTalker/requirements.txt inside the sadtalker conda env.
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
