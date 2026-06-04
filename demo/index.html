@@ -1971,20 +1971,24 @@ switchTab('liveswap');
 
 <script type="module">
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   FaceLandmarker,
   FilesetResolver,
 } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
 
-// Pixar/Bitmoji-feel avatars — free, public GLB heads.
-// Ready Player Me's hosted half-body avatars work as a starting point; users
-// can paste their own RPM URL later. These IDs are documented sample avatars.
+// Procedural Bitmoji-style 3D heads. Built from Three.js primitives in code so
+// there's no GLB download to fail. Each preset has: skin tone, hair colour,
+// hat colour, eye colour. Visible on screen, sized to match a real face, and
+// they track perfectly because we own the geometry.
 const AR_AVATARS = [
-  { id: 'rpm_boy_1',  name: 'Aiden',  url: 'https://models.readyplayer.me/64bfa9415ada23f8e60aafa3.glb', emoji: '🧒' },
-  { id: 'rpm_girl_1', name: 'Maya',   url: 'https://models.readyplayer.me/64bf91d6a7c87d2dd84b9b6e.glb', emoji: '👧' },
-  { id: 'rpm_boy_2',  name: 'Kai',    url: 'https://models.readyplayer.me/63c0f1b1c2b87f0c0d9c8e1a.glb', emoji: '🧑' },
-  { id: 'rpm_girl_2', name: 'Zara',   url: 'https://models.readyplayer.me/63c2a1b1d2b87f0c0d9c8e1c.glb', emoji: '👩' },
+  { id: 'av_1', name: 'Toby',  emoji: '🧒',
+    skin: 0xf2c2a4, hair: 0x3b2417, hat: 0x7c3aed, eye: 0x2a1d12 },
+  { id: 'av_2', name: 'Maya',  emoji: '👧',
+    skin: 0xf5d0b5, hair: 0xc9a04c, hat: 0xef4444, eye: 0x1f3a5f },
+  { id: 'av_3', name: 'Kai',   emoji: '🧑',
+    skin: 0xc69774, hair: 0x141414, hat: 0x22c55e, eye: 0x2a1d12 },
+  { id: 'av_4', name: 'Zara',  emoji: '👩',
+    skin: 0xa57555, hair: 0x1c0e07, hat: 0xf59e0b, eye: 0x351f0f },
 ];
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -2015,7 +2019,7 @@ window._selectArAvatar = function(id) {
   _arSelected = av;
   document.querySelectorAll('#arAvatarGrid .av-card').forEach(c =>
     c.classList.toggle('selected', c.dataset.avid === id));
-  if (_arRunning) loadArAvatar(av.url);   // hot-swap if running
+  if (_arRunning) loadArAvatar(av);       // hot-swap if running
   document.getElementById('arStartBtn').disabled = false;
 };
 
@@ -2069,15 +2073,18 @@ function initArScene() {
   _arRenderer.setPixelRatio(window.devicePixelRatio);
 
   _arScene  = new THREE.Scene();
-  // FOV chosen to roughly match a typical webcam (~60° horizontal).
-  _arCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  // FOV ~63° matches a typical 720p webcam; near/far covers the face range.
+  // Camera sits at world origin looking down -Z, matching MediaPipe's
+  // facial-transformation-matrix coordinate convention.
+  _arCamera = new THREE.PerspectiveCamera(63, 1, 0.01, 100);
   _arCamera.position.set(0, 0, 0);
   _arCamera.lookAt(0, 0, -1);
 
-  // Soft ambient + a key directional light so the GLB reads in 3D.
-  _arScene.add(new THREE.AmbientLight(0xffffff, 0.8));
-  _arLight = new THREE.DirectionalLight(0xffffff, 0.9);
-  _arLight.position.set(0.5, 1, 1);
+  // Soft ambient so flat-shaded primitives still read, plus a key
+  // directional light to add a little depth on the procedural head.
+  _arScene.add(new THREE.AmbientLight(0xffffff, 0.85));
+  _arLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  _arLight.position.set(0.4, 0.6, 0.5);
   _arScene.add(_arLight);
 
   resizeArCanvas();
@@ -2095,44 +2102,124 @@ function resizeArCanvas() {
   _arCamera.updateProjectionMatrix();
 }
 
-// ── GLB loader — replaces _arAvatar with a new model ─────────────────────────
-async function loadArAvatar(url) {
-  const loader = new GLTFLoader();
-  return new Promise((resolve, reject) => {
-    loader.load(
-      url,
-      (gltf) => {
-        if (_arAvatar) {
-          _arScene.remove(_arAvatar);
-          _arAvatar.traverse(o => { if (o.geometry) o.geometry.dispose(); });
-        }
-        _arAvatar = gltf.scene;
-        // Default Ready Player Me half-body avatars stand at ~1.7 m height
-        // facing -Z. We only want the head, so scale + offset so the head
-        // sits near origin and faces +Z (toward the camera).
-        _arAvatar.scale.setScalar(1.0);
-        _arAvatar.position.set(0, -1.6, -0.5);  // shift down so head is at origin
-        _arAvatar.rotation.set(0, Math.PI, 0);   // turn to face camera
-        _arScene.add(_arAvatar);
-        resolve(gltf);
-      },
-      undefined,
-      (err) => {
-        console.warn('[AR] GLB load failed', url, err);
-        // Fallback: simple sphere placeholder so the user sees SOMETHING
-        if (!_arAvatar) {
-          const geo = new THREE.SphereGeometry(0.15, 32, 32);
-          const mat = new THREE.MeshStandardMaterial({ color: 0xa78bfa, roughness: 0.4 });
-          _arAvatar = new THREE.Mesh(geo, mat);
-          _arScene.add(_arAvatar);
-        }
-        reject(err);
-      },
-    );
+// ── Procedural Bitmoji head builder ──────────────────────────────────────────
+// Constructs a stylised low-poly head from Three.js primitives. No external
+// asset needed. Sized in metres so the avatar matches a real face — the head
+// is ~16 cm wide (a real human head is ~15-18 cm), which means when we apply
+// MediaPipe's metric facialTransformationMatrix the avatar appears at the
+// same scale as the user's actual face.
+function buildArHead(preset) {
+  const g = new THREE.Group();
+
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: preset.skin, roughness: 0.6, metalness: 0.0,
   });
+  const hairMat = new THREE.MeshStandardMaterial({
+    color: preset.hair, roughness: 0.8, metalness: 0.0,
+  });
+  const eyeMat  = new THREE.MeshStandardMaterial({
+    color: preset.eye,  roughness: 0.3, metalness: 0.0,
+  });
+  const whiteMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.2,
+  });
+  const lipMat = new THREE.MeshStandardMaterial({
+    color: 0xb84a4a, roughness: 0.4,
+  });
+  const hatMat = new THREE.MeshStandardMaterial({
+    color: preset.hat,  roughness: 0.7, metalness: 0.0,
+  });
+
+  // Head — slightly egg-shaped (elongated vertical) for cartoon feel
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.085, 48, 48),
+    skinMat,
+  );
+  head.scale.set(1.0, 1.08, 0.95);
+  g.add(head);
+
+  // Hair cap — half-sphere on top of head
+  const hairCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.088, 48, 48, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    hairMat,
+  );
+  hairCap.position.y = 0.005;
+  g.add(hairCap);
+
+  // Eyes — whites + pupils, slightly recessed
+  const eyeWhiteGeo = new THREE.SphereGeometry(0.020, 24, 24);
+  const lEyeWhite = new THREE.Mesh(eyeWhiteGeo, whiteMat);
+  lEyeWhite.position.set(-0.025, 0.015, 0.072);
+  const rEyeWhite = new THREE.Mesh(eyeWhiteGeo, whiteMat);
+  rEyeWhite.position.set( 0.025, 0.015, 0.072);
+  g.add(lEyeWhite, rEyeWhite);
+
+  const pupilGeo = new THREE.SphereGeometry(0.011, 16, 16);
+  const lPupil = new THREE.Mesh(pupilGeo, eyeMat);
+  lPupil.position.set(-0.025, 0.015, 0.087);
+  const rPupil = new THREE.Mesh(pupilGeo, eyeMat);
+  rPupil.position.set( 0.025, 0.015, 0.087);
+  g.add(lPupil, rPupil);
+
+  // Nose — tiny pyramid
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.012, 0.022, 4),
+    skinMat,
+  );
+  nose.rotation.x = Math.PI;
+  nose.position.set(0, -0.005, 0.088);
+  g.add(nose);
+
+  // Mouth — small torus arc gives a friendly smile
+  const mouth = new THREE.Mesh(
+    new THREE.TorusGeometry(0.022, 0.0045, 16, 32, Math.PI),
+    lipMat,
+  );
+  mouth.rotation.set(Math.PI, 0, 0);
+  mouth.position.set(0, -0.038, 0.082);
+  g.add(mouth);
+
+  // Hat — top sphere section + brim
+  const hatTop = new THREE.Mesh(
+    new THREE.SphereGeometry(0.08, 32, 32, 0, Math.PI * 2, 0, Math.PI * 0.45),
+    hatMat,
+  );
+  hatTop.position.y = 0.060;
+  hatTop.scale.set(1.05, 1.4, 1.05);
+  g.add(hatTop);
+
+  const brim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.090, 0.012, 16, 48),
+    hatMat,
+  );
+  brim.rotation.x = Math.PI / 2;
+  brim.position.y = 0.060;
+  g.add(brim);
+
+  return g;
+}
+
+function loadArAvatar(preset) {
+  if (_arAvatar) {
+    _arScene.remove(_arAvatar);
+    _arAvatar.traverse?.(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  _arAvatar = buildArHead(preset);
+  // matrixAutoUpdate off so we can drive the transform from MediaPipe directly
+  _arAvatar.matrixAutoUpdate = false;
+  _arScene.add(_arAvatar);
 }
 
 // ── Per-frame: detect face → drive avatar transform → render ─────────────────
+//
+// MediaPipe's facialTransformationMatrix puts the face origin at the user's
+// face in METRIC units with the camera at world origin looking down -Z. The
+// matrix is column-major (same as Three.js Matrix4), so fromArray works
+// directly. The face typically sits ~30-60 cm in front of the webcam.
+//
+// One subtlety: MediaPipe's coordinate system has +Y up and -Z forward (away
+// from camera), matching OpenGL/Three.js. So the matrix can be applied 1:1
+// to the avatar's transform.
 function arFrame() {
   if (!_arRunning) return;
   if (_arVideo.readyState >= 2 && _arVideo.currentTime !== _arLastVideoTime) {
@@ -2140,13 +2227,8 @@ function arFrame() {
     const result = _arLandmarker.detectForVideo(_arVideo, performance.now());
     const mtx = result.facialTransformationMatrixes?.[0]?.data;
     if (mtx && _arAvatar) {
-      // MediaPipe gives a row-major 4x4 in metres. Apply directly to avatar.
-      // Translation is in metric units; scale tweak puts head ~visible in frame.
-      const m = new THREE.Matrix4().fromArray(mtx);
-      // Three.js Matrix4 expects column-major; MediaPipe is column-major too
-      // per the JS docs, so direct fromArray works.
-      _arAvatar.matrix.copy(m);
-      _arAvatar.matrixAutoUpdate = false;
+      _arAvatar.matrix.fromArray(mtx);
+      _arAvatar.matrixWorldNeedsUpdate = true;
     }
   }
   _arRenderer.render(_arScene, _arCamera);
@@ -2171,11 +2253,11 @@ window.toggleArAvatar = async function() {
     return;
   }
   document.getElementById('arStatus').innerHTML =
-    '<span style="color:var(--accent-hot)">Loading MediaPipe + 3D avatar…</span>';
+    '<span style="color:var(--accent-hot)">Loading MediaPipe (one-time ~10 MB)…</span>';
   try {
     initArScene();
     await initArLandmarker();
-    await loadArAvatar(_arSelected.url).catch(() => null);
+    loadArAvatar(_arSelected);
     resizeArCanvas();
     _arRunning = true;
     _arLastVideoTime = -1;
