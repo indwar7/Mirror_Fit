@@ -59,6 +59,24 @@ AVATARS = [
     ("gen_if_03", "female", "indian elderly woman aged 68, weathered brown skin, silver hair, warm gentle expression"),
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AI / Snapchat-style cartoon avatars — separate list because they use a
+# COMPLETELY different prompt template (CG cartoon, not photoreal). Same
+# generator, different style → photorealism flipped to stylized 3D character.
+# ─────────────────────────────────────────────────────────────────────────────
+AI_AVATARS = [
+    # Boys
+    ("ai_b_01", "male",   "young boy aged 10, mixed ethnicity, light skin, curly brown hair, freckles, big bright eyes, small gentle smile"),
+    ("ai_b_02", "male",   "young boy aged 10, east asian, light skin, straight black hair, big eyes, friendly smile"),
+    ("ai_b_03", "male",   "young indian boy aged 10, warm brown skin, neat black hair, big bright eyes, sweet smile"),
+    ("ai_b_04", "male",   "young boy aged 10, african, deep brown skin, short curly hair, big eyes, joyful expression"),
+    # Girls
+    ("ai_g_01", "female", "young girl aged 10, european, fair skin, long blonde hair, big blue eyes, sweet smile, small freckles"),
+    ("ai_g_02", "female", "young girl aged 10, east asian, light skin, sleek black hair, big bright eyes, gentle smile"),
+    ("ai_g_03", "female", "young indian girl aged 10, warm brown skin, long braided black hair, big bright eyes, sweet smile"),
+    ("ai_g_04", "female", "young girl aged 10, african, deep brown skin, braided hair with colorful beads, big eyes, joyful smile"),
+]
+
 POSITIVE_TEMPLATE = (
     "professional studio portrait photograph of a {desc}, "
     "head and shoulders framing, looking directly at camera, "
@@ -70,6 +88,24 @@ NEGATIVE = (
     "cartoon, anime, illustration, painting, render, 3d, low quality, "
     "blurry, distorted, deformed, asymmetric, watermark, text, "
     "extra limbs, multiple faces, disfigured"
+)
+
+# Stylized template — Pixar / Disney / Bitmoji feel. Heavy on "3d animated"
+# and "stylized character" cues so SD 1.5 produces the CG cartoon look.
+AI_POSITIVE_TEMPLATE = (
+    "high quality 3d animated character portrait of a {desc}, "
+    "pixar style, disney style, bitmoji style, "
+    "head and shoulders framing, looking directly at camera, "
+    "soft warm lighting, expressive features, friendly look, "
+    "detailed CGI render, octane render, stylized character art, "
+    "smooth subsurface skin, clean plain background, "
+    "highly detailed, masterpiece"
+)
+AI_NEGATIVE = (
+    "photograph, photo, photorealistic, real person, real face, "
+    "raw photo, dslr, 85mm lens, skin pores, freckled photo, "
+    "low quality, blurry, distorted, deformed, asymmetric, "
+    "watermark, text, extra limbs, multiple faces, disfigured, ugly"
 )
 
 
@@ -95,26 +131,37 @@ def main() -> None:
     generator = torch.Generator(device=device).manual_seed(42)
     made, skipped = 0, 0
 
-    for avatar_id, _gender, desc in AVATARS:
-        out_path = OUT / f"{avatar_id}.jpg"
-        if out_path.exists():
-            print(f"[avatars] skip {avatar_id} (already exists)")
-            skipped += 1
-            continue
+    # Iterate both sets — photoreal uses POSITIVE_TEMPLATE/NEGATIVE, AI uses
+    # AI_POSITIVE_TEMPLATE/AI_NEGATIVE so each gets the right aesthetic.
+    BATCHES = [
+        ("photoreal", AVATARS,    POSITIVE_TEMPLATE,    NEGATIVE),
+        ("ai",        AI_AVATARS, AI_POSITIVE_TEMPLATE, AI_NEGATIVE),
+    ]
 
-        prompt = POSITIVE_TEMPLATE.format(desc=desc)
-        print(f"[avatars] generating {avatar_id}  ←  {desc}")
-        img = pipe(
-            prompt=prompt,
-            negative_prompt=NEGATIVE,
-            num_inference_steps=30,
-            guidance_scale=7.5,
-            width=512,
-            height=640,
-            generator=generator,
-        ).images[0]
-        img.save(out_path, "JPEG", quality=92)
-        made += 1
+    for batch_name, batch_list, pos_template, neg in BATCHES:
+        print(f"[avatars] === batch: {batch_name} ({len(batch_list)} avatars) ===")
+        for avatar_id, _gender, desc in batch_list:
+            out_path = OUT / f"{avatar_id}.jpg"
+            if out_path.exists():
+                print(f"[avatars] skip {avatar_id} (already exists)")
+                skipped += 1
+                continue
+
+            prompt = pos_template.format(desc=desc)
+            print(f"[avatars] generating {avatar_id}  ←  {desc}")
+            img = pipe(
+                prompt=prompt,
+                negative_prompt=neg,
+                num_inference_steps=30,
+                # Stylized cartoons benefit from slightly higher guidance to
+                # commit to the 3d-character look; photoreal stays at 7.5.
+                guidance_scale=9.0 if batch_name == "ai" else 7.5,
+                width=512,
+                height=640,
+                generator=generator,
+            ).images[0]
+            img.save(out_path, "JPEG", quality=92)
+            made += 1
 
     print(f"[avatars] done. generated={made} skipped={skipped} → {OUT}")
 

@@ -146,6 +146,35 @@ _AVATARS = [
     {"id": "gen_if_03", "name": "Dadiji", "category": "Elderly",
      "ethnicity": "Indian",       "gender": "female",
      "voice_ref": "en_default_female"},
+    # ─────────────────────────────────────────────────────────────────────────
+    # AI / Snapchat Bitmoji-style 3D cartoon avatars (own filter pill)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Boys
+    {"id": "ai_b_01",  "name": "Toby",   "category": "AI",
+     "ethnicity": "Mixed",        "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "ai_b_02",  "name": "Riku",   "category": "AI",
+     "ethnicity": "East Asian",   "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "ai_b_03",  "name": "Kabir",  "category": "AI",
+     "ethnicity": "Indian",       "gender": "male",
+     "voice_ref": "en_default_male"},
+    {"id": "ai_b_04",  "name": "Marcus", "category": "AI",
+     "ethnicity": "African",      "gender": "male",
+     "voice_ref": "en_default_male"},
+    # Girls
+    {"id": "ai_g_01",  "name": "Lily",   "category": "AI",
+     "ethnicity": "European",     "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "ai_g_02",  "name": "Sakura", "category": "AI",
+     "ethnicity": "East Asian",   "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "ai_g_03",  "name": "Tara",   "category": "AI",
+     "ethnicity": "Indian",       "gender": "female",
+     "voice_ref": "en_default_female"},
+    {"id": "ai_g_04",  "name": "Nia",    "category": "AI",
+     "ethnicity": "African",      "gender": "female",
+     "voice_ref": "en_default_female"},
 ]
 _AVATAR_MAP = {a["id"]: a for a in _AVATARS}
 
