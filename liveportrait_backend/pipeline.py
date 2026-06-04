@@ -278,15 +278,46 @@ class LivePortraitEngine:
             x_d_info["pitch"], x_d_info["yaw"], x_d_info["roll"]
         )
 
-        # First driving frame becomes the neutral baseline.
+        # Average the neutral baseline over the first N frames so that a
+        # non-neutral first capture (mid-blink, slight smile, off-center
+        # head) doesn't permanently miscalibrate every subsequent delta.
+        # During the collection window, return the source unchanged — the
+        # user just sees the static avatar for ~800ms before live driving
+        # kicks in. This is the single most important fix for distortion:
+        # without it, amp * (current - non_neutral_baseline) drives the
+        # face into a locked-in weird expression.
+        BASELINE_FRAMES = 10
         if sess["x_d_0_info"] is None:
-            sess["x_d_0_info"] = {
-                "kp":    x_d_info["kp"].clone(),
-                "exp":   x_d_info["exp"].clone(),
-                "t":     x_d_info["t"].clone(),
-                "scale": x_d_info["scale"].clone(),
-            }
-            sess["R_d_0"] = R_d.clone()
+            acc = sess.get("x_d_0_accum")
+            if acc is None:
+                sess["x_d_0_accum"] = {
+                    "kp":    x_d_info["kp"].clone(),
+                    "exp":   x_d_info["exp"].clone(),
+                    "t":     x_d_info["t"].clone(),
+                    "scale": x_d_info["scale"].clone(),
+                    "R":     R_d.clone(),
+                    "n":     1,
+                }
+            else:
+                acc["kp"]    = acc["kp"]    + x_d_info["kp"]
+                acc["exp"]   = acc["exp"]   + x_d_info["exp"]
+                acc["t"]     = acc["t"]     + x_d_info["t"]
+                acc["scale"] = acc["scale"] + x_d_info["scale"]
+                acc["R"]     = acc["R"]     + R_d
+                acc["n"]    += 1
+                if acc["n"] >= BASELINE_FRAMES:
+                    n = acc["n"]
+                    sess["x_d_0_info"] = {
+                        "kp":    acc["kp"]    / n,
+                        "exp":   acc["exp"]   / n,
+                        "t":     acc["t"]     / n,
+                        "scale": acc["scale"] / n,
+                    }
+                    sess["R_d_0"] = acc["R"] / n
+                    del sess["x_d_0_accum"]
+            if sess["x_d_0_info"] is None:
+                # Still collecting baseline — show the source unchanged.
+                return cv2.cvtColor(sess["src_full"], cv2.COLOR_RGB2BGR)
 
         x_d_0 = sess["x_d_0_info"]
         R_d_0 = sess["R_d_0"]
@@ -296,12 +327,17 @@ class LivePortraitEngine:
         # movement on the rendered portrait. Eyes / lips / mouth still animate
         # because delta_exp is independent of pose.
         R_new = sess["R_s"]
-        # Direct pass-through of the expression delta — no EMA. With head
-        # pose locked there's no zoom pulse to filter, and EMA was muting
-        # the very thing the user wants: fast eye/lip movement at full
-        # amplitude. Amp 1.35 sits between under-read (1.15) and cartoony
-        # (1.6), giving clearer muscle articulation.
-        delta_exp = 1.35 * (x_d_info["exp"] - x_d_0["exp"]) + sess["x_s_info"]["exp"]
+        # Light EMA (alpha=0.7 → ~110ms tau) catches single-frame outliers
+        # but passes blinks/lip closures through near full amplitude.
+        # Amp 1.1 — with a properly averaged baseline, mild amplification
+        # is enough; 1.35+ produced distorted geometry when baseline drift
+        # added up.
+        raw_delta = x_d_info["exp"] - x_d_0["exp"]
+        if sess["exp_smooth"] is None:
+            sess["exp_smooth"] = raw_delta.clone()
+        else:
+            sess["exp_smooth"] = 0.7 * raw_delta + 0.3 * sess["exp_smooth"]
+        delta_exp = 1.1 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
         scale_new = sess["x_s_info"]["scale"]
         t_new = sess["x_s_info"]["t"].clone()
         t_new[..., 2] = 0
