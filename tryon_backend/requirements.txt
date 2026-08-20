@@ -6,16 +6,20 @@ torch>=2.3.0
 torchvision>=0.18.0
 
 # diffusers with ControlNet extras (AnimateDiff + ControlNet pipelines included)
-diffusers[torch]>=0.29.0
+# Pinned exact — matches instantid_backend/liveportrait_backend and the last
+# known-working stack. Unbounded >= here pulled diffusers 0.37 / transformers 5.6 /
+# huggingface_hub 1.14 on a fresh install, which broke CatVTON + SD-Inpainting
+# pipeline loading (silent fallback to the plain img2img tier — no garment mask).
+diffusers[torch]==0.31.0
 
-transformers>=4.41.2
-accelerate>=0.30.0
-peft>=0.11.0
+transformers==4.46.0
+accelerate==1.1.0
+peft==0.13.2
 opencv-python-headless>=4.9.0.80
-Pillow>=10.3.0
-numpy>=1.26.4
-huggingface_hub>=0.23.2
-safetensors>=0.4.3
+Pillow==10.4.0
+numpy==1.26.4
+huggingface_hub==0.26.2
+safetensors==0.4.5
 mediapipe>=0.10.0
 
 # Phase 3 — DWPose body-pose conditioning via ControlNet

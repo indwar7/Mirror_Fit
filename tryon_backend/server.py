@@ -11,6 +11,8 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from PIL import Image
 
 from model import TryOnModel
@@ -60,6 +62,10 @@ app = FastAPI(title="LUCY Try-On Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+_demo_dir = Path(__file__).resolve().parent.parent / "demo"
+if _demo_dir.exists():
+    app.mount("/demo", StaticFiles(directory=str(_demo_dir), html=True), name="demo")
 
 
 @app.get("/health")

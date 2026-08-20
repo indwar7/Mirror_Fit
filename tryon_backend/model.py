@@ -48,6 +48,67 @@ TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
 
+# ── MediaPipe Tasks API (selfie segmentation + hand landmarks) ──────────────
+# The legacy `mediapipe.python.solutions` API isn't shipped in the Windows
+# PyPI wheels — only `mediapipe.tasks` is available there. These two model
+# bundles are downloaded once (cached locally) and used via Tasks API on
+# every platform for consistent behaviour.
+
+_MP_MODELS_DIR = Path(__file__).resolve().parent / "mp_models"
+_MP_SEG_URL = (
+    "https://storage.googleapis.com/mediapipe-models/image_segmenter/"
+    "selfie_segmenter/float16/latest/selfie_segmenter.tflite"
+)
+_MP_HANDS_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+
+
+def _mp_download(url: str, dest: Path):
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    import urllib.request
+    log.info(f"Downloading MediaPipe model: {url}")
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    urllib.request.urlretrieve(url, tmp)
+    tmp.rename(dest)
+
+
+def _load_mediapipe_tasks():
+    """Returns (segmenter, hand_landmarker) using the Tasks API — works on
+    Windows, Linux and Mac (unlike the legacy `solutions` API)."""
+    import mediapipe as mp
+    from mediapipe.tasks.python import BaseOptions
+    from mediapipe.tasks.python.vision import (
+        ImageSegmenter, ImageSegmenterOptions,
+        HandLandmarker, HandLandmarkerOptions,
+        RunningMode,
+    )
+
+    seg_path = _MP_MODELS_DIR / "selfie_segmenter.tflite"
+    hands_path = _MP_MODELS_DIR / "hand_landmarker.task"
+    _mp_download(_MP_SEG_URL, seg_path)
+    _mp_download(_MP_HANDS_URL, hands_path)
+
+    segmenter = ImageSegmenter.create_from_options(ImageSegmenterOptions(
+        base_options=BaseOptions(model_asset_path=str(seg_path)),
+        running_mode=RunningMode.IMAGE,
+        output_category_mask=False,
+        output_confidence_masks=True,
+    ))
+    hand_landmarker = HandLandmarker.create_from_options(HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(hands_path)),
+        running_mode=RunningMode.IMAGE,
+        num_hands=2,
+        min_hand_detection_confidence=0.4,
+        min_hand_presence_confidence=0.4,
+        min_tracking_confidence=0.4,
+    ))
+    return segmenter, hand_landmarker
+
+
 # ── Tier 1: TensorRT + CUDA graph ────────────────────────────────────────────
 
 class TRTInferenceEngine:
@@ -127,34 +188,16 @@ class TryOnModel:
         # Also load Hands detector so we can carve hand regions OUT of the garment
         # mask. Without this, a hand crossing in front of the camera gets painted
         # over with the garment (user-reported "hand crosses → painted as jacket").
+        #
+        # NOTE: the legacy `mediapipe.python.solutions` API is not shipped in the
+        # Windows PyPI wheels (any version) — only the newer Tasks API
+        # (`mediapipe.tasks`) is available there. Using Tasks API unconditionally
+        # so this works the same on Windows, Linux and Mac.
         try:
-            import mediapipe as mp
-            # MediaPipe 0.10.30+ on Python 3.14 makes `mp.solutions` lazy and
-            # `hasattr(mp, 'solutions')` returns False until the submodule
-            # is explicitly imported. Force-import each solution submodule
-            # so the namespace exists. If any of these imports fails, the
-            # whole block falls through to the fallback.
-            from mediapipe.python.solutions import selfie_segmentation as _mp_ss
-            from mediapipe.python.solutions import face_detection      as _mp_fd
-            from mediapipe.python.solutions import hands               as _mp_hd
-            self._mp_seg  = _mp_ss.SelfieSegmentation(model_selection=1)
-            self._mp_face = _mp_fd.FaceDetection(
-                model_selection=0, min_detection_confidence=0.5
-            )
-            # Hands: detect up to 2 hands, lower confidence so a partial /
-            # blurry hand crossing still gets picked up. Performance-mode
-            # model (model_complexity=0) is ~5-7 ms / frame on CPU.
-            self._mp_hands = _mp_hd.Hands(
-                static_image_mode=False,
-                max_num_hands=2,
-                model_complexity=0,
-                min_detection_confidence=0.4,
-                min_tracking_confidence=0.4,
-            )
-            log.info("MediaPipe loaded (seg + face + hands).")
+            self._mp_seg, self._mp_hands = _load_mediapipe_tasks()
+            log.info("MediaPipe loaded (seg + hands, Tasks API).")
         except Exception as e:
             self._mp_seg   = None
-            self._mp_face  = None
             self._mp_hands = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
@@ -204,7 +247,7 @@ class TryOnModel:
     def _load_tier1(self):
         from diffusers import AutoencoderKL, DDIMScheduler
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zheng-chong/CatVTON"
+        base = "abhay07080/CatVTON-bucket"
         self._vae = AutoencoderKL.from_pretrained(base, subfolder="vae", torch_dtype=self.dtype).to(self.device)
         self._vae.requires_grad_(False)
         tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
@@ -220,7 +263,7 @@ class TryOnModel:
     def _load_tier2(self):
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "zheng-chong/CatVTON"
+        base = "abhay07080/CatVTON-bucket"
 
         # VTON_LORA_CHECKPOINT can be either:
         #   (a) A full UNet directory (config.json + diffusion_pytorch_model.safetensors)
@@ -283,7 +326,7 @@ class TryOnModel:
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
-        base = "zheng-chong/CatVTON"
+        base = "abhay07080/CatVTON-bucket"
         log.info(f"Loading CatVTON model from {base} …")
 
         self._vae = AutoencoderKL.from_pretrained(
@@ -864,11 +907,13 @@ class TryOnModel:
         # 1. MediaPipe hand landmarks → convex hull per hand
         if self._mp_hands is not None:
             try:
-                res = self._mp_hands.process(frame_rgb)
-                if res.multi_hand_landmarks:
-                    for hand_lmk in res.multi_hand_landmarks:
+                import mediapipe as mp
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                res = self._mp_hands.detect(mp_image)
+                if res.hand_landmarks:
+                    for hand_lmk in res.hand_landmarks:
                         pts = np.array(
-                            [[int(lm.x * W), int(lm.y * H)] for lm in hand_lmk.landmark],
+                            [[int(lm.x * W), int(lm.y * H)] for lm in hand_lmk],
                             dtype=np.int32,
                         )
                         if len(pts) >= 3:
@@ -1005,9 +1050,12 @@ class TryOnModel:
         body_mask_roi = None
         if self._mp_seg is not None:
             try:
-                seg_result = self._mp_seg.process(frame)
-                if seg_result.segmentation_mask is not None:
-                    bm = (seg_result.segmentation_mask > 0.4).astype(np.float32)
+                import mediapipe as mp
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+                seg_result = self._mp_seg.segment(mp_image)
+                if seg_result.confidence_masks:
+                    mask_arr = seg_result.confidence_masks[0].numpy_view()
+                    bm = (mask_arr > 0.4).astype(np.float32)
                     bm = cv2.GaussianBlur(bm, (21, 21), 0)
                     body_mask_roi = bm[top:top+th, left:left+tw]
             except Exception:
@@ -1236,9 +1284,11 @@ class TryOnModel:
         silhouette = None
         if self._mp_seg is not None:
             try:
-                seg = self._mp_seg.process(frame_rgb)
-                if seg.segmentation_mask is not None:
-                    s = seg.segmentation_mask.astype(np.float32)
+                import mediapipe as mp
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                seg = self._mp_seg.segment(mp_image)
+                if seg.confidence_masks:
+                    s = seg.confidence_masks[0].numpy_view().astype(np.float32)
                     # Threshold at 0.6 (was 0.5) for a tighter person edge.
                     # Single iteration of dilation gives the jacket just
                     # enough room for sleeve thickness without producing
