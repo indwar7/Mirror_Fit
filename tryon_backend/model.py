@@ -1337,8 +1337,19 @@ class TryOnModel:
             except Exception as e:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
+        if silhouette is None and self._prev_silhouette is not None:
+            # A transient per-frame MediaPipe miss (motion blur, lighting
+            # flicker) shouldn't revert to the crude ellipse/rectangle —
+            # that jarring shape-jump is exactly what read as the garment
+            # "fading away" every few seconds. Hold the last known-good
+            # real silhouette instead; it'll self-correct next successful
+            # frame since _prev_silhouette only updates on real hits.
+            silhouette = self._prev_silhouette
+            mp_silhouette_ok = True
+
         if silhouette is None:
-            # Fallback ellipse: same shape the legacy fixed mask used.
+            # No real silhouette ever obtained this session yet — genuine
+            # fallback ellipse (same shape the legacy fixed mask used).
             silhouette = np.zeros((h, w), dtype=np.float32)
             cv2.ellipse(silhouette,
                         (w // 2, int(h * 0.62)),
