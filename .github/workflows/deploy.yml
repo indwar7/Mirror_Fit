@@ -12,6 +12,8 @@ jobs:
         run: git -C C:\virtual-try-on pull origin main
 
       - name: Restart backends
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           Stop-Process -Name python -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
