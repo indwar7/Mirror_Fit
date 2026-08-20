@@ -1300,19 +1300,20 @@ class TryOnModel:
                     # cutting too tight.
                     bm = (s > 0.25).astype(np.float32)
                     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-                    # 5 dilation iterations gives the silhouette enough
-                    # bulk for full shoulder + arm + hem coverage.
-                    bm = cv2.dilate(bm, kernel, iterations=5)
+                    # 2 dilation iterations (was 5) — real MediaPipe silhouette
+                    # is now available (Tasks API) so the mask doesn't need as
+                    # much padding for coverage; the extra padding was
+                    # overshooting the real edge and reading as a "double edge".
+                    bm = cv2.dilate(bm, kernel, iterations=2)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
-                    # MediaPipe produces per frame. alpha=0.6 on the new
-                    # frame is faster than the result EMA (0.45) so the
-                    # mask still tracks body motion; the 40% prev term
-                    # eliminates edge wobble that would otherwise show
-                    # once the final alpha is tightened to (3,3).
+                    # MediaPipe produces per frame. 0.8 new / 0.2 prev (was
+                    # 0.6/0.4) — the heavier prev term was smearing the mask
+                    # edge into a visible ghost/blur whenever the body moved
+                    # between frames.
                     if (self._prev_silhouette is not None
                             and self._prev_silhouette.shape == bm.shape):
-                        bm = (0.6 * bm + 0.4 * self._prev_silhouette).clip(0, 1)
+                        bm = (0.8 * bm + 0.2 * self._prev_silhouette).clip(0, 1)
                     self._prev_silhouette = bm
                     silhouette = bm
             except Exception as e:
@@ -1812,11 +1813,11 @@ class TryOnModel:
             # go. Body movement still shows because the silhouette mask
             # itself is updating per frame from MediaPipe.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                # 0.45 = "live filter" balance — new frame contributes
-                # nearly half, so body movement tracks faster (~1 sec lag
-                # at 800ms capture interval) while the 55% prev term still
-                # damps colour flicker between samples.
-                alpha_new = 0.45
+                # 0.7 (was 0.45) — new frame now dominates. The heavier
+                # 55% prev term was smearing a visible ghost/double-edge at
+                # the garment boundary whenever the body moved between
+                # frames. Still keeps some damping against flicker.
+                alpha_new = 0.7
                 ema = (
                     composed.astype(np.float32) * alpha_new
                     + self._prev_result.astype(np.float32) * (1.0 - alpha_new)
