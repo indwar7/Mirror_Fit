@@ -1282,6 +1282,7 @@ class TryOnModel:
 
         # 1. Person silhouette via MediaPipe selfie segmentation
         silhouette = None
+        mp_silhouette_ok = False   # True once a real per-frame MediaPipe mask lands
         if self._mp_seg is not None:
             try:
                 import mediapipe as mp
@@ -1316,6 +1317,7 @@ class TryOnModel:
                         bm = (0.8 * bm + 0.2 * self._prev_silhouette).clip(0, 1)
                     self._prev_silhouette = bm
                     silhouette = bm
+                    mp_silhouette_ok = True
             except Exception as e:
                 log.debug(f"MediaPipe seg failed in mask build: {e}")
 
@@ -1425,7 +1427,14 @@ class TryOnModel:
             # carved into the polygon top. 71px was dissolving the notch
             # into a flat horizontal line at the chin.
             safety = cv2.GaussianBlur(safety, (31, 31), 0).clip(0, 1)
-            silhouette = np.maximum(silhouette, safety * 0.85)
+            # Only fall back to the crude face-bbox rectangle when real
+            # MediaPipe segmentation didn't land this frame. Blending it in
+            # unconditionally (old behaviour) dragged the collar/shoulder/
+            # waist edges away from the actual body toward this generic
+            # per-garment-type shape, even when the real silhouette was
+            # available and more accurate.
+            if not mp_silhouette_ok:
+                silhouette = np.maximum(silhouette, safety * 0.85)
 
             # ── Skin-tone hands extension (no MediaPipe needed) ────────
             # Detect skin pixels via YCrCb (works for all skin tones)
