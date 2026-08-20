@@ -1312,13 +1312,16 @@ class TryOnModel:
                     # background. User reported background visible past
                     # jacket edges and arms not painted; the mask was
                     # cutting too tight.
-                    bm = (s > 0.25).astype(np.float32)
+                    # Threshold 0.2 (was 0.25) — a foreshortened shoulder
+                    # (person angled toward camera) gets lower segmentation
+                    # confidence on that side, undershooting the true edge
+                    # and leaving that shoulder/sleeve uncovered.
+                    bm = (s > 0.2).astype(np.float32)
                     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-                    # 2 dilation iterations (was 5) — real MediaPipe silhouette
-                    # is now available (Tasks API) so the mask doesn't need as
-                    # much padding for coverage; the extra padding was
-                    # overshooting the real edge and reading as a "double edge".
-                    bm = cv2.dilate(bm, kernel, iterations=2)
+                    # 4 dilation iterations (was 2, originally 5) — splits the
+                    # difference: enough margin to cover a foreshortened
+                    # shoulder without overshooting into a visible double edge.
+                    bm = cv2.dilate(bm, kernel, iterations=4)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
                     # MediaPipe produces per frame. 0.8 new / 0.2 prev (was
