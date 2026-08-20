@@ -908,7 +908,10 @@ class TryOnModel:
         if self._mp_hands is not None:
             try:
                 import mediapipe as mp
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=np.ascontiguousarray(frame_rgb),
+                )
                 res = self._mp_hands.detect(mp_image)
                 if res.hand_landmarks:
                     for hand_lmk in res.hand_landmarks:
@@ -1051,7 +1054,10 @@ class TryOnModel:
         if self._mp_seg is not None:
             try:
                 import mediapipe as mp
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=np.ascontiguousarray(frame),
+                )
                 seg_result = self._mp_seg.segment(mp_image)
                 if seg_result.confidence_masks:
                     mask_arr = seg_result.confidence_masks[0].numpy_view()
@@ -1286,7 +1292,14 @@ class TryOnModel:
         if self._mp_seg is not None:
             try:
                 import mediapipe as mp
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                # mp.Image requires a memory-contiguous buffer — frames that
+                # went through PIL crop/resize aren't always contiguous,
+                # which throws here silently (caught below) and falls back
+                # to the crude safety rectangle for the whole session.
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=np.ascontiguousarray(frame_rgb),
+                )
                 seg = self._mp_seg.segment(mp_image)
                 if seg.confidence_masks:
                     s = seg.confidence_masks[0].numpy_view().astype(np.float32)
@@ -1390,6 +1403,11 @@ class TryOnModel:
                 else:  # tshirt
                     half_w     = int(fw2 * 1.50)
                     rect_bottom = int(h * 0.80)
+                # Safety clamp: cap half_w at 42% of frame width. Without
+                # this, a single bad Haar detection (fw2 abnormally large)
+                # blows the rectangle up to near-full-frame width, painting
+                # over background objects and other people in frame.
+                half_w = min(half_w, int(w * 0.42))
                 rect_top   = fy2 + fh2                         # chin row
                 rect_left  = max(0, cx2 - half_w)
                 rect_right = min(w, cx2 + half_w)
