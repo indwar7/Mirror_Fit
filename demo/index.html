@@ -787,6 +787,67 @@ body.landing-active .app { display: none !important; }
 }
 
 /* ══════════════════════════════════════════════════════════════════
+   FIT ANALYSER — garment vs body geometry
+   ══════════════════════════════════════════════════════════════════ */
+.fa-wrap { width: 100%; max-width: 980px; margin: 0 auto; }
+.fa-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
+.fa-top { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; }
+.fa-verdict-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 42px; line-height: 1.05; color: var(--ink); }
+.fa-verdict-note { font-size: 13.5px; line-height: 1.65; color: var(--ink-2); font-weight: 300; max-width: 46ch; margin-top: 10px; }
+.fa-conf { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-top: 12px; }
+
+/* Score dial */
+.fa-dial { position: relative; width: 132px; height: 132px; flex-shrink: 0; }
+.fa-dial svg { transform: rotate(-90deg); display: block; }
+.fa-dial-num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.fa-dial-num b { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 40px; font-weight: 400; line-height: 1; }
+.fa-dial-num span { font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-top: 5px; }
+
+/* Per-measurement deviation bars */
+.fa-devs { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--line); }
+.fa-dev { display: grid; grid-template-columns: 92px 1fr 74px; align-items: center; gap: 14px; margin-bottom: 13px; }
+.fa-dev:last-child { margin-bottom: 0; }
+.fa-dev-l { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.fa-dev-track { position: relative; height: 22px; background: var(--ivory-2); border: 1px solid var(--line); }
+.fa-dev-mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--line-ink); }
+.fa-dev-band { position: absolute; top: 0; bottom: 0; background: rgba(30,122,82,0.10); border-left: 1px solid rgba(30,122,82,0.3); border-right: 1px solid rgba(30,122,82,0.3); }
+.fa-dev-bar { position: absolute; top: 4px; bottom: 4px; background: var(--ink); transition: left 0.3s, width 0.3s; }
+.fa-dev-bar.is-out { background: var(--berry); }
+.fa-dev-v { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+.fa-dev-v.is-out { color: var(--berry); }
+.fa-scale { display: flex; justify-content: space-between; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; padding-left: 106px; padding-right: 88px; }
+
+/* Handoff to the returns model */
+.fa-handoff { margin-top: 26px; padding: 16px 20px; background: var(--ivory-2); border-left: 2px solid var(--gold); font-size: 13px; line-height: 1.7; color: var(--ink-2); font-weight: 300; }
+.fa-handoff b { font-weight: 500; color: var(--ink); }
+.fa-handoff code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--berry); }
+
+.fa-json { font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.7; background: var(--ivory-2); border: 1px solid var(--line); padding: 14px 16px; white-space: pre; overflow-x: auto; margin-top: 26px; }
+.fa-json .k { color: var(--muted); }
+.fa-json .s { color: var(--berry); }
+.fa-json .n { color: var(--gold-ink); }
+
+.fa-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 20px; }
+.fa-metric { background: var(--white); padding: 18px 16px; }
+.fa-metric-v { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 27px; color: var(--ink); line-height: 1; }
+.fa-metric-l { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+.fa-cap { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.65; margin-top: 14px; }
+
+/* Sidebar measurement rows */
+.fa-row { display: grid; grid-template-columns: 1fr 66px; align-items: center; gap: 10px; margin-bottom: 11px; }
+.fa-row:last-child { margin-bottom: 0; }
+.fa-row label { font-size: 11px; color: var(--ink-2); letter-spacing: 0.02em; }
+.fa-row input { width: 100%; padding: 7px 9px; font-family: 'Jost', sans-serif; font-size: 12.5px; text-align: right; color: var(--ink); background: var(--white); border: 1px solid var(--line-2); border-radius: var(--r); }
+.fa-row input:focus { outline: none; border-color: var(--berry); }
+
+@media (max-width: 900px) {
+  .fa-metrics { grid-template-columns: repeat(2,1fr); }
+  .fa-card { padding: 22px 20px; }
+  .fa-dev { grid-template-columns: 74px 1fr 62px; gap: 10px; }
+  .fa-scale { padding-left: 84px; padding-right: 72px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
    ══════════════════════════════════════════════════════════════════ */
 @media (max-width: 1080px) {
@@ -898,7 +959,7 @@ body.landing-active .app { display: none !important; }
         </div>
         <div class="lp-hero-stats">
           <div>
-            <div class="lp-stat-n">6</div>
+            <div class="lp-stat-n">7</div>
             <div class="lp-stat-l">Live modes</div>
           </div>
           <div>
@@ -995,10 +1056,11 @@ body.landing-active .app { display: none !important; }
   <section class="lp-sec" id="lp-modes" style="padding-top:0">
     <div class="lp-wrap">
       <span class="lp-tag" data-reveal>The studio</span>
-      <h2 class="lp-h2" data-reveal data-d="1">Six ways to <em>work the mirror.</em></h2>
+      <h2 class="lp-h2" data-reveal data-d="1">Seven ways to <em>work the mirror.</em></h2>
       <p class="lp-lede" data-reveal data-d="2">
         Five modes stream from the camera and return a rendered frame, at
-        10 credits a session. Returns Guard scores on device and is free.
+        10 credits a session. Fit Analyser and Returns Guard score on device
+        and are free.
       </p>
 
       <div class="lp-modes">
@@ -1107,6 +1169,27 @@ body.landing-active .app { display: none !important; }
           <div class="lp-mode-foot">
             <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
             <span class="lp-mode-port">Port 7863</span>
+          </div>
+        </button>
+
+        <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('fit')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3.6 8.4h16.8v7.2H3.6z"/>
+                <path d="M7.2 8.4v3M10.8 8.4v4.4M14.4 8.4v3M18 8.4v4.4"/>
+              </svg>
+            </span>
+            <span class="lp-price">No credits</span>
+          </div>
+          <div class="lp-mode-name">Fit Analyser</div>
+          <p class="lp-mode-desc">
+            Measures the garment against the body and grades the fit — tailored,
+            good, oversized, undersized, or cut wrong. Scores 0&ndash;100.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">&rarr;</span></span>
+            <span class="lp-mode-port">In browser</span>
           </div>
         </button>
 
@@ -1312,6 +1395,7 @@ body.landing-active .app { display: none !important; }
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
     <button class="tab" onclick="switchTab('ar')">AR Avatar</button>
     <button class="tab" onclick="switchTab('twin')">AI Twin</button>
+    <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
     <button class="tab" onclick="switchTab('returns')">Returns Guard</button>
   </div>
   <div style="width:120px"></div>
@@ -1564,6 +1648,47 @@ body.landing-active .app { display: none !important; }
     </div>
 
 
+
+    <!-- FIT ANALYSER — garment vs body geometry -->
+    <div class="panel" id="panel-fit">
+      <div class="card">
+        <div class="card-label">Step 1 · Load a case</div>
+        <div class="rg-presets" id="faPresets"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · The garment</div>
+        <div class="rg-field">
+          <div class="rg-label">Type</div>
+          <select id="faType"></select>
+        </div>
+        <div class="fa-row"><label>Chest, flat &times;2</label><input type="number" id="faGChest" value="110" step="0.5"></div>
+        <div class="fa-row"><label>Shoulder seam</label><input type="number" id="faGShoulder" value="45.5" step="0.5"></div>
+        <div class="fa-row"><label>Body length</label><input type="number" id="faGLength" value="70" step="0.5"></div>
+        <div class="fa-row"><label>Sleeve length</label><input type="number" id="faGSleeve" value="60" step="0.5"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 3 · The body</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">
+          Measured from pose landmarks during try-on. Editable here so you can
+          see how the verdict moves.
+        </div>
+        <div class="fa-row"><label>Chest</label><input type="number" id="faBChest" value="96" step="0.5"></div>
+        <div class="fa-row"><label>Shoulder width</label><input type="number" id="faBShoulder" value="44" step="0.5"></div>
+        <div class="fa-row"><label>Torso length</label><input type="number" id="faBTorso" value="68" step="0.5"></div>
+        <div class="fa-row"><label>Arm length</label><input type="number" id="faBArm" value="60" step="0.5"></div>
+      </div>
+
+      <div class="sticky-action">
+        <div class="status-row" style="margin-bottom:10px">
+          <div class="dot on" id="faDot"></div>
+          <span id="faStatusText">Scoring live · on device</span>
+        </div>
+        <button class="btn btn-ghost" onclick="faReset()">Reset measurements</button>
+      </div>
+    </div>
+
     <!-- RETURNS GUARD — cost-sensitive return-fraud triage -->
     <div class="panel" id="panel-returns">
       <div class="card">
@@ -1790,6 +1915,41 @@ body.landing-active .app { display: none !important; }
     </div>
 
 
+
+    <!-- FIT ANALYSER — result -->
+    <div id="fitWrap" style="display:none;width:100%">
+      <div class="fa-wrap">
+        <div class="fa-card">
+          <div class="fa-top">
+            <div>
+              <div class="fa-verdict-name" id="faVerdict">—</div>
+              <div class="fa-verdict-note" id="faNote"></div>
+              <div class="fa-conf" id="faConf"></div>
+            </div>
+            <div class="fa-dial">
+              <svg width="132" height="132" viewBox="0 0 132 132" aria-hidden="true">
+                <circle cx="66" cy="66" r="58" fill="none" stroke="#E8E4DD" stroke-width="9"/>
+                <circle cx="66" cy="66" r="58" fill="none" stroke="#A8194E" stroke-width="9"
+                        stroke-linecap="butt" id="faDialArc"
+                        stroke-dasharray="364.4" stroke-dashoffset="364.4"/>
+              </svg>
+              <div class="fa-dial-num"><b id="faScore">0</b><span>Fit score</span></div>
+            </div>
+          </div>
+
+          <div class="fa-devs" id="faDevs"></div>
+          <div class="fa-scale"><span>&minus;30% too small</span><span>ideal</span><span>too large +30%</span></div>
+
+          <div class="fa-json" id="faJson"></div>
+
+          <div class="fa-handoff" id="faHandoff"></div>
+        </div>
+
+        <div class="fa-metrics" id="faMetrics"></div>
+        <div class="fa-cap" id="faCap"></div>
+      </div>
+    </div>
+
     <!-- RETURNS GUARD — result -->
     <div id="returnsWrap" style="display:none;width:100%">
       <div class="rg-wrap">
@@ -1885,7 +2045,7 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','liveportrait','tryon','ar','twin','returns'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon','ar','twin','fit','returns'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
@@ -1894,6 +2054,7 @@ function switchTab(t) {
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('arWrap').style.display      = t==='ar'           ? 'grid' : 'none';
   document.getElementById('twinWrap').style.display    = t==='twin'         ? 'grid' : 'none';
+  document.getElementById('fitWrap').style.display     = t==='fit'          ? 'block' : 'none';
   document.getElementById('returnsWrap').style.display = t==='returns'      ? 'block' : 'none';
   document.getElementById('placeholder').style.display = 'none';
 }
@@ -3189,7 +3350,7 @@ window.toggleArAvatar = async function() {
     window.enterFeature = function (name) {
       // Returns Guard scores in the browser and consumes no GPU time, so
       // it is free. Credits pay for generation, not for risk scoring.
-      if (name === 'returns') return launch.apply(this, arguments);
+      if (name === 'returns' || name === 'fit') return launch.apply(this, arguments);
       var v = read();
       if (v < COST) {
         toast('Not enough credits — each launch costs ' + COST + '.');
@@ -3490,6 +3651,246 @@ window.toggleArAvatar = async function() {
       if (dot) dot.classList.remove('on');
       if (txt) txt.textContent = 'returns_model.json not found';
       console.error('[returns-guard] could not load model:', err);
+    });
+})();
+</script>
+<script>
+/* ── Fit Analyser ──────────────────────────────────────────────────
+   Grades a garment against a body: tailored / good / oversized /
+   undersized / cut wrong, plus a 0-100 score.
+
+   Multinomial logistic regression scored in the browser (softmax over
+   five classes). Weights come from fit_model.json, exported by
+   `python -m fit_score.model --export`.
+
+   The derived features below — worst_abs_dev, dev_spread, core_dev_mean
+   — are not decoration. "Every measurement is close to ideal" is a
+   bounded box in raw-ratio space, and a linear model cannot describe a
+   bounded region. Trained on raw ratios it scored 0.00 recall on
+   MADE_FOR_YOU. These three turn those boxes into half-spaces. They are
+   also the three questions a tailor asks, which is why they work.
+
+   Trained on SYNTHETIC data derived from apparel ease allowances.
+   ────────────────────────────────────────────────────────────────── */
+(function () {
+  let M = null, active = null;
+  const $ = (id) => document.getElementById(id);
+  const KEYS = ['faGChest','faGShoulder','faGLength','faGSleeve',
+                'faBChest','faBShoulder','faBTorso','faBArm'];
+  const PARTS = [
+    ['chest',    'dev_chest',    'Chest'],
+    ['shoulder', 'dev_shoulder', 'Shoulder'],
+    ['length',   'dev_length',   'Length'],
+    ['sleeve',   'dev_sleeve',   'Sleeve'],
+  ];
+
+  const num = (id, fallback) => {
+    const v = parseFloat($(id).value);
+    return (Number.isFinite(v) && v > 0) ? v : fallback;
+  };
+
+  /* Raw ratios from centimetres. */
+  function ratios() {
+    return {
+      garment_type: $('faType').value,
+      chest_ratio:    num('faGChest', 110)   / num('faBChest', 96),
+      shoulder_ratio: num('faGShoulder',45.5)/ num('faBShoulder', 44),
+      length_ratio:   num('faGLength', 70)   / num('faBTorso', 68),
+      sleeve_ratio:   num('faGSleeve', 60)   / num('faBArm', 60),
+    };
+  }
+
+  /* Mirrors fit_score/spec.py: deviations(), derive(), fit_score(). */
+  function deviations(r) {
+    const e = M.ease[r.garment_type] || M.ease.tshirt;   // [chest, shoulder, length, sleeve]
+    return {
+      chest:    r.chest_ratio    / e[0] - 1,
+      shoulder: r.shoulder_ratio / e[1] - 1,
+      length:   r.length_ratio   / e[2] - 1,
+      sleeve:   r.sleeve_ratio   / e[3] - 1,
+    };
+  }
+
+  function features(r) {
+    const d = deviations(r);
+    const every = [d.chest, d.shoulder, d.length, d.sleeve];
+    const e = M.ease[r.garment_type] || M.ease.tshirt;
+    return {
+      chest_ratio: r.chest_ratio,
+      shoulder_ratio: r.shoulder_ratio,
+      length_ratio: r.length_ratio,
+      sleeve_ratio: r.sleeve_ratio,
+      drape_slack: Math.max(-0.35, Math.min(1, (r.chest_ratio / e[0] - 1) * 2.4)),
+      shoulder_drop_cm: (r.shoulder_ratio / e[1] - 1) * num('faBShoulder', 44),
+      dev_chest: d.chest, dev_shoulder: d.shoulder,
+      dev_length: d.length, dev_sleeve: d.sleeve,
+      worst_abs_dev: Math.max(...every.map(Math.abs)),
+      dev_spread: Math.max(...every) - Math.min(...every),
+      core_dev_mean: (d.chest + d.shoulder) / 2,
+      garment_type: r.garment_type,
+    };
+  }
+
+  function fitScore(d) {
+    const w = { chest: 0.38, shoulder: 0.32, length: 0.18, sleeve: 0.12 };
+    const penalty = Math.sqrt(
+      Object.keys(w).reduce((s, k) => s + w[k] * d[k] * d[k], 0));
+    return Math.max(0, Math.min(100,
+      100 * (1 - (penalty / M.tolerance.wearable) * 0.45)));
+  }
+
+  /* Softmax over the five classes. */
+  function classify(f) {
+    const P = M.preprocess, F = M.features;
+    const x = F.numeric.map((n, i) => (f[n] - P.scaler_mean[i]) / P.scaler_scale[i]);
+    F.categorical.forEach((col) => {
+      P.categories[col].forEach((lv) => x.push(f[col] === lv ? 1 : 0));
+    });
+    const logits = M.model.coef.map((row, k) =>
+      row.reduce((s, c, i) => s + c * x[i], M.model.intercept[k]));
+    const top = Math.max(...logits);
+    const exp = logits.map(v => Math.exp(v - top));
+    const sum = exp.reduce((a, b) => a + b, 0);
+    const probs = exp.map(v => v / sum);
+    const best = probs.indexOf(Math.max(...probs));
+    return { cls: M.classes[best], confidence: probs[best] };
+  }
+
+  function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+  function render() {
+    if (!M) return;
+    const r = ratios();
+    const d = deviations(r);
+    const f = features(r);
+    const { cls, confidence } = classify(f);
+    const score = fitScore(d);
+
+    const copy = M.class_copy[cls] || [cls, ''];
+    $('faVerdict').textContent = copy[0];
+    $('faNote').textContent = copy[1];
+    $('faConf').textContent = (confidence * 100).toFixed(1) + '% confidence'
+      + (active ? '  ·  test case truth: ' + active.truth : '');
+
+    $('faScore').textContent = Math.round(score);
+    const circ = 2 * Math.PI * 58;
+    $('faDialArc').setAttribute('stroke-dashoffset', String(circ * (1 - score / 100)));
+    $('faDialArc').setAttribute('stroke', score >= 78 ? '#1E7A52' : score >= 55 ? '#A9834E' : '#A8194E');
+
+    // Deviation bars: -30%..+30% mapped across the track, with the
+    // wearable band shaded so "inside tolerance" is visible at a glance.
+    const SPAN = 0.30, tol = M.tolerance.wearable;
+    const bandL = ((-tol + SPAN) / (2 * SPAN)) * 100;
+    const bandW = ((2 * tol) / (2 * SPAN)) * 100;
+    $('faDevs').innerHTML = PARTS.map(([key, , label]) => {
+      const v = Math.max(-SPAN, Math.min(SPAN, d[key]));
+      const zero = 50, pos = ((v + SPAN) / (2 * SPAN)) * 100;
+      const left = Math.min(zero, pos), width = Math.max(0.8, Math.abs(pos - zero));
+      const out = Math.abs(d[key]) > tol;
+      return '<div class="fa-dev">' +
+        '<div class="fa-dev-l">' + label + '</div>' +
+        '<div class="fa-dev-track">' +
+          '<div class="fa-dev-band" style="left:' + bandL + '%;width:' + bandW + '%"></div>' +
+          '<div class="fa-dev-mid"></div>' +
+          '<div class="fa-dev-bar' + (out ? ' is-out' : '') +
+            '" style="left:' + left + '%;width:' + width + '%"></div>' +
+        '</div>' +
+        '<div class="fa-dev-v' + (out ? ' is-out' : '') + '">' +
+          (d[key] >= 0 ? '+' : '') + (d[key] * 100).toFixed(1) + '%</div>' +
+      '</div>';
+    }).join('');
+
+    const mismatch = Math.max(0, Math.min(1, (100 - score) / 100));
+    $('faJson').innerHTML =
+      '{\n  <span class="k">"fit_class"</span>: <span class="s">"' + cls + '"</span>,\n' +
+      '  <span class="k">"fit_score"</span>: <span class="n">' + score.toFixed(1) + '</span>,\n' +
+      '  <span class="k">"confidence"</span>: <span class="n">' + confidence.toFixed(4) + '</span>,\n' +
+      '  <span class="k">"fit_mismatch_score"</span>: <span class="n">' + mismatch.toFixed(3) + '</span>\n}';
+
+    $('faHandoff').innerHTML =
+      '<b>This is where the two models meet.</b> The mirror measured ' +
+      '<code>fit_mismatch_score ' + mismatch.toFixed(3) + '</code> at purchase. ' +
+      'If this item is returned weeks later, Returns Guard reads that same number — ' +
+      'a high mismatch makes a &ldquo;doesn&rsquo;t fit&rdquo; claim <b>more</b> credible, ' +
+      'not less, because the garment really was cut wrong for this body.';
+  }
+
+  function applyPreset(p, btn) {
+    const cm = p.cm;
+    $('faGChest').value = cm.garment_chest_cm.toFixed(1);
+    $('faGShoulder').value = cm.garment_shoulder_cm.toFixed(1);
+    $('faGLength').value = cm.garment_length_cm.toFixed(1);
+    $('faGSleeve').value = cm.garment_sleeve_cm.toFixed(1);
+    $('faBChest').value = cm.body_chest_cm.toFixed(1);
+    $('faBShoulder').value = cm.body_shoulder_cm.toFixed(1);
+    $('faBTorso').value = cm.body_torso_cm.toFixed(1);
+    $('faBArm').value = cm.body_arm_cm.toFixed(1);
+    $('faType').value = p.values.garment_type;
+    active = p;
+    document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    render();
+  }
+
+  window.faReset = function () {
+    active = null;
+    document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
+    $('faGChest').value = 110; $('faGShoulder').value = 45.5;
+    $('faGLength').value = 70; $('faGSleeve').value = 60;
+    $('faBChest').value = 96; $('faBShoulder').value = 44;
+    $('faBTorso').value = 68; $('faBArm').value = 60;
+    $('faType').value = 'tshirt';
+    render();
+  };
+
+  fetch('fit_model.json')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(json => {
+      M = json;
+      const label = s => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      $('faType').innerHTML = M.preprocess.categories.garment_type
+        .map(g => '<option value="' + g + '">' + label(g) + '</option>').join('');
+      $('faPresets').innerHTML = M.presets
+        .map((p, i) => '<button class="rg-preset" data-i="' + i + '">' + esc(p.label) + '</button>').join('');
+      document.querySelectorAll('#faPresets .rg-preset').forEach(b => {
+        b.addEventListener('click', () => applyPreset(M.presets[+b.dataset.i], b));
+      });
+
+      const m = M.test_metrics;
+      $('faMetrics').innerHTML = [
+        [(m.accuracy * 100).toFixed(1) + '%', 'Accuracy'],
+        [m.macro_f1.toFixed(3), 'Macro F1'],
+        [String(M.classes.length), 'Fit classes'],
+        [m.n.toLocaleString(), 'Held-out cases'],
+      ].map(([v, l]) => '<div class="fa-metric"><div class="fa-metric-v">' + v +
+        '</div><div class="fa-metric-l">' + l + '</div></div>').join('');
+
+      $('faCap').innerHTML =
+        'Multinomial logistic regression over garment-to-body ratios, scored on device. ' +
+        'Tolerance bands are apparel ease allowances, not invented constants. ' +
+        'Trained on <b>synthetic data</b> — this demonstrates the measurement ' +
+        'architecture, not real-world accuracy.';
+
+      KEYS.concat(['faType']).forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('input', () => {
+          active = null;
+          document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
+          render();
+        });
+      });
+      $('faType').addEventListener('change', render);
+
+      const under = M.presets.find(p => p.cls === 'UNDERSIZED');
+      if (under) applyPreset(under, document.querySelector('#faPresets .rg-preset[data-i="' +
+        M.presets.indexOf(under) + '"]'));
+      else render();
+    })
+    .catch(err => {
+      const dot = $('faDot'), txt = $('faStatusText');
+      if (dot) dot.classList.remove('on');
+      if (txt) txt.textContent = 'fit_model.json not found';
+      console.error('[fit-analyser] could not load model:', err);
     });
 })();
 </script>

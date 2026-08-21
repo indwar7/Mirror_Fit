@@ -1,0 +1,407 @@
+{
+ "_comment": "Fit classifier trained on SYNTHETIC data derived from apparel ease allowances. Demonstrates the measurement architecture, not real accuracy.",
+ "classes": [
+  "GOOD_FIT",
+  "MADE_FOR_YOU",
+  "OVERSIZED",
+  "POOR_FIT",
+  "UNDERSIZED"
+ ],
+ "class_copy": {
+  "MADE_FOR_YOU": [
+   "Made for your body",
+   "Every measurement sits in the tailored band. This is as close as ready-to-wear gets to made-to-measure."
+  ],
+  "GOOD_FIT": [
+   "Good fit",
+   "Within normal tolerance across the board. Nothing a shopper would send back on fit alone."
+  ],
+  "OVERSIZED": [
+   "Oversized",
+   "Consistently larger than this body. Fine if the shopper wants it loose, a return risk if they do not."
+  ],
+  "UNDERSIZED": [
+   "Undersized",
+   "Consistently tighter than this body needs. The most common cause of a fit return."
+  ],
+  "POOR_FIT": [
+   "Poor fit",
+   "The measurements disagree with each other \u2014 the right size in one place and wrong in another. No single size will fix this cut."
+  ]
+ },
+ "features": {
+  "numeric": [
+   "chest_ratio",
+   "shoulder_ratio",
+   "length_ratio",
+   "sleeve_ratio",
+   "drape_slack",
+   "shoulder_drop_cm",
+   "dev_chest",
+   "dev_shoulder",
+   "dev_length",
+   "dev_sleeve",
+   "worst_abs_dev",
+   "dev_spread",
+   "core_dev_mean"
+  ],
+  "categorical": [
+   "garment_type"
+  ]
+ },
+ "preprocess": {
+  "scaler_mean": [
+   1.1777914548726844,
+   1.0526807349084595,
+   1.0387323002495292,
+   1.0198344501990517,
+   0.05790337881136507,
+   0.7192296129251214,
+   0.02295982067234285,
+   0.01929975975503498,
+   0.017759681531401283,
+   0.016712297201990352,
+   0.12303626839380698,
+   0.1214515917124826,
+   0.021129790213688916
+  ],
+  "scaler_scale": [
+   0.13394564343093532,
+   0.10523084113056357,
+   0.10679604316563857,
+   0.09211916242862066,
+   0.2548006007140016,
+   4.367259298912613,
+   0.1110474054339398,
+   0.10057478714091919,
+   0.10163643368825336,
+   0.0916497392547216,
+   0.07978747039531314,
+   0.06663853687432206,
+   0.09987999912770723
+  ],
+  "categories": {
+   "garment_type": [
+    "dress",
+    "jacket",
+    "shirt",
+    "trousers",
+    "tshirt"
+   ]
+  }
+ },
+ "model": {
+  "coef": [
+   [
+    -0.01711484999249026,
+    0.12533229771528256,
+    -0.1401021260764335,
+    0.06257666707687645,
+    -0.1275950267655851,
+    -0.036128474970306634,
+    0.17800995493852298,
+    -0.11549946640631145,
+    0.00923287154357553,
+    0.002963519070665352,
+    -8.247814152052925,
+    -2.545551660966401,
+    0.04080501331506871,
+    0.05065225026970517,
+    0.27503520631958484,
+    0.2727045955627073,
+    0.323031164331839,
+    0.14793252457873876
+   ],
+   [
+    0.05148813838383431,
+    0.18324582741358775,
+    -0.07838921104631259,
+    -0.02176591272507657,
+    -0.05038924745670365,
+    -0.13643051971520742,
+    -0.08741085836366072,
+    0.29367333129429657,
+    0.056624179653347165,
+    0.03369837480211305,
+    -26.47419405577291,
+    -4.077058344707901,
+    0.09926603889181095,
+    -0.686940539231005,
+    -0.6881858290518302,
+    -0.5585129254645993,
+    -0.3209655201425286,
+    -0.7358160841905647
+   ],
+   [
+    0.5393556664268768,
+    -0.0691592574049047,
+    0.25522819620542675,
+    0.06064682164380814,
+    0.13475312525626407,
+    0.9351256024620055,
+    0.5071597118879184,
+    0.052196579971335505,
+    0.028564362499952586,
+    0.08404808641664854,
+    11.034005767116824,
+    -2.3901708769674266,
+    0.30821200742680954,
+    0.26818770046738266,
+    -0.16368434798599085,
+    0.13566631648858982,
+    0.5159652272803296,
+    0.4335429972745506
+   ],
+   [
+    -0.48365774359835717,
+    0.5736324966199718,
+    0.210746226193885,
+    -0.06251799946782433,
+    0.44806162363654584,
+    -1.5803693730077888,
+    -0.06552265882099231,
+    0.834636330203904,
+    -0.2757239926896693,
+    -0.02266503187658764,
+    12.983137239184561,
+    11.261807429277159,
+    0.38379680947485173,
+    0.22161777343390254,
+    -0.11849395668384578,
+    -0.05650939663674603,
+    -0.2777976029050013,
+    -0.07907842879747172
+   ],
+   [
+    -0.09007121121985887,
+    -0.8130513643439371,
+    -0.24748308527656032,
+    -0.038939576527788476,
+    -0.40483047467053973,
+    0.8178027652312755,
+    -0.532236149641786,
+    -1.0650067750632373,
+    0.18130257899277238,
+    -0.09804494841283702,
+    10.704865201524411,
+    -2.2490265466354775,
+    -0.8320798691085602,
+    0.14648281506003988,
+    0.6953289274020507,
+    0.20665141005004953,
+    -0.24023326856465196,
+    0.2334189911347409
+   ]
+  ],
+  "intercept": [
+   6.723595675288845,
+   -11.698199541373958,
+   7.236060647691735,
+   -8.299602070306506,
+   6.03814528869966
+  ]
+ },
+ "ease": {
+  "tshirt": [
+   1.14,
+   1.03,
+   1.0,
+   1.0
+  ],
+  "shirt": [
+   1.16,
+   1.04,
+   1.06,
+   1.0
+  ],
+  "jacket": [
+   1.24,
+   1.07,
+   1.04,
+   1.02
+  ],
+  "dress": [
+   1.12,
+   1.02,
+   1.0,
+   1.0
+  ],
+  "trousers": [
+   1.1,
+   1.0,
+   1.0,
+   1.0
+  ]
+ },
+ "tolerance": {
+  "tailored": 0.045,
+  "wearable": 0.115
+ },
+ "test_metrics": {
+  "n": 2800,
+  "accuracy": 0.9682142857142857,
+  "macro_f1": 0.9589936814370379
+ },
+ "presets": [
+  {
+   "label": "Made for your body",
+   "cls": "MADE_FOR_YOU",
+   "truth": "MADE_FOR_YOU",
+   "values": {
+    "chest_ratio": 1.165122941569113,
+    "shoulder_ratio": 1.0406725534292507,
+    "length_ratio": 1.0675933261765667,
+    "sleeve_ratio": 0.9940502058166983,
+    "drape_slack": 0.05902100814110703,
+    "shoulder_drop_cm": 0.6295711231321033,
+    "dev_chest": 0.004416328938890546,
+    "dev_shoulder": 0.0006466859896641086,
+    "dev_length": 0.007163515260911968,
+    "dev_sleeve": -0.00594979418330166,
+    "worst_abs_dev": 0.007163515260911968,
+    "dev_spread": 0.013113309444213628,
+    "core_dev_mean": 0.002531507464277327,
+    "garment_type": "shirt",
+    "size_label": "M"
+   },
+   "cm": {
+    "body_chest_cm": 95.2,
+    "body_shoulder_cm": 43.6,
+    "body_torso_cm": 68.2,
+    "body_arm_cm": 59.8,
+    "garment_chest_cm": 111.7,
+    "garment_shoulder_cm": 44.0,
+    "garment_length_cm": 73.7,
+    "garment_sleeve_cm": 61.1
+   }
+  },
+  {
+   "label": "Good fit",
+   "cls": "GOOD_FIT",
+   "truth": "GOOD_FIT",
+   "values": {
+    "chest_ratio": 1.2525955782532483,
+    "shoulder_ratio": 1.0684494763525398,
+    "length_ratio": 0.9561902031379196,
+    "sleeve_ratio": 1.0844896639239436,
+    "drape_slack": -0.032969312382006385,
+    "shoulder_drop_cm": -0.2869535634314242,
+    "dev_chest": 0.010157724397780843,
+    "dev_shoulder": -0.0014490875209908216,
+    "dev_length": -0.08058634313661583,
+    "dev_sleeve": 0.0632251607097487,
+    "worst_abs_dev": 0.08058634313661583,
+    "dev_spread": 0.14381150384636454,
+    "core_dev_mean": 0.004354318438395011,
+    "garment_type": "jacket",
+    "size_label": "S"
+   },
+   "cm": {
+    "body_chest_cm": 93.1,
+    "body_shoulder_cm": 41.0,
+    "body_torso_cm": 69.1,
+    "body_arm_cm": 56.4,
+    "garment_chest_cm": 117.3,
+    "garment_shoulder_cm": 44.0,
+    "garment_length_cm": 66.9,
+    "garment_sleeve_cm": 60.4
+   }
+  },
+  {
+   "label": "Oversized",
+   "cls": "OVERSIZED",
+   "truth": "OVERSIZED",
+   "values": {
+    "chest_ratio": 1.504262456957212,
+    "shoulder_ratio": 1.3156546666483147,
+    "length_ratio": 1.4058153132736735,
+    "sleeve_ratio": 1.3544247699251022,
+    "drape_slack": 0.8972005537698835,
+    "shoulder_drop_cm": 12.550142607272905,
+    "dev_chest": 0.3675113245065562,
+    "dev_shoulder": 0.31565466664831465,
+    "dev_length": 0.4058153132736735,
+    "dev_sleeve": 0.3544247699251022,
+    "worst_abs_dev": 0.4058153132736735,
+    "dev_spread": 0.09016064662535883,
+    "core_dev_mean": 0.34158299557743543,
+    "garment_type": "trousers",
+    "size_label": "XXL"
+   },
+   "cm": {
+    "body_chest_cm": 84.7,
+    "body_shoulder_cm": 40.4,
+    "body_torso_cm": 58.4,
+    "body_arm_cm": 55.8,
+    "garment_chest_cm": 125.7,
+    "garment_shoulder_cm": 52.8,
+    "garment_length_cm": 83.9,
+    "garment_sleeve_cm": 76.4
+   }
+  },
+  {
+   "label": "Undersized",
+   "cls": "UNDERSIZED",
+   "truth": "UNDERSIZED",
+   "values": {
+    "chest_ratio": 0.8451531840803904,
+    "shoulder_ratio": 0.76113287146355,
+    "length_ratio": 0.8389874556088409,
+    "sleeve_ratio": 0.8321136065638493,
+    "drape_slack": -0.35,
+    "shoulder_drop_cm": -13.968245663464014,
+    "dev_chest": -0.27141966889621516,
+    "dev_shoulder": -0.2681414697465866,
+    "dev_length": -0.20850240036901801,
+    "dev_sleeve": -0.16788639343615075,
+    "worst_abs_dev": 0.27141966889621516,
+    "dev_spread": 0.10353327546006441,
+    "core_dev_mean": -0.2697805693214009,
+    "garment_type": "shirt",
+    "size_label": "XS"
+   },
+   "cm": {
+    "body_chest_cm": 118.3,
+    "body_shoulder_cm": 53.2,
+    "body_torso_cm": 74.3,
+    "body_arm_cm": 65.3,
+    "garment_chest_cm": 101.1,
+    "garment_shoulder_cm": 40.2,
+    "garment_length_cm": 62.0,
+    "garment_sleeve_cm": 53.5
+   }
+  },
+  {
+   "label": "Poor fit",
+   "cls": "POOR_FIT",
+   "truth": "POOR_FIT",
+   "values": {
+    "chest_ratio": 1.1490063712095964,
+    "shoulder_ratio": 0.9301811697034916,
+    "length_ratio": 1.3213748985520086,
+    "sleeve_ratio": 1.0952401613101894,
+    "drape_slack": 0.059205282239618094,
+    "shoulder_drop_cm": -5.053626283006737,
+    "dev_chest": 0.00790032562245302,
+    "dev_shoulder": -0.09691148572476538,
+    "dev_length": 0.3213748985520086,
+    "dev_sleeve": 0.09524016131018942,
+    "worst_abs_dev": 0.3213748985520086,
+    "dev_spread": 0.418286384276774,
+    "core_dev_mean": -0.04450558005115618,
+    "garment_type": "tshirt",
+    "size_label": "M"
+   },
+   "cm": {
+    "body_chest_cm": 101.5,
+    "body_shoulder_cm": 43.6,
+    "body_torso_cm": 68.9,
+    "body_arm_cm": 59.5,
+    "garment_chest_cm": 116.2,
+    "garment_shoulder_cm": 40.0,
+    "garment_length_cm": 89.4,
+    "garment_sleeve_cm": 62.5
+   }
+  }
+ ]
+}
