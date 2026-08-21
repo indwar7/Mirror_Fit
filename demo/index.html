@@ -142,7 +142,7 @@ header {
 .app { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 60px); position: relative; z-index: 1; }
 .sidebar {
   width: 344px; flex-shrink: 0; display: flex; flex-direction: column;
-  overflow-y: auto; padding: 26px 22px; gap: 22px;
+  overflow-y: auto; padding: 20px 22px; gap: 16px;
   background: var(--white);
   border-right: 1px solid var(--line);
   position: relative;
@@ -150,13 +150,14 @@ header {
 .sidebar::-webkit-scrollbar { width: 4px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--line-2); }
-.panel { display: none; flex-direction: column; gap: 22px; }
+.panel { display: none; flex-direction: column; gap: 16px; }
 .panel.active { display: flex; }
 .sticky-action {
-  position: sticky; bottom: -26px;
+  position: sticky; bottom: -20px;
   background: var(--white);
-  margin: 0 -22px -26px; padding: 18px 22px 26px;
+  margin: 0 -22px -20px; padding: 16px 22px 20px;
   border-top: 1px solid var(--line);
+  box-shadow: 0 -10px 20px -8px rgba(20,17,15,0.10);
   z-index: 5;
 }
 
@@ -168,7 +169,7 @@ header {
   border: none;
   border-top: 1px solid var(--line);
   border-radius: 0;
-  padding: 18px 0 0;
+  padding: 14px 0 0;
   position: relative;
 }
 .panel > .card:first-child { border-top: none; padding-top: 0; }
@@ -648,8 +649,18 @@ body.landing-active .app { display: none !important; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
 @keyframes spin  { to { transform: rotate(360deg) } }
 
-.main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 34px; position: relative; gap: 18px; overflow-y: auto; background: var(--ivory); }
-.canvas-wrap { width: 100%; max-width: 620px; position: relative; border-radius: 0; overflow: hidden; background: var(--white); border: 1px solid var(--line); aspect-ratio: 1; }
+.main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px 26px; position: relative; gap: 14px; overflow-y: auto; background: var(--ivory); }
+/* The square is capped by viewport height as well as width. Without the
+   cap, two 1:1 panes on a short laptop screen overflow downward and push
+   the sidebar controls out of reach. */
+.canvas-wrap {
+  width: 100%; max-width: 620px;
+  position: relative; border-radius: 0; overflow: hidden;
+  background: var(--white); border: 1px solid var(--line);
+  aspect-ratio: 1;
+  max-height: calc(100vh - 190px);
+  margin-inline: auto;
+}
 .canvas-wrap canvas, .canvas-wrap video { width: 100%; height: 100%; display: block; object-fit: cover; }
 .twin-grid .canvas-wrap { aspect-ratio: auto; }
 .twin-grid .canvas-wrap video { height: auto; object-fit: contain; }

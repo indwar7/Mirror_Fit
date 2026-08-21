@@ -63,6 +63,16 @@ _MP_HANDS_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/latest/hand_landmarker.task"
 )
+_MP_POSE_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+)
+
+# Pose landmark indices we care about (MediaPipe's 33-point topology).
+POSE_L_SHOULDER, POSE_R_SHOULDER = 11, 12
+POSE_L_ELBOW, POSE_R_ELBOW = 13, 14
+POSE_L_WRIST, POSE_R_WRIST = 15, 16
+POSE_L_HIP, POSE_R_HIP = 23, 24
 
 
 def _mp_download(url: str, dest: Path):
@@ -77,20 +87,29 @@ def _mp_download(url: str, dest: Path):
 
 
 def _load_mediapipe_tasks():
-    """Returns (segmenter, hand_landmarker) using the Tasks API — works on
-    Windows, Linux and Mac (unlike the legacy `solutions` API)."""
+    """Returns (segmenter, hand_landmarker, pose_landmarker) via the Tasks
+    API — works on Windows, Linux and Mac (unlike the legacy `solutions`
+    API).
+
+    The pose landmarker is what makes garment placement independent of
+    posture: shoulders and hips locate the torso wherever the body happens
+    to be, instead of assuming it sits directly below the chin.
+    """
     import mediapipe as mp
     from mediapipe.tasks.python import BaseOptions
     from mediapipe.tasks.python.vision import (
         ImageSegmenter, ImageSegmenterOptions,
         HandLandmarker, HandLandmarkerOptions,
+        PoseLandmarker, PoseLandmarkerOptions,
         RunningMode,
     )
 
     seg_path = _MP_MODELS_DIR / "selfie_segmenter.tflite"
     hands_path = _MP_MODELS_DIR / "hand_landmarker.task"
+    pose_path = _MP_MODELS_DIR / "pose_landmarker_lite.task"
     _mp_download(_MP_SEG_URL, seg_path)
     _mp_download(_MP_HANDS_URL, hands_path)
+    _mp_download(_MP_POSE_URL, pose_path)
 
     segmenter = ImageSegmenter.create_from_options(ImageSegmenterOptions(
         base_options=BaseOptions(model_asset_path=str(seg_path)),
@@ -106,7 +125,16 @@ def _load_mediapipe_tasks():
         min_hand_presence_confidence=0.4,
         min_tracking_confidence=0.4,
     ))
-    return segmenter, hand_landmarker
+    pose_landmarker = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(pose_path)),
+        running_mode=RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.4,
+        min_pose_presence_confidence=0.4,
+        min_tracking_confidence=0.4,
+        output_segmentation_masks=False,
+    ))
+    return segmenter, hand_landmarker, pose_landmarker
 
 
 # ── Tier 1: TensorRT + CUDA graph ────────────────────────────────────────────
@@ -194,11 +222,12 @@ class TryOnModel:
         # (`mediapipe.tasks`) is available there. Using Tasks API unconditionally
         # so this works the same on Windows, Linux and Mac.
         try:
-            self._mp_seg, self._mp_hands = _load_mediapipe_tasks()
-            log.info("MediaPipe loaded (seg + hands, Tasks API).")
+            self._mp_seg, self._mp_hands, self._mp_pose = _load_mediapipe_tasks()
+            log.info("MediaPipe loaded (seg + hands + pose, Tasks API).")
         except Exception as e:
             self._mp_seg   = None
             self._mp_hands = None
+            self._mp_pose  = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
@@ -1273,6 +1302,118 @@ class TryOnModel:
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
+    def _pose_torso_region(self, frame_rgb: np.ndarray):
+        """Locate the torso from body landmarks instead of from the chin.
+
+        Returns (region, neck_y) where `region` is a soft HxW mask covering
+        torso + sleeves, or None when pose is unavailable or too uncertain.
+
+        Why this exists: the fallback geometry defines the torso as "the
+        horizontal band below the detected chin", which silently assumes the
+        wearer is upright. Someone reclining, leaning far over, or lying
+        down has a torso that is beside or behind their head in image space,
+        not below it — and the garment lands on their face. Shoulders and
+        hips locate the torso whatever the posture, so the mask follows the
+        body rather than the frame.
+        """
+        if self._mp_pose is None:
+            return None
+        try:
+            import mediapipe as mp
+
+            h, w = frame_rgb.shape[:2]
+            image = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=np.ascontiguousarray(frame_rgb),
+            )
+            result = self._mp_pose.detect(image)
+            if not result.pose_landmarks:
+                return None
+            marks = result.pose_landmarks[0]
+
+            def point(index: int):
+                lm = marks[index]
+                return (
+                    np.array([lm.x * w, lm.y * h], dtype=np.float32),
+                    float(getattr(lm, "visibility", 1.0)),
+                )
+
+            l_sh, v_lsh = point(POSE_L_SHOULDER)
+            r_sh, v_rsh = point(POSE_R_SHOULDER)
+            l_hip, v_lhip = point(POSE_L_HIP)
+            r_hip, v_rhip = point(POSE_R_HIP)
+
+            # Both shoulders must be credible; hips may be out of frame on a
+            # head-and-shoulders crop, so they are allowed to be inferred.
+            if min(v_lsh, v_rsh) < 0.5:
+                return None
+
+            shoulder_span = float(np.linalg.norm(l_sh - r_sh))
+            if shoulder_span < 0.06 * w:      # implausibly small — bad detection
+                return None
+
+            shoulder_mid = (l_sh + r_sh) / 2.0
+            if min(v_lhip, v_rhip) < 0.35:
+                # Hips not visible: project a torso length down the body axis.
+                axis = shoulder_mid - (point(0)[0])       # nose -> shoulders
+                norm = np.linalg.norm(axis)
+                axis = axis / norm if norm > 1e-3 else np.array([0.0, 1.0], np.float32)
+                hip_mid = shoulder_mid + axis * (1.55 * shoulder_span)
+                offset = (l_sh - r_sh) * 0.42
+                l_hip, r_hip = hip_mid + offset, hip_mid - offset
+            hip_mid = (l_hip + r_hip) / 2.0
+
+            gtype = getattr(self, "_garment_type", "tshirt")
+            hem_extend = {"tshirt": 0.10, "shirt": 0.24, "jacket": 0.34}.get(gtype, 0.10)
+            body_axis = hip_mid - shoulder_mid
+            l_hem = l_hip + body_axis * hem_extend
+            r_hem = r_hip + body_axis * hem_extend
+
+            # Widen away from the body centre so the garment has bulk.
+            centre = (shoulder_mid + hip_mid) / 2.0
+            def widen(p, factor=1.20):
+                return centre + (p - centre) * factor
+
+            region = np.zeros((h, w), dtype=np.float32)
+            torso = np.array(
+                [widen(l_sh), widen(r_sh), widen(r_hem), widen(l_hem)],
+                dtype=np.int32,
+            )
+            cv2.fillPoly(region, [torso], 1.0)
+
+            # Sleeves follow the arm chain. A tee stops at the upper arm; a
+            # shirt or jacket runs to the wrist.
+            sleeve_thickness = max(6, int(shoulder_span * 0.36))
+            for shoulder_i, elbow_i, wrist_i in (
+                (POSE_L_SHOULDER, POSE_L_ELBOW, POSE_L_WRIST),
+                (POSE_R_SHOULDER, POSE_R_ELBOW, POSE_R_WRIST),
+            ):
+                shoulder, v_s = point(shoulder_i)
+                elbow, v_e = point(elbow_i)
+                if min(v_s, v_e) < 0.4:
+                    continue
+                if gtype == "tshirt":
+                    end = shoulder + (elbow - shoulder) * 0.62
+                    cv2.line(region, tuple(shoulder.astype(int)), tuple(end.astype(int)),
+                             1.0, sleeve_thickness)
+                else:
+                    cv2.line(region, tuple(shoulder.astype(int)), tuple(elbow.astype(int)),
+                             1.0, sleeve_thickness)
+                    wrist, v_w = point(wrist_i)
+                    if v_w >= 0.4:
+                        cv2.line(region, tuple(elbow.astype(int)), tuple(wrist.astype(int)),
+                                 1.0, int(sleeve_thickness * 0.82))
+
+            region = cv2.GaussianBlur(region, (31, 31), 0).clip(0, 1)
+
+            # Neck line: the shoulder line, not a chin row. Used downstream
+            # for the fabric fade so the pattern starts at the collar.
+            neck_y = int(np.clip(min(l_sh[1], r_sh[1]) - 0.10 * shoulder_span, 0, h - 1))
+            return region, neck_y
+        except Exception as e:
+            log.debug(f"pose torso unavailable: {e}")
+            return None
+
     def _build_body_mask(self, frame_rgb: np.ndarray):
         """
         Build three masks from a 512x512 RGB person frame:
@@ -1519,14 +1660,26 @@ class TryOnModel:
         except Exception:
             pass
 
-        # 3. Torso band — restrict mask vertically. Extended bottom to
-        # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
-        # rather than cutting off at mid-thigh leaving a visible hem oval.
-        band = np.zeros((h, w), dtype=np.float32)
-        band[face_cutoff_y:int(h * 0.98), :] = 1.0
-        band = cv2.GaussianBlur(band, (15, 15), 0)
+        # 3. Torso region.
+        #
+        # Preferred: a polygon built from the wearer's own shoulders and
+        # hips, which is correct at any posture.
+        #
+        # Fallback: the horizontal band below the chin. That band is only
+        # right for an upright wearer — reclined or leaning, the region
+        # below the chin is the wearer's face and the garment lands there.
+        # It is kept solely because pose detection can fail, and a mask in
+        # roughly the wrong place still beats no mask at all.
+        pose_region = self._pose_torso_region(frame_rgb)
+        if pose_region is not None:
+            band, pose_neck_y = pose_region
+            face_cutoff_y = int(np.clip(pose_neck_y, h * 0.05, h * 0.90))
+        else:
+            band = np.zeros((h, w), dtype=np.float32)
+            band[face_cutoff_y:int(h * 0.98), :] = 1.0
+            band = cv2.GaussianBlur(band, (15, 15), 0)
 
-        # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
+        # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
 
         # ── GrabCut body extraction: garment ONLY on body, not behind ───
