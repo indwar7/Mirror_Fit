@@ -683,6 +683,111 @@ body.landing-active .app { display: none !important; }
 * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 
 /* ══════════════════════════════════════════════════════════════════
+   RETURNS GUARD — cost-sensitive return-fraud triage
+   ══════════════════════════════════════════════════════════════════ */
+.rg-field { margin-bottom: 14px; }
+.rg-field:last-child { margin-bottom: 0; }
+.rg-label {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 7px;
+}
+.rg-label b { font-family: 'Jost', sans-serif; font-size: 12px; font-weight: 500; color: var(--ink); letter-spacing: 0.02em; }
+.rg-field select, .rg-field input[type="number"] {
+  width: 100%; padding: 9px 11px;
+  font-family: 'Jost', sans-serif; font-size: 13px; color: var(--ink);
+  background: var(--white); border: 1px solid var(--line-2); border-radius: var(--r);
+}
+.rg-field select:focus, .rg-field input[type="number"]:focus { outline: none; border-color: var(--berry); }
+.rg-field input[type="range"] { width: 100%; accent-color: var(--berry); cursor: pointer; }
+.rg-field.is-off { opacity: 0.4; pointer-events: none; }
+.rg-check { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
+.rg-check input { accent-color: var(--berry); cursor: pointer; }
+.rg-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.rg-preset {
+  font-family: 'Jost', sans-serif; font-size: 10px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 9px 8px; cursor: pointer; text-align: center;
+  background: var(--white); color: var(--ink);
+  border: 1px solid var(--line-2); border-radius: var(--r);
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.rg-preset:hover { background: var(--ink); color: var(--ivory); border-color: var(--ink); }
+.rg-preset.active { background: var(--berry); color: var(--white); border-color: var(--berry); }
+
+/* ── Result panel ── */
+.rg-wrap { width: 100%; max-width: 940px; margin: 0 auto; }
+.rg-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
+.rg-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.rg-score { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 68px; line-height: 1; color: var(--ink); }
+.rg-score-l { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+.rg-verdict {
+  font-family: 'Jost', sans-serif; font-size: 11px; font-weight: 500;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 11px 20px; border-radius: var(--r); white-space: nowrap;
+}
+.rg-verdict.is-review { background: var(--berry); color: var(--white); }
+.rg-verdict.is-approve { background: transparent; color: var(--ok); border: 1px solid rgba(30,122,82,0.45); }
+
+/* ── Risk bar ── */
+.rg-bar-wrap { margin-top: 26px; }
+.rg-bar { position: relative; height: 8px; background: var(--ivory-2); border: 1px solid var(--line); }
+.rg-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--ink); transition: width 0.35s cubic-bezier(.2,.7,.3,1); }
+.rg-bar-fill.is-review { background: var(--berry); }
+.rg-bar-mark { position: absolute; top: -7px; bottom: -7px; width: 1.5px; background: var(--gold); transition: left 0.2s; }
+.rg-bar-mark::after {
+  content: 'THRESHOLD'; position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
+  font-size: 8px; letter-spacing: 0.16em; color: var(--gold-ink); white-space: nowrap;
+}
+.rg-bar-ends { display: flex; justify-content: space-between; margin-top: 9px; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+/* ── Payload + codes ── */
+.rg-split { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--line); }
+.rg-h { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+.rg-json {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.7;
+  background: var(--ivory-2); border: 1px solid var(--line); padding: 14px 16px;
+  color: var(--ink); white-space: pre; overflow-x: auto;
+}
+.rg-json .k { color: var(--muted); }
+.rg-json .s { color: var(--berry); }
+.rg-json .n { color: var(--gold-ink); }
+.rg-codes { display: flex; flex-wrap: wrap; gap: 7px; }
+.rg-code {
+  font-size: 9.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 6px 10px; border: 1px solid var(--line-2); border-radius: var(--r); color: var(--ink-2);
+}
+.rg-code.is-clear { border-color: rgba(30,122,82,0.4); color: var(--ok); }
+.rg-none { font-size: 12.5px; color: var(--muted); font-weight: 300; }
+
+.rg-truth { margin-top: 26px; padding: 14px 18px; border-left: 2px solid var(--gold); background: var(--ivory-2); font-size: 13px; line-height: 1.65; color: var(--ink-2); font-weight: 300; }
+.rg-truth b { font-weight: 500; color: var(--ink); }
+.rg-truth.is-wrong { border-left-color: var(--berry); }
+
+.rg-guard { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.7; color: var(--ink-2); font-weight: 300; }
+.rg-guard b { font-weight: 500; color: var(--ink); }
+
+/* ── Metrics + candidates ── */
+.rg-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 20px; }
+.rg-metric { background: var(--white); padding: 18px 16px; }
+.rg-metric-v { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 27px; color: var(--ink); line-height: 1; }
+.rg-metric-l { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+.rg-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: var(--white); }
+.rg-table th, .rg-table td { padding: 11px 12px; text-align: right; border-bottom: 1px solid var(--line); font-size: 12px; }
+.rg-table th { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.rg-table th:first-child, .rg-table td:first-child { text-align: left; }
+.rg-table tr.is-pick td { background: var(--ivory-2); font-weight: 500; }
+.rg-table tr.is-pick td:first-child { box-shadow: inset 2px 0 0 var(--berry); }
+.rg-cap { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.65; margin-top: 14px; }
+
+@media (max-width: 900px) {
+  .rg-split { grid-template-columns: 1fr; }
+  .rg-metrics { grid-template-columns: repeat(2,1fr); }
+  .rg-card { padding: 22px 20px; }
+  .rg-score { font-size: 54px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
    ══════════════════════════════════════════════════════════════════ */
 @media (max-width: 1080px) {
@@ -1189,6 +1294,7 @@ body.landing-active .app { display: none !important; }
     <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
     <button class="tab" onclick="switchTab('ar')">AR Avatar</button>
     <button class="tab" onclick="switchTab('twin')">AI Twin</button>
+    <button class="tab" onclick="switchTab('returns')">Returns Guard</button>
   </div>
   <div style="width:120px"></div>
 </header>
@@ -1439,6 +1545,81 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+
+    <!-- RETURNS GUARD — cost-sensitive return-fraud triage -->
+    <div class="panel" id="panel-returns">
+      <div class="card">
+        <div class="card-label">Step 1 · Load a case</div>
+        <div class="rg-presets" id="rgPresets"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · The return</div>
+
+        <div class="rg-field">
+          <label class="rg-check">
+            <input type="checkbox" id="rgTryon" checked> Used virtual try-on at purchase
+          </label>
+        </div>
+
+        <div class="rg-field" id="rgFitField">
+          <div class="rg-label">Fit mismatch at purchase <b id="rgFitVal">0.30</b></div>
+          <input type="range" id="rgFit" min="0" max="1" step="0.01" value="0.30">
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Garment</div>
+          <select id="rgGarment"></select>
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Return reason</div>
+          <select id="rgReason"></select>
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Days since purchase <b id="rgDaysVal">8</b></div>
+          <input type="range" id="rgDays" min="1" max="60" step="1" value="8">
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Order value (₹)</div>
+          <input type="number" id="rgValue" value="1800" min="299" max="40000" step="50">
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 3 · The customer</div>
+
+        <div class="rg-field">
+          <div class="rg-label">Orders (12 mo)</div>
+          <input type="number" id="rgOrders" value="5" min="0" max="60" step="1">
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Returns (12 mo) <b id="rgRateVal">—</b></div>
+          <input type="number" id="rgReturns" value="1" min="0" max="60" step="1">
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Account age (days)</div>
+          <input type="number" id="rgAge" value="540" min="1" max="3000" step="1">
+        </div>
+
+        <div class="rg-field">
+          <div class="rg-label">Discount taken <b id="rgDiscVal">12%</b></div>
+          <input type="range" id="rgDisc" min="0" max="70" step="0.5" value="12">
+        </div>
+      </div>
+
+      <div class="sticky-action">
+        <div class="status-row" style="margin-bottom:10px">
+          <div class="dot on" id="rgDot"></div>
+          <span id="rgStatusText">Scoring live · on device</span>
+        </div>
+        <button class="btn btn-ghost" onclick="rgReset()">Reset to a typical return</button>
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════ MAIN DISPLAY ══════════════ -->
@@ -1590,6 +1771,59 @@ body.landing-active .app { display: none !important; }
       </div>
     </div>
 
+
+    <!-- RETURNS GUARD — result -->
+    <div id="returnsWrap" style="display:none;width:100%">
+      <div class="rg-wrap">
+        <div class="rg-card">
+          <div class="rg-top">
+            <div>
+              <div class="rg-score" id="rgScore">0.000</div>
+              <div class="rg-score-l">Probability of fraud</div>
+            </div>
+            <div class="rg-verdict is-approve" id="rgVerdict">Approve refund</div>
+          </div>
+
+          <div class="rg-bar-wrap">
+            <div class="rg-bar">
+              <div class="rg-bar-fill" id="rgFill" style="width:0%"></div>
+              <div class="rg-bar-mark" id="rgMark" style="left:78.7%"></div>
+            </div>
+            <div class="rg-bar-ends">
+              <span>0 · certainly genuine</span>
+              <span>certainly fraud · 1</span>
+            </div>
+          </div>
+
+          <div class="rg-split">
+            <div>
+              <div class="rg-h">Returned payload</div>
+              <div class="rg-json" id="rgJson"></div>
+            </div>
+            <div>
+              <div class="rg-h">Reason codes for the reviewer</div>
+              <div class="rg-codes" id="rgCodes"></div>
+            </div>
+          </div>
+
+          <div class="rg-truth" id="rgTruth" style="display:none"></div>
+
+          <div class="rg-guard">
+            <b>This screen cannot deny a refund.</b> The only two outcomes are
+            <em>approve&nbsp;refund</em> and <em>route&nbsp;to&nbsp;review</em>, so a wrongly
+            flagged customer loses time, never their money. The threshold is set where
+            flagging costs less than not flagging, given a false positive is treated as
+            5× worse than a false negative.
+          </div>
+        </div>
+
+        <div class="rg-metrics" id="rgMetrics"></div>
+
+        <table class="rg-table" id="rgCandidates"></table>
+        <div class="rg-cap" id="rgCap"></div>
+      </div>
+    </div>
+
     <!-- Placeholder -->
     <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px">
       <div style="font-size:34px;opacity:0.28">◻</div>
@@ -1633,7 +1867,7 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','liveportrait','tryon','ar','twin'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon','ar','twin','returns'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
@@ -1642,6 +1876,7 @@ function switchTab(t) {
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
   document.getElementById('arWrap').style.display      = t==='ar'           ? 'grid' : 'none';
   document.getElementById('twinWrap').style.display    = t==='twin'         ? 'grid' : 'none';
+  document.getElementById('returnsWrap').style.display = t==='returns'      ? 'block' : 'none';
   document.getElementById('placeholder').style.display = 'none';
 }
 
@@ -2969,6 +3204,272 @@ window.toggleArAvatar = async function() {
   })();
 
   paint();
+})();
+</script>
+<script>
+/* ── Returns Guard ─────────────────────────────────────────────────
+   Cost-sensitive return-fraud triage, scored in the browser.
+
+   The shipped model is logistic regression, so inference is a dot
+   product and a sigmoid. Running it client-side means this screen has
+   no dependency on the GPU box — it keeps working whether or not the
+   try-on backend is up. The weights and the fitted preprocessing
+   constants come from returns_model.json, exported by
+   `python -m returns_risk.export_model`.
+
+   Verified against scikit-learn: identical to 2.2e-16 on every preset.
+
+   The model was trained on SYNTHETIC data. It demonstrates the decision
+   architecture, not real-world accuracy.
+   ────────────────────────────────────────────────────────────────── */
+(function () {
+  let M = null, activePreset = null;
+
+  const $ = (id) => document.getElementById(id);
+  const NUM_IDS = {
+    fit_mismatch_score: 'rgFit', days_since_purchase: 'rgDays',
+    order_value_inr: 'rgValue', prior_orders_12m: 'rgOrders',
+    prior_returns_12m: 'rgReturns', account_age_days: 'rgAge',
+    discount_pct: 'rgDisc',
+  };
+
+  /* ── Inference — mirrors the sklearn Pipeline exactly ── */
+  function score(values) {
+    const P = M.preprocess, F = M.features;
+    const num = [];
+    F.numeric.forEach((name, i) => {
+      const x = values[name];
+      const missing = (x === null || x === undefined || Number.isNaN(x));
+      num.push(missing ? P.impute_medians[i] : Number(x));
+    });
+    // SimpleImputer(add_indicator=True) appends indicators after the block.
+    P.indicator_features.forEach((name) => {
+      const x = values[name];
+      num.push((x === null || x === undefined || Number.isNaN(x)) ? 1 : 0);
+    });
+    const row = num.map((x, i) => (x - P.scaler_mean[i]) / P.scaler_scale[i]);
+
+    F.categorical.forEach((col) => {
+      P.categories[col].forEach((level) => row.push(values[col] === level ? 1 : 0));
+    });
+    F.boolean.forEach((name) => row.push(values[name] ? 1 : 0));
+
+    let z = M.model.intercept;
+    for (let i = 0; i < row.length; i++) z += M.model.coef[i] * row[i];
+    return 1 / (1 + Math.exp(-z));
+  }
+
+  /* ── Reason codes — mirrors returns_risk/decision.py:explain() ── */
+  function explain(v) {
+    const codes = [];
+    const hasFit = v.fit_mismatch_score !== null && v.fit_mismatch_score !== undefined
+                   && !Number.isNaN(v.fit_mismatch_score);
+    if (v.return_reason === 'doesnt_fit' && v.used_tryon && hasFit && v.fit_mismatch_score < 0.25)
+      codes.push(['FIT_CLAIM_CONTRADICTS_TRYON', false]);
+    if (v.return_reason === 'doesnt_fit' && !v.used_tryon)
+      codes.push(['FIT_CLAIM_WITHOUT_TRYON', false]);
+    if ((v.prior_return_rate || 0) >= 0.5) codes.push(['HIGH_PRIOR_RETURN_RATE', false]);
+    if ((v.days_since_purchase || 0) > 28) codes.push(['LATE_IN_RETURN_WINDOW', false]);
+    if ((v.order_value_inr || 0) >= 6000) codes.push(['HIGH_VALUE_ORDER', false]);
+    if ((v.account_age_days ?? 9999) <= 60) codes.push(['NEW_ACCOUNT', false]);
+    if (v.return_reason === 'not_as_described' || v.return_reason === 'damaged')
+      codes.push(['REASON_' + v.return_reason.toUpperCase(), false]);
+    // An exculpatory code matters as much as an incriminating one.
+    if (v.return_reason === 'doesnt_fit' && hasFit && v.fit_mismatch_score >= 0.55)
+      codes.push(['FIT_CLAIM_SUPPORTED_BY_TRYON', true]);
+    return codes;
+  }
+
+  /* ── Read the form ── */
+  function readForm() {
+    const usedTryon = $('rgTryon').checked;
+    const orders = Math.max(0, parseInt($('rgOrders').value || '0', 10));
+    let returns = Math.max(0, parseInt($('rgReturns').value || '0', 10));
+    if (returns > orders) { returns = orders; $('rgReturns').value = String(returns); }
+
+    return {
+      fit_mismatch_score: usedTryon ? parseFloat($('rgFit').value) : null,
+      days_since_purchase: parseFloat($('rgDays').value),
+      order_value_inr: parseFloat($('rgValue').value || '0'),
+      prior_orders_12m: orders,
+      prior_returns_12m: returns,
+      prior_return_rate: orders > 0 ? returns / orders : 0,
+      account_age_days: parseFloat($('rgAge').value || '0'),
+      discount_pct: parseFloat($('rgDisc').value),
+      garment_type: $('rgGarment').value,
+      return_reason: $('rgReason').value,
+      used_tryon: usedTryon,
+    };
+  }
+
+  function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+  /* ── Render ── */
+  function render() {
+    if (!M) return;
+    const v = readForm();
+    const p = score(v);
+    const threshold = M.decision.threshold;
+    const flagged = p >= threshold;
+    const action = flagged ? 'route_to_review' : 'approve_refund';
+
+    // Live echoes on the sliders
+    $('rgFitVal').textContent = v.used_tryon ? v.fit_mismatch_score.toFixed(2) : 'n/a';
+    $('rgDaysVal').textContent = v.days_since_purchase;
+    $('rgDiscVal').textContent = v.discount_pct + '%';
+    $('rgRateVal').textContent = 'rate ' + (v.prior_return_rate * 100).toFixed(0) + '%';
+    $('rgFitField').classList.toggle('is-off', !v.used_tryon);
+
+    $('rgScore').textContent = p.toFixed(3);
+    const verdict = $('rgVerdict');
+    verdict.textContent = flagged ? 'Route to review' : 'Approve refund';
+    verdict.className = 'rg-verdict ' + (flagged ? 'is-review' : 'is-approve');
+
+    const fill = $('rgFill');
+    fill.style.width = (p * 100).toFixed(2) + '%';
+    fill.className = 'rg-bar-fill' + (flagged ? ' is-review' : '');
+    $('rgMark').style.left = (threshold * 100).toFixed(2) + '%';
+
+    $('rgJson').innerHTML =
+      '{\n  <span class="k">"flagged"</span>: <span class="n">' + flagged + '</span>,\n' +
+      '  <span class="k">"confidence"</span>: <span class="n">' + p.toFixed(4) + '</span>,\n' +
+      '  <span class="k">"action"</span>: <span class="s">"' + action + '"</span>\n}';
+
+    const codes = explain(v);
+    $('rgCodes').innerHTML = codes.length
+      ? codes.map(([c, clear]) =>
+          '<span class="rg-code' + (clear ? ' is-clear' : '') + '">' + esc(c) + '</span>').join('')
+      : '<span class="rg-none">Nothing unusual about this return.</span>';
+
+    // Ground truth, when a real test-set case is loaded
+    const truth = $('rgTruth');
+    if (activePreset) {
+      const isFraud = activePreset.truth === 1;
+      const correct = (flagged === isFraud);
+      truth.style.display = 'block';
+      truth.className = 'rg-truth' + (correct ? '' : ' is-wrong');
+      truth.innerHTML =
+        '<b>' + esc(activePreset.label) + '</b> — held-out test case. ' +
+        'Ground truth: <b>' + (isFraud ? 'FRAUDULENT' : 'GENUINE') + '</b>. ' +
+        'The model is <b>' + (correct ? 'right' : 'wrong') + '</b> here. ' +
+        esc(activePreset.note);
+    } else {
+      truth.style.display = 'none';
+    }
+  }
+
+  /* ── Presets ── */
+  function applyPreset(preset, button) {
+    const v = preset.values;
+    $('rgTryon').checked = !!v.used_tryon;
+    if (v.fit_mismatch_score !== null && v.fit_mismatch_score !== undefined)
+      $('rgFit').value = v.fit_mismatch_score;
+    $('rgDays').value = Math.round(v.days_since_purchase);
+    $('rgValue').value = Math.round(v.order_value_inr);
+    $('rgOrders').value = v.prior_orders_12m;
+    $('rgReturns').value = v.prior_returns_12m;
+    $('rgAge').value = Math.round(v.account_age_days);
+    $('rgDisc').value = v.discount_pct;
+    $('rgGarment').value = v.garment_type;
+    $('rgReason').value = v.return_reason;
+    activePreset = preset;
+    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
+    if (button) button.classList.add('active');
+    render();
+  }
+
+  window.rgReset = function () {
+    activePreset = null;
+    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
+    $('rgTryon').checked = true;
+    $('rgFit').value = 0.30; $('rgDays').value = 8; $('rgValue').value = 1800;
+    $('rgOrders').value = 5; $('rgReturns').value = 1; $('rgAge').value = 540;
+    $('rgDisc').value = 12;
+    $('rgGarment').value = 'tshirt'; $('rgReason').value = 'doesnt_fit';
+    render();
+  };
+
+  /* ── Static panels ── */
+  function paintStatics() {
+    const m = M.test_metrics;
+    $('rgMetrics').innerHTML = [
+      [m.precision.toFixed(3), 'Precision'],
+      [m.recall.toFixed(3), 'Recall'],
+      [m.fpr.toFixed(4), 'False-positive rate'],
+      [M.decision.threshold.toFixed(3), 'Threshold'],
+    ].map(([v, l]) =>
+      '<div class="rg-metric"><div class="rg-metric-v">' + v + '</div>' +
+      '<div class="rg-metric-l">' + l + '</div></div>').join('');
+
+    const rows = M.candidates.map((c) => {
+      const pick = Math.abs(c.threshold - M.decision.threshold) < 1e-9;
+      return '<tr class="' + (pick ? 'is-pick' : '') + '"><td>' + esc(c.label) + '</td>' +
+        '<td>' + c.threshold.toFixed(3) + '</td>' +
+        '<td>' + c.precision.toFixed(3) + '</td>' +
+        '<td>' + c.recall.toFixed(3) + '</td>' +
+        '<td>' + c.fpr.toFixed(4) + '</td>' +
+        '<td>' + c.fp + '</td>' +
+        '<td><b>' + c.cost_per_case.toFixed(4) + '</b></td></tr>';
+    }).join('');
+    $('rgCandidates').innerHTML =
+      '<thead><tr><th>Candidate threshold</th><th>Cut</th><th>Precision</th>' +
+      '<th>Recall</th><th>FPR</th><th>False pos.</th><th>Cost / case</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody>';
+
+    $('rgCap').innerHTML =
+      'Chosen on a validation split, reported on held-out test (n=' + m.n + '). ' +
+      'The cheapest row wins — not the best F1, because F1 treats a wrongly flagged ' +
+      'customer and a missed fraud as equally bad. Model trained on <b>synthetic data</b>: ' +
+      'this demonstrates the decision architecture, not real-world accuracy.';
+  }
+
+  function fillSelects() {
+    const label = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    $('rgGarment').innerHTML = M.preprocess.categories.garment_type
+      .map(g => '<option value="' + g + '">' + label(g) + '</option>').join('');
+    $('rgReason').innerHTML = M.preprocess.categories.return_reason
+      .map(r => '<option value="' + r + '">' + label(r) + '</option>').join('');
+    $('rgPresets').innerHTML = M.presets
+      .map((p, i) => '<button class="rg-preset" data-i="' + i + '">' + esc(p.label) + '</button>')
+      .join('');
+    document.querySelectorAll('.rg-preset').forEach((b) => {
+      b.addEventListener('click', () => applyPreset(M.presets[+b.dataset.i], b));
+    });
+  }
+
+  function bind() {
+    Object.values(NUM_IDS).forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener('input', () => { activePreset = null;
+        document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
+        render(); });
+    });
+    ['rgTryon', 'rgGarment', 'rgReason'].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener('change', () => { activePreset = null;
+        document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
+        render(); });
+    });
+  }
+
+  fetch('returns_model.json')
+    .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then((json) => {
+      M = json;
+      fillSelects();
+      paintStatics();
+      bind();
+      // Open on the false positive: it is the case worth showing.
+      const fp = M.presets.find(p => p.label === 'False positive');
+      if (fp) applyPreset(fp, document.querySelector('.rg-preset'));
+      else render();
+    })
+    .catch((err) => {
+      const dot = $('rgDot'), txt = $('rgStatusText');
+      if (dot) dot.classList.remove('on');
+      if (txt) txt.textContent = 'returns_model.json not found';
+      console.error('[returns-guard] could not load model:', err);
+    });
 })();
 </script>
 </body>
