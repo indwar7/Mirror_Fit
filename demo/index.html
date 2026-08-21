@@ -400,8 +400,7 @@ body.landing-active .app { display: none !important; }
   transition: background 0.25s ease;
   position: relative; min-height: 300px;
 }
-.lp-modes .lp-mode:nth-child(4) { grid-column: 2 / span 2; }
-.lp-modes .lp-mode:nth-child(5) { grid-column: 4 / span 2; }
+/* Six cards = two even rows of three; no centring offsets needed. */
 .lp-mode:hover { background: var(--ivory-2); }
 .lp-mode-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .lp-mode-icon { color: var(--ink); flex-shrink: 0; transition: color 0.25s ease; }
@@ -794,9 +793,7 @@ body.landing-active .app { display: none !important; }
   .lp-hero-grid { grid-template-columns: 1fr; }
   .lp-mirror { max-width: 400px; margin: 8px auto 0; }
   .lp-modes { grid-template-columns: repeat(2,1fr); }
-  .lp-modes .lp-mode,
-  .lp-modes .lp-mode:nth-child(4),
-  .lp-modes .lp-mode:nth-child(5) { grid-column: auto; }
+  .lp-modes .lp-mode { grid-column: auto; }
   .lp-swatches { grid-template-columns: repeat(4,1fr); }
   .lp-spec-grid { grid-template-columns: repeat(2,1fr); }
   .lp-spec:nth-child(4n) { border-right: 1px solid var(--line); padding-right: 30px; }
@@ -901,7 +898,7 @@ body.landing-active .app { display: none !important; }
         </div>
         <div class="lp-hero-stats">
           <div>
-            <div class="lp-stat-n">5</div>
+            <div class="lp-stat-n">6</div>
             <div class="lp-stat-l">Live modes</div>
           </div>
           <div>
@@ -998,10 +995,10 @@ body.landing-active .app { display: none !important; }
   <section class="lp-sec" id="lp-modes" style="padding-top:0">
     <div class="lp-wrap">
       <span class="lp-tag" data-reveal>The studio</span>
-      <h2 class="lp-h2" data-reveal data-d="1">Five ways to <em>see it worn.</em></h2>
+      <h2 class="lp-h2" data-reveal data-d="1">Six ways to <em>work the mirror.</em></h2>
       <p class="lp-lede" data-reveal data-d="2">
-        Each mode streams from the camera and returns a rendered frame.
-        A session costs 10 credits.
+        Five modes stream from the camera and return a rendered frame, at
+        10 credits a session. Returns Guard scores on device and is free.
       </p>
 
       <div class="lp-modes">
@@ -1110,6 +1107,27 @@ body.landing-active .app { display: none !important; }
           <div class="lp-mode-foot">
             <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
             <span class="lp-mode-port">Port 7863</span>
+          </div>
+        </button>
+
+        <button class="lp-mode" data-reveal data-d="3" onclick="enterFeature('returns')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2.7 20 5.6v6c0 4.6-3.3 8.2-8 9.7-4.7-1.5-8-5.1-8-9.7v-6z"/>
+                <path d="M8.9 12.1 11.2 14.4 15.4 10"/>
+              </svg>
+            </span>
+            <span class="lp-price">No credits</span>
+          </div>
+          <div class="lp-mode-name">Returns Guard</div>
+          <p class="lp-mode-desc">
+            Score a return request for fraud risk. Flagged cases route to a human
+            reviewer — the system never denies a refund on its own.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">&rarr;</span></span>
+            <span class="lp-mode-port">In browser</span>
           </div>
         </button>
       </div>
@@ -3168,7 +3186,10 @@ window.toggleArAvatar = async function() {
   /* Charge on launch. The original function is preserved and called. */
   var launch = window.enterFeature;
   if (typeof launch === 'function') {
-    window.enterFeature = function () {
+    window.enterFeature = function (name) {
+      // Returns Guard scores in the browser and consumes no GPU time, so
+      // it is free. Credits pay for generation, not for risk scoring.
+      if (name === 'returns') return launch.apply(this, arguments);
       var v = read();
       if (v < COST) {
         toast('Not enough credits — each launch costs ' + COST + '.');
