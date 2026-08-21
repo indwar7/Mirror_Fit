@@ -3714,20 +3714,60 @@ window.toggleArAvatar = async function() {
   };
 
   const n = (id, d) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : d; };
+  /* Empty field == unknown. Returning null lets the imputer handle it the
+     same way scikit-learn did at training time, instead of inventing a
+     value that quietly moves the prediction. */
+  const nOrNull = (id) => {
+    const raw = $(id).value;
+    if (raw === '' || raw === null || raw === undefined) return null;
+    const v = parseFloat(raw);
+    return Number.isFinite(v) ? v : null;
+  };
+
+  /* Model inputs the form has no control for. A loaded rental supplies its
+     real values; otherwise 0 means "typical for this item", which is the
+     honest neutral rather than an accidental missing value. */
+  function carried() {
+    const v = (active && active.values) || {};
+    // A loaded rental keeps its gaps: if the source row had no value, the
+    // model must see "missing" and fire its indicator, exactly as at
+    // training time. Only when nothing is loaded do we fall back to the
+    // neutral default.
+    const pick = (k, d) => {
+      if (!(k in v)) return d;
+      return (v[k] === null || v[k] === undefined) ? null : v[k];
+    };
+    return {
+      size_vs_user: pick('size_vs_user', 0),
+      size_vs_item: pick('size_vs_item', 0),
+      user_size_std: pick('user_size_std', null),
+      item_n: pick('item_n', 40),
+      user_n: pick('user_n', 8),
+      bmi_vs_item: pick('bmi_vs_item', 0),
+      weight_vs_item: pick('weight_vs_item', 0),
+      height_vs_item: pick('height_vs_item', 0),
+      bust_vs_item: pick('bust_vs_item', 0),
+      item_size_std: pick('item_size_std', null),
+    };
+  }
 
   function readForm() {
-    const h = n('faHeight', 65), w = n('faWeight', 137);
+    const h = nOrNull('faHeight'), w = nOrNull('faWeight');
     return {
       height_in: h, weight_lb: w,
-      bmi: (h > 0 ? 703 * w / (h * h) : null),
-      bust_band: n('faBand', 34), bust_cup: n('faCup', 4),
-      size: n('faSize', 12), age: n('faAge', 32),
-      // Deviation from the shopper's own norm is unknown for a one-off
-      // rental, so it sits at the median the imputer already holds.
-      size_vs_user: 0, size_vs_item: 0, user_size_std: null,
-      item_small_rate: n('faItemSmall', 0.13), item_large_rate: n('faItemLarge', 0.13),
-      item_n: 40, user_small_rate: n('faUserSmall', 0.13),
-      user_large_rate: n('faUserLarge', 0.13), user_n: 8,
+      bmi: (h && w && h > 0) ? 703 * w / (h * h) : null,
+      bust_band: nOrNull('faBand'), bust_cup: nOrNull('faCup'),
+      size: n('faSize', 12), age: nOrNull('faAge'),
+      // Features the form does not expose. When a real rental is loaded we
+      // carry its actual values; when the user is freestyling we use the
+      // neutral 0 — "this shopper is typical for this item" — rather than
+      // letting them fall to undefined and be silently imputed.
+      // The four history sliders — the strongest signals in the model.
+      item_small_rate: n('faItemSmall', 0.134),
+      item_large_rate: n('faItemLarge', 0.128),
+      user_small_rate: n('faUserSmall', 0.134),
+      user_large_rate: n('faUserLarge', 0.128),
+      ...carried(),
       body_type: $('faBody').value, category: $('faCat').value,
       rented_for: $('faFor').value,
     };
@@ -3780,14 +3820,26 @@ window.toggleArAvatar = async function() {
      ['faUserSmall','faUserSmallVal'],['faUserLarge','faUserLargeVal']]
       .forEach(([a,b]) => { $(b).textContent = Math.round(n(a,0)*100) + '%'; });
 
-    const copy = COPY[cls] || [cls, ''];
-    $('faVerdict').textContent = copy[0];
-    $('faNote').textContent = copy[1];
+    // Confidence gate — mirrors real_model.gate(). Below the threshold we
+    // stay silent rather than move the shopper to a worse size.
+    const gateT = (M.gate && M.gate.min_confidence) || 0;
+    const gated = (cls !== 'fit' && confidence < gateT) ? 'fit' : cls;
+    const suppressed = (gated !== cls);
+
+    const copy = COPY[gated] || [gated, ''];
+    $('faVerdict').textContent = suppressed ? 'No advice' : copy[0];
+    $('faNote').textContent = suppressed
+      ? ('The model leans "' + (COPY[cls] ? COPY[cls][0] : cls) + '" but only at ' +
+         (confidence*100).toFixed(0) + '% confidence, under the ' +
+         (gateT*100).toFixed(0) + '% bar. Staying quiet: bad sizing advice moves a ' +
+         'shopper to a worse size and causes the return it meant to prevent.')
+      : copy[1];
     $('faConf').textContent = (confidence * 100).toFixed(1) + '% confidence'
       + (active ? '  ·  real rental, actual outcome: ' + active.truth : '');
 
     // "Fit score" here is P(fit) — the only honest score this data supports.
     const pFit = probs[M.classes.indexOf('fit')] ?? 0;
+    void suppressed;
     const score = pFit * 100;
     $('faScore').textContent = Math.round(score);
     const circ = 2 * Math.PI * 58;
@@ -3811,22 +3863,34 @@ window.toggleArAvatar = async function() {
 
     const mismatch = Math.max(0, Math.min(1, 1 - pFit));
     $('faJson').innerHTML =
-      '{\n  <span class="k">"fit_prediction"</span>: <span class="s">"' + cls + '"</span>,\n' +
+      '{\n  <span class="k">"fit_prediction"</span>: <span class="s">"' + gated + '"</span>,\n' +
+      '  <span class="k">"raw_prediction"</span>: <span class="s">"' + cls + '"</span>,\n' +
+      '  <span class="k">"advice_shown"</span>: <span class="n">' + (!suppressed && gated !== 'fit') + '</span>,\n' +
       '  <span class="k">"confidence"</span>: <span class="n">' + confidence.toFixed(4) + '</span>,\n' +
       '  <span class="k">"p_fit"</span>: <span class="n">' + pFit.toFixed(4) + '</span>,\n' +
       '  <span class="k">"fit_mismatch_score"</span>: <span class="n">' + mismatch.toFixed(3) + '</span>\n}';
 
+    const g = M.gate || {};
+    const imp = g.impact || {}, un = g.ungated || {};
     $('faHandoff').innerHTML =
-      '<b>Where the two models meet.</b> This predicts ' +
-      '<code>fit_mismatch_score ' + mismatch.toFixed(3) + '</code> at purchase. ' +
-      'If the item comes back weeks later, Returns Guard reads that same number — ' +
-      'a high mismatch makes a &ldquo;doesn&rsquo;t fit&rdquo; claim <b>more</b> credible, ' +
-      'because the garment really was likely to fit badly.';
+      '<b>Why this only speaks when it is sure.</b> A warning moves the shopper to a ' +
+      'different size: right, and the return never happens; wrong, and we caused one. ' +
+      'Across ' + (M.test_metrics.n || 0).toLocaleString() + ' held-out rentals, warning on ' +
+      'every prediction nets <b>' + (un.net || 0).toLocaleString() + '</b> returns — it causes ' +
+      'more than it prevents. Warning only above ' + ((g.min_confidence||0)*100).toFixed(0) +
+      '% confidence nets <b>+' + (imp.net || 0).toLocaleString() + '</b> ' +
+      '(' + (imp.prevented||0).toLocaleString() + ' prevented, ' +
+      (imp.caused||0).toLocaleString() + ' caused, precision ' +
+      ((imp.warn_precision||0)*100).toFixed(0) + '%). ' +
+      'Every prevented return is also a refund that never reaches the payment rail.';
   }
 
   function applyPreset(p, btn) {
     const v = p.values;
-    const set = (id, key, d) => { if (v[key] !== null && v[key] !== undefined) $(id).value = v[key]; else $(id).value = d; };
+    const set = (id, key, d) => {
+      // Blank means the real rental had no value recorded for this field.
+      $(id).value = (v[key] === null || v[key] === undefined) ? '' : v[key];
+    };
     set('faHeight','height_in',65); set('faWeight','weight_lb',137);
     set('faBand','bust_band',34); set('faCup','bust_cup',4);
     set('faAge','age',32); set('faSize','size',12);
@@ -3869,11 +3933,12 @@ window.toggleArAvatar = async function() {
       });
 
       const m = M.test_metrics;
+      const g0 = M.gate || {}, i0 = g0.impact || {}, u0 = g0.ungated || {};
       $('faMetrics').innerHTML = [
-        [m.macro_f1.toFixed(3), 'Macro F1'],
-        [(m.baseline_accuracy*100).toFixed(1)+'%', 'Always-"fit" baseline'],
-        [(m.accuracy*100).toFixed(1)+'%', 'Accuracy'],
-        [m.n.toLocaleString(), 'Held-out rentals'],
+        ['+' + (i0.net||0).toLocaleString(), 'Net returns prevented'],
+        [((i0.warn_precision||0)*100).toFixed(0)+'%', 'Warning precision'],
+        [(u0.net||0).toLocaleString(), 'If it warned every time'],
+        [m.macro_f1.toFixed(3), 'Macro F1 (base ' + (0.284).toFixed(3) + ')'],
       ].map(([v,l]) => '<div class="fa-metric"><div class="fa-metric-v">'+v+
         '</div><div class="fa-metric-l">'+l+'</div></div>').join('');
 

@@ -66,6 +66,59 @@ def build(kind: str, class_weight=None) -> Pipeline:
     return Pipeline([("prep", prep), ("clf", clf)])
 
 
+def returns_impact(y_true, pred) -> dict:
+    """Net returns prevented — the only metric the business actually feels.
+
+    A warning is not free. Walk through what each outcome does to a real
+    shopper about to buy:
+
+      predict "fit"          -> no advice given. If it would have run small
+                                or large, that return still happens. We are
+                                neutral: we neither helped nor hurt.
+
+      predict small/large,
+        and we are right     -> they change size and the bad fit never
+                                happens. A return is PREVENTED.
+
+      predict small/large,
+        but it would have fit-> they change size away from the one that
+                                would have worked. We CAUSED a return.
+
+      predict small/large,
+        but the wrong way    -> they were heading for a return anyway and
+                                still are. Neutral, though the shopper now
+                                also distrusts the advice.
+
+    So net = prevented - caused. With precision around 0.31 on warnings,
+    a model that warns freely destroys value: it causes roughly two returns
+    for every one it prevents. That is why the confidence gate below exists.
+    """
+    warned = pred != "fit"
+    prevented = int(((pred == y_true) & warned).sum())
+    caused = int((warned & (y_true == "fit")).sum())
+    misdirected = int((warned & (y_true != "fit") & (pred != y_true)).sum())
+    return {
+        "warnings": int(warned.sum()),
+        "prevented": prevented,
+        "caused": caused,
+        "misdirected": misdirected,
+        "net": prevented - caused,
+        "warn_precision": prevented / max(1, int(warned.sum())),
+    }
+
+
+def gate(proba, classes, threshold: float):
+    """Only warn when confident; otherwise stay quiet and say "fit".
+
+    Silence is the safe default here — an unheeded shopper buys the size
+    they intended, which is the status quo. Bad advice actively moves them
+    to a worse size.
+    """
+    pred = classes[proba.argmax(1)]
+    confidence = proba.max(1)
+    return np.where((pred != "fit") & (confidence < threshold), "fit", pred)
+
+
 def report(name, y_true, proba, classes) -> dict:
     pred = classes[proba.argmax(1)]
     return {
@@ -135,10 +188,20 @@ def main(argv=None) -> int:
         "hiding behind the majority class and makes it actually call small/large."
     )
 
-    best = max(
-        (r for r in rows if r["model"] != 'always "fit"'),
-        key=lambda r: r["macro_f1"],
-    )["model"]
+    scored = [r for r in rows if r["model"] != 'always "fit"']
+    top = max(scored, key=lambda r: r["macro_f1"])
+    linear = max((r for r in scored if r["model"].startswith("logreg")),
+                 key=lambda r: r["macro_f1"])
+    # Deployability tie-break: the linear model exports to ~12 KB of JSON
+    # and scores in the browser with no server. If it is within 0.01 macro
+    # F1 of the best, that portability is worth more than the difference.
+    if top["model"] != linear["model"] and (top["macro_f1"] - linear["macro_f1"]) < 0.01:
+        print(f"\n{top['model']} leads by {top['macro_f1']-linear['macro_f1']:.4f} macro F1, "
+              f"which is inside the 0.01 deployability margin.")
+        print("Shipping the linear model: it runs client-side with no server dependency.")
+        best = linear["model"]
+    else:
+        best = top["model"]
     model = fitted[best]
     classes = model.classes_
     print(f"\nSelected: {best}  (highest macro F1 on validation)")
@@ -174,6 +237,36 @@ def main(argv=None) -> int:
         })
     print(pd.DataFrame(per).to_string(index=False, float_format=lambda v: f"{v:.4f}"))
 
+    # ── Confidence gate: warn only when it pays ─────────────────────────
+    print(f"\n{rule}\n4 · WHEN IS IT WORTH WARNING?\n{rule}\n")
+    print("A warning moves the shopper to a different size. If we are right that")
+    print("prevents a return; if we are wrong we cause one. Net = prevented - caused.\n")
+    proba_valid = model.predict_proba(valid[FEATURES])
+    rows_gate = []
+    for t in (0.0, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95):
+        g = gate(proba_valid, classes, t)
+        imp = returns_impact(y_valid, g)
+        rows_gate.append({"min_confidence": t, **imp})
+    tbl = pd.DataFrame(rows_gate)
+    print(tbl.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    best_t = float(tbl.loc[tbl["net"].idxmax(), "min_confidence"])
+    print(f"\nBest on validation: warn only above {best_t:.2f} confidence.")
+
+    gated = gate(proba, classes, best_t)
+    imp = returns_impact(y_test, gated)
+    ungated = returns_impact(y_test, pred)
+    print(f"\nHeld-out test, gated at {best_t:.2f}:")
+    print(f"  warnings issued    : {imp['warnings']:,} of {len(y_test):,}")
+    print(f"  returns prevented  : {imp['prevented']:,}")
+    print(f"  returns caused     : {imp['caused']:,}")
+    print(f"  misdirected        : {imp['misdirected']:,}")
+    print(f"  NET returns saved  : {imp['net']:+,}   (warning precision {imp['warn_precision']:.3f})")
+    print(f"\n  ungated, for contrast: net {ungated['net']:+,} from "
+          f"{ungated['warnings']:,} warnings (precision {ungated['warn_precision']:.3f})")
+    if ungated["net"] < 0:
+        print("  Warning on every prediction destroys value — it causes more returns")
+        print("  than it prevents. The gate is what makes the model worth deploying.")
+
     # The error that actually costs money.
     if "small" in order and "large" in order:
         i, j = order.index("small"), order.index("large")
@@ -195,7 +288,8 @@ def main(argv=None) -> int:
                 print(f"      {v:+.3f}  {n}")
 
     if args.export:
-        _export(model, test, proba, pred, y_test, acc, mf1, base_acc)
+        _export(model, test, proba, gated, y_test, acc, mf1, base_acc,
+                best_t, imp, ungated)
     print()
     return 0
 
@@ -212,7 +306,8 @@ def _feature_names(model) -> list[str]:
     return names
 
 
-def _export(model, test, proba, pred, y_test, acc, mf1, base_acc) -> None:
+def _export(model, test, proba, pred, y_test, acc, mf1, base_acc,
+            gate_threshold, impact, ungated) -> None:
     """Export weights + real held-out presets for the browser."""
     clf = model.named_steps["clf"]
     if not hasattr(clf, "coef_"):
@@ -274,6 +369,13 @@ def _export(model, test, proba, pred, y_test, acc, mf1, base_acc) -> None:
             "accuracy": float(acc),
             "macro_f1": float(mf1),
             "baseline_accuracy": float(base_acc),
+        },
+        "gate": {
+            "min_confidence": float(gate_threshold),
+            "impact": {k: (float(v) if isinstance(v, float) else int(v))
+                       for k, v in impact.items()},
+            "ungated": {k: (float(v) if isinstance(v, float) else int(v))
+                        for k, v in ungated.items()},
         },
         "presets": presets,
     }

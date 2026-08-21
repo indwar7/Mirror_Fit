@@ -73,6 +73,15 @@ NUMERIC = [
     "user_small_rate",  # some people report "small" about everything
     "user_large_rate",
     "user_n",
+    # How this shopper compares to the people this item usually goes to.
+    # This is the personalisation signal: an item cut for slighter renters
+    # will run small on a heavier one, regardless of the number on the
+    # label. Absolute body measurements cannot express that; deltas can.
+    "bmi_vs_item",
+    "weight_vs_item",
+    "height_vs_item",
+    "bust_vs_item",
+    "item_size_std",    # how widely this item's sizes vary
 ]
 CATEGORICAL = ["body_type", "category", "rented_for"]
 FEATURES = NUMERIC + CATEGORICAL
@@ -208,25 +217,82 @@ def add_relative_size(train: pd.DataFrame, *others: pd.DataFrame):
             n,
         )
 
+    def loo_rates(frame: pd.DataFrame, key: str):
+        """Leave-one-out rates for the TRAINING rows.
+
+        A rate built from train labels encodes a training row's own label:
+        for an item seen once, `item_small_rate` is a direct readout of
+        that row's outcome. The model then learns to trust the feature far
+        more than it should, and collapses on unseen data — which is
+        exactly what happened here (gradient boosting reached a log loss of
+        1.66, worse than a uniform guess at 1.10).
+
+        Excluding each row from its own group's statistic removes the leak.
+        Validation and test rows are not in the training counts at all, so
+        they use the plain rates.
+        """
+        counts_n = frame.groupby(key)[TARGET].transform("size")
+        is_small = (frame[TARGET] == "small").astype(float)
+        is_large = (frame[TARGET] == "large").astype(float)
+        sum_small = frame.groupby(key)[TARGET].transform(
+            lambda s: (s == "small").sum())
+        sum_large = frame.groupby(key)[TARGET].transform(
+            lambda s: (s == "large").sum())
+        denom = (counts_n - 1) + ALPHA
+        return (
+            (sum_small - is_small + ALPHA * prior_small) / denom,
+            (sum_large - is_large + ALPHA * prior_large) / denom,
+            counts_n - 1,
+        )
+
     item_small, item_large, item_n = rates("item_id")
     user_small, user_large, user_n = rates("user_id")
 
-    def attach(frame: pd.DataFrame) -> pd.DataFrame:
+    # ── Who normally wears this item ────────────────────────────────────
+    # Train-only body profile per item. The global medians are the
+    # fallback for an item with no history, which makes the delta zero —
+    # i.e. "no evidence either way" rather than a fabricated difference.
+    body_cols = ["bmi", "weight_lb", "height_in", "bust_band"]
+    item_body = train.groupby("item_id")[body_cols].mean()
+    global_body = train[body_cols].median()
+    item_size_std_map = train.groupby("item_id")["size"].std()
+
+    def attach(frame: pd.DataFrame, *, is_train: bool) -> pd.DataFrame:
         out = frame.copy()
         out["size_vs_user"] = out["size"] - out["user_id"].map(user_mean)
         out["size_vs_item"] = out["size"] - out["item_id"].map(item_mean)
         out["user_size_std"] = out["user_id"].map(user_std)
-        # Unseen item or user falls back to the global prior — the honest
-        # answer for a cold start is "no information", not zero.
-        out["item_small_rate"] = out["item_id"].map(item_small).fillna(prior_small)
-        out["item_large_rate"] = out["item_id"].map(item_large).fillna(prior_large)
-        out["item_n"] = out["item_id"].map(item_n).fillna(0.0)
-        out["user_small_rate"] = out["user_id"].map(user_small).fillna(prior_small)
-        out["user_large_rate"] = out["user_id"].map(user_large).fillna(prior_large)
-        out["user_n"] = out["user_id"].map(user_n).fillna(0.0)
+
+        if is_train:
+            # Leave-one-out, so a row never sees its own label.
+            i_s, i_l, i_n = loo_rates(out, "item_id")
+            u_s, u_l, u_n = loo_rates(out, "user_id")
+            out["item_small_rate"], out["item_large_rate"], out["item_n"] = i_s, i_l, i_n
+            out["user_small_rate"], out["user_large_rate"], out["user_n"] = u_s, u_l, u_n
+        else:
+            # Unseen item or user falls back to the global prior — the
+            # honest answer for a cold start is "no information", not zero.
+            out["item_small_rate"] = out["item_id"].map(item_small).fillna(prior_small)
+            out["item_large_rate"] = out["item_id"].map(item_large).fillna(prior_large)
+            out["item_n"] = out["item_id"].map(item_n).fillna(0.0)
+            out["user_small_rate"] = out["user_id"].map(user_small).fillna(prior_small)
+            out["user_large_rate"] = out["user_id"].map(user_large).fillna(prior_large)
+            out["user_n"] = out["user_id"].map(user_n).fillna(0.0)
+
+        # Body deltas against the item's usual renter.
+        for col, feat in (
+            ("bmi", "bmi_vs_item"),
+            ("weight_lb", "weight_vs_item"),
+            ("height_in", "height_vs_item"),
+            ("bust_band", "bust_vs_item"),
+        ):
+            typical = out["item_id"].map(item_body[col]).fillna(global_body[col])
+            out[feat] = out[col] - typical
+        out["item_size_std"] = out["item_id"].map(item_size_std_map)
         return out
 
-    return (attach(train), *(attach(f) for f in others))
+    return (attach(train, is_train=True),
+            *(attach(f, is_train=False) for f in others))
 
 
 def coverage(train: pd.DataFrame, other: pd.DataFrame) -> dict:

@@ -172,3 +172,54 @@ Claiming five tiers from this data would be inventing labels.
   new shopper the collaborative signal falls back to the global prior.
 - Gradient boosting was tried and did *worse* here (macro F1 0.347) — it
   overfit the collaborative features badly (log loss 1.66 vs 0.96).
+
+---
+
+# Does it actually reduce returns?
+
+Accuracy was the wrong thing to optimise. A fit warning **moves the shopper to a
+different size**, so it is never free:
+
+| Prediction | Truth | Outcome |
+|---|---|---|
+| "fit" | anything | no advice given — neutral |
+| small/large, **right** | matches | **return prevented** |
+| small/large, **wrong** | actually fit | **return caused** — we moved them off the size that worked |
+| small/large, wrong way | opposite | still a return, plus lost trust |
+
+**Net = prevented − caused.** Measured on 38,509 held-out rentals:
+
+| | Warnings | Prevented | Caused | **Net** | Precision |
+|---|---|---|---|---|---|
+| warn on every prediction | 21,682 | 6,592 | 14,334 | **−7,742** | 0.304 |
+| warn above 0.85 confidence | 2,593 | 1,597 | 963 | **+634** | 0.616 |
+
+**A model that always speaks destroys value** — it causes more than twice the
+returns it prevents. The confidence gate is what makes it deployable, and it is
+the same lesson as the returns model: the hard part is knowing when *not* to act.
+
+Every prevented return is also a refund that never reaches the payment rail.
+
+## Two bugs this uncovered
+
+**Target leakage.** `item_small_rate` was computed from train labels, so for a
+training row it partly encoded that row's own outcome. Gradient boosting
+exploited it and collapsed — log loss **1.66**, worse than a uniform guess
+(1.10). Leave-one-out encoding (excluding each row from its own group's
+statistic) fixed it:
+
+| | before LOO | after LOO |
+|---|---|---|
+| GBT log loss | 1.66 | **0.70** |
+| macro F1 | 0.471 | **0.489** |
+
+**Dead sliders.** The four history sliders were not wired into `readForm`, so
+they silently did nothing and the model saw imputed medians. Caught by diffing
+the browser's feature vector against scikit-learn's, feature by feature.
+
+## Verification
+
+The browser reproduces scikit-learn exactly — all 89 features identical, and all
+three presets match on class, confidence and `p_fit`. Missing values propagate
+as missing rather than being replaced with plausible defaults, so the
+missing-indicators fire the same way they did at training time.
