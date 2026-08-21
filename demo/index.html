@@ -1590,21 +1590,31 @@ body.landing-active .app { display: none !important; }
 </div>
 
 <script>
-const FACE_API = 'http://15.252.142.160:7860';
-const TRYON_WS = 'ws://15.252.142.160:8000/ws/tryon';
+// Backend host. This page is served by tryon_backend itself (it mounts
+// /demo), so when it is opened from the server the correct host is simply
+// the host it was loaded from — which means a new EC2 public IP needs no
+// code change. The literal below is only a fallback for opening the file
+// locally during design review.
+const FALLBACK_HOST = '13.127.121.24';
+const BACKEND_HOST = (
+  location.hostname && !['localhost', '127.0.0.1', ''].includes(location.hostname)
+) ? location.hostname : FALLBACK_HOST;
+
+const FACE_API = `http://${BACKEND_HOST}:7860`;
+const TRYON_WS = `ws://${BACKEND_HOST}:8000/ws/tryon`;
 // Live Face Swap tab uses inswapper-128 on port 7860 — fast, identity-stable,
 // ~5 fps. Live Portrait tab uses the new LivePortrait pipeline on port 7862
 // which actively drives the source's expression from the camera frame
 // (blinks, smiles, brow raises). They are independent backends with
 // independent UI so operator can demo either without touching the other.
-const SWAP_WS_V1      = 'ws://13.203.194.128:7860/ws/live-swap';
-const SWAP_WS_V2      = 'ws://13.203.194.128:7860/ws/live-swap-v2';
+const SWAP_WS_V1      = `ws://${BACKEND_HOST}:7860/ws/live-swap`;
+const SWAP_WS_V2      = `ws://${BACKEND_HOST}:7860/ws/live-swap-v2`;
 // Read the engine radio at connect time; default V1 if nothing selected.
 function selectedSwapWs() {
   const el = document.querySelector('input[name="swapEngine"]:checked');
   return el && el.value === 'v2' ? SWAP_WS_V2 : SWAP_WS_V1;
 }
-const LIVEPORTRAIT_WS = 'ws://13.203.194.128:7862/ws/liveportrait-swap';
+const LIVEPORTRAIT_WS = `ws://${BACKEND_HOST}:7862/ws/liveportrait-swap`;
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
@@ -1762,7 +1772,7 @@ loadAvatars();
 // in ~500 ms chunks and streams it back. Browser schedules contiguous
 // playback in a single AudioContext so it sounds like one continuous voice.
 const VOICE_WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') +
-                     '13.203.194.128:7860/ws/voice-stream';
+                     `${BACKEND_HOST}:7860/ws/voice-stream`;
 const STREAM_SR    = 16000;
 const STREAM_CHUNK = 4096;   // ScriptProcessor buffer ≈ 256 ms @ 16 kHz
 
@@ -2412,7 +2422,7 @@ switchTab('liveswap');
 // talking-avatar on port 7863. Offline generation, ~30-80 s on A10G for a
 // 5-10 s clip. No live tracking, no WebSocket — just a single multipart POST.
 // ══════════════════════════════════════════════════════════════════════════════
-const TWIN_API = 'http://13.203.194.128:7863';
+const TWIN_API = `http://${BACKEND_HOST}:7863`;
 let _twinImgFile  = null;
 let _twinAudioFile = null;
 let _twinRecorder = null;
