@@ -139,9 +139,33 @@ header {
 /* ══════════════════════════════════════════════════════════════════
    APP LAYOUT
    ══════════════════════════════════════════════════════════════════ */
-.app { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 60px); position: relative; z-index: 1; }
+/* min-height:0 is what actually lets a flex child scroll. A flex item's
+   min-height defaults to auto — the size of its content — so it refuses to
+   shrink, overflow:auto never has anything to act on, and the scrollbar
+   never appears. Every scrollable descendant needs it, not just the one
+   that misbehaved. */
+.app {
+  display: flex; flex: 1;
+  overflow: hidden;
+  height: calc(100dvh - 60px);
+  min-height: 0;
+  position: relative; z-index: 1;
+}
+.app > * { min-height: 0; }
+
+/* Last resort. On a viewport too short for the shell to lay out at all,
+   stop clipping and let the whole thing scroll. Better an outer scrollbar
+   than a control nobody can reach. */
+@media (max-height: 640px) {
+  .app { height: auto; min-height: calc(100dvh - 60px); overflow-y: auto; }
+  .sidebar { overflow-y: visible; max-height: none; }
+  .main { overflow-y: visible; }
+  .sticky-action { position: static; margin: 0; padding: 16px 0 0; box-shadow: none; }
+  .canvas-wrap { max-height: none; }
+}
 .sidebar {
   width: 344px; flex-shrink: 0; display: flex; flex-direction: column;
+  min-height: 0;
   overflow-y: auto; overscroll-behavior: contain;
   padding: 20px 22px; gap: 16px;
   background: var(--white);
@@ -236,6 +260,7 @@ body.landing-active .app { display: none !important; }
 
 .landing {
   position: fixed; inset: 0;
+  -webkit-overflow-scrolling: touch;
   background: var(--ivory); color: var(--ink);
   overflow-y: auto; overflow-x: hidden;
   z-index: 1000; display: block; padding: 0;
