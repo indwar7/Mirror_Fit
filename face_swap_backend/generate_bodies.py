@@ -1,4 +1,4 @@
-"""
+r"""
 One-time body-template generator for LUCY full-body avatars.
 
 Renders the 18 figures body_shapes.py can select (2 genders x 3 sizes x 3
@@ -6,7 +6,6 @@ tapers) into ./bodies_cache/. At enrolment the user's measurements pick one of
 these, their enrolled face is swapped onto it, and the result becomes that
 avatar's body image for virtual try-on.
 
-Run in an env that HAS PyTorch — the same one generate_avatars.py runs in.
 Run in an env that has PyTorch and diffusers — on the G5 that is conda `base`
 (C:\miniconda3\python.exe), the same interpreter deploy.yml starts this backend
 with, and the one generate_avatars.py already uses.
