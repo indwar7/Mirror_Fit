@@ -245,6 +245,20 @@ _swap_v2                              = None
 _INSWAPPER_FP16_PATH                   = str(_HERE / "models" / "models" / "inswapper_128_fp16.onnx")
 _GFPGAN_ONNX_PATH                      = str(_HERE / "models" / "models" / "GFPGANv1.4.onnx")
 
+# Neither weight is in the repo — together they are 600 MB — and until now
+# getting them onto the box was a manual step nobody repeated, so the V2 tab
+# answered every connection with "server is missing inswapper_128_fp16.onnx".
+# The server fetches them itself on first boot instead. Public files, no HF
+# token needed. Set LUCY_AUTO_DOWNLOAD=0 to opt out on an air-gapped box.
+_HF_DLC = "https://huggingface.co/hacksider/deep-live-cam/resolve/main"
+_V2_WEIGHTS = (
+    (_INSWAPPER_FP16_PATH, f"{_HF_DLC}/inswapper_128_fp16.onnx", 277680638,
+     "inswapper_128_fp16.onnx (265 MB)"),
+    (_GFPGAN_ONNX_PATH,    f"{_HF_DLC}/GFPGANv1.4.onnx",         340256686,
+     "GFPGANv1.4.onnx (325 MB)"),
+)
+_AUTO_DOWNLOAD = os.environ.get("LUCY_AUTO_DOWNLOAD", "1") == "1"
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cross-WebSocket session state
 #
@@ -365,6 +379,63 @@ async def _release_session(session_id: str, key: str) -> None:
         # We use sentinel keys "live_active" / "voice_active" — see endpoints.
         if not s.get("live_active") and not s.get("voice_active"):
             _SESSIONS.pop(session_id, None)
+
+
+def _ensure_weight(dest: pathlib.Path, url: str, expect_bytes: int, label: str) -> bool:
+    """Fetch a model weight if it is not already on disk. Returns True if the
+    file is usable afterwards.
+
+    Downloads to a `.part` file and renames only once the whole body has
+    arrived and its length checks out, so an interrupted boot leaves no
+    truncated .onnx behind for the next boot to load and fail on in a much
+    more confusing way.
+    """
+    if dest.exists() and dest.stat().st_size > 0:
+        if expect_bytes and dest.stat().st_size != expect_bytes:
+            print(f"[LUCY] {label}: on disk but {dest.stat().st_size} bytes, "
+                  f"expected {expect_bytes} — re-downloading")
+            with contextlib.suppress(OSError):
+                dest.unlink()
+        else:
+            return True
+    if not _AUTO_DOWNLOAD:
+        print(f"[LUCY] {label} missing and LUCY_AUTO_DOWNLOAD=0 — skipping")
+        return False
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.parent / (dest.name + ".part")
+    with contextlib.suppress(OSError):
+        part.unlink()
+    print(f"[LUCY] downloading {label} → {dest} …", flush=True)
+    try:
+        # read timeout, not total: these are hundreds of MB and a wall-clock
+        # timeout would kill a download that is progressing perfectly well.
+        with httpx.stream("GET", url, follow_redirects=True,
+                          timeout=httpx.Timeout(30.0, read=180.0)) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length") or expect_bytes or 0)
+            done = 0
+            step = max(1, total // 10) if total else 0
+            mark = step
+            with open(part, "wb") as fh:
+                for chunk in r.iter_bytes(1 << 20):
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if step and done >= mark:
+                        print(f"[LUCY]   {label}: {done * 100 // total}% "
+                              f"({done >> 20}/{total >> 20} MB)", flush=True)
+                        mark += step
+        if expect_bytes and done != expect_bytes:
+            raise IOError(f"got {done} bytes, expected {expect_bytes}")
+        part.replace(dest)
+        print(f"[LUCY] {label} ready ({done >> 20} MB)", flush=True)
+        return True
+    except Exception as e:
+        with contextlib.suppress(OSError):
+            part.unlink()
+        print(f"[LUCY] {label} download failed ({type(e).__name__}: {e}) — "
+              f"fetch it manually into {dest.parent}")
+        return False
 
 
 def _load_models() -> None:
@@ -497,6 +568,8 @@ def _load_models() -> None:
     global _swap_v2
     try:
         from swap_v2 import FaceSwapV2
+        for _w_path, _w_url, _w_size, _w_label in _V2_WEIGHTS:
+            _ensure_weight(pathlib.Path(_w_path), _w_url, _w_size, _w_label)
         if (pathlib.Path(_INSWAPPER_FP16_PATH).exists()
                 and pathlib.Path(_GFPGAN_ONNX_PATH).exists()):
             _swap_v2 = FaceSwapV2(_INSWAPPER_FP16_PATH, _GFPGAN_ONNX_PATH)
@@ -987,7 +1060,12 @@ def _color_correct_face_hull(swapped: np.ndarray, target: np.ndarray, tgt_face) 
     tg_lab  = cv2.cvtColor(target,  cv2.COLOR_BGR2LAB).astype(np.float32)
 
     out_lab = sw_lab.copy()
-    blends  = (0.65, 0.95, 0.95)   # L moderate, a/b strong (skin tone)
+    # Same knobs as the bbox version. These used to be hard-coded at
+    # (0.65, 0.95, 0.95), which pulls nearly all of the user's own chroma
+    # back into the swap — the exact effect LUCY_COLOR_AB was introduced to
+    # dial down, since it leaves the result looking like the user wearing a
+    # stranger's eyes rather than like the uploaded face.
+    blends  = (_COLOR_L, _COLOR_AB, _COLOR_AB)
     for c in range(3):
         sm, ss = sw_lab[..., c][sel].mean(), sw_lab[..., c][sel].std() + 1e-6
         tm, ts = tg_lab[..., c][sel].mean(), tg_lab[..., c][sel].std() + 1e-6
@@ -1504,7 +1582,35 @@ def _encode_jpeg(img: np.ndarray, quality: int = 92) -> bytes:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "models_loaded": _inswapper is not None}
+    """Which engines the box can actually serve, not just whether it is up.
+
+    "V2 swap not available" used to be discoverable only by opening the tab
+    and starting a session; each optional weight is reported here instead, so
+    a missing file is one curl away.
+    """
+    def _w(path):
+        p = pathlib.Path(path)
+        return {"present": p.exists(), "bytes": p.stat().st_size if p.exists() else 0}
+
+    return {
+        "status": "ok",
+        "models_loaded": _inswapper is not None,
+        "engines": {
+            "v1": _inswapper is not None,
+            "v2": _swap_v2 is not None,
+        },
+        "optional": {
+            "codeformer": _codeformer is not None,
+            "face_parser": _face_parser is not None,
+            "wav2lip": _wav2lip is not None,
+        },
+        "v2_weights": {
+            "inswapper_128_fp16.onnx": _w(_INSWAPPER_FP16_PATH),
+            "GFPGANv1.4.onnx":         _w(_GFPGAN_ONNX_PATH),
+        },
+        "auto_download": _AUTO_DOWNLOAD,
+        "clone_mode": _CLONE_MODE,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

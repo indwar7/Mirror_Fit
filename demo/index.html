@@ -959,7 +959,7 @@ body.landing-active .app { display: none !important; }
         </div>
         <div class="lp-hero-stats">
           <div>
-            <div class="lp-stat-n">6</div>
+            <div class="lp-stat-n">7</div>
             <div class="lp-stat-l">Live modes</div>
           </div>
           <div>
@@ -1056,9 +1056,9 @@ body.landing-active .app { display: none !important; }
   <section class="lp-sec" id="lp-modes" style="padding-top:0">
     <div class="lp-wrap">
       <span class="lp-tag" data-reveal>The studio</span>
-      <h2 class="lp-h2" data-reveal data-d="1">Six ways to <em>work the mirror.</em></h2>
+      <h2 class="lp-h2" data-reveal data-d="1">Seven ways to <em>work the mirror.</em></h2>
       <p class="lp-lede" data-reveal data-d="2">
-        Four modes stream from the camera and return a rendered frame, at
+        Five modes stream from the camera and return a rendered frame, at
         10 credits a session. Fit Analyser and Returns Guard score on device
         and are free.
       </p>
@@ -1084,7 +1084,6 @@ body.landing-active .app { display: none !important; }
           </div>
         </button>
 
-        <!-- DISABLED — Live Face Swap is disabled: the :7860 backend is not running and the feature does not work. Re-enable by reversing this commit.
         <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('liveswap')">
           <div class="lp-mode-top">
             <span class="lp-mode-icon">
@@ -1107,7 +1106,6 @@ body.landing-active .app { display: none !important; }
             <span class="lp-mode-port">Port 7860</span>
           </div>
         </button>
-        -->
 
         <button class="lp-mode" data-reveal data-d="3" onclick="enterFeature('liveportrait')">
           <div class="lp-mode-top">
@@ -1392,13 +1390,12 @@ body.landing-active .app { display: none !important; }
     Mirror Fit
   </div>
   <div class="tabs">
-    <!-- Live Face Swap is disabled: the :7860 backend is not running and the feature does not work. Re-enable by reversing this commit.
-         Kept in the DOM, hidden: switchTab() indexes .tab positionally, so
-         removing this node would shift every later tab onto the wrong panel. -->
-    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
-            onclick="switchTab('liveswap')">Live Face Swap</button>
+    <!-- switchTab() indexes .tab positionally against a fixed id list, so the
+         order of these buttons is load-bearing: removing or reordering one
+         silently points every later tab at the wrong panel. -->
+    <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
     <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
-    <button class="tab active" onclick="switchTab('tryon')">Live Try-On</button>
+    <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
     <button class="tab" onclick="switchTab('ar')">AR Avatar</button>
     <button class="tab" onclick="switchTab('twin')">AI Twin</button>
     <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
@@ -1413,7 +1410,7 @@ body.landing-active .app { display: none !important; }
   <div class="sidebar">
 
     <!-- LIVE FACE SWAP -->
-    <div class="panel" id="panel-liveswap">
+    <div class="panel active" id="panel-liveswap">
       <!-- Step 1: Camera (always visible at top) -->
       <div class="card">
         <div class="card-label">Step 1 · Camera</div>
@@ -1552,7 +1549,7 @@ body.landing-active .app { display: none !important; }
     </div>
 
     <!-- LIVE TRY-ON -->
-    <div class="panel active" id="panel-tryon">
+    <div class="panel" id="panel-tryon">
       <!-- Step 1: Camera -->
       <div class="card">
         <div class="card-label">Step 1 · Camera</div>
@@ -2689,6 +2686,7 @@ let _lsSeq      = 0;
 let _lsTracker = null, _lsTrackerLoading = false, _lsTrackTs = -1;
 let _lsCur = null, _lsLost = 0;
 let _lsStat = { ms: 0, frames: 0, since: 0, fps: 0 };
+let _lsFellBack = false;   // V2 → V1 drop already used this session
 let _lsStatTimer = null;
 
 const _lsPatchCvs = document.createElement('canvas');
@@ -2856,7 +2854,10 @@ function _lsDrawLiveMouth(ctx, video, sz, lm) {
   ctx.drawImage(c, 0, 0);
 }
 
-function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
+function toggleLiveSwap() {
+  _lsFellBack = false;          // an explicit Start re-arms the V2 → V1 drop
+  liveRunning ? stopLiveSwap() : startLiveSwap();
+}
 
 function startLiveSwap() {
   if (!liveSource) { setStatus('liveStatus','error','Select a face first'); return; }
@@ -2912,6 +2913,21 @@ function startLiveSwap() {
     } else if (msg.type==='no_face'||msg.type==='dropped') {
       _lsSettle(msg.id);
     } else if (msg.type==='error') {
+      // V2 closes the socket outright when its weights are not on the box.
+      // Stranding the user on a radio button they cannot do anything about
+      // helps nobody: V1 speaks the identical protocol, so drop to it and
+      // say why. The server fetches the V2 weights on boot, so this is only
+      // ever true until the next restart finishes downloading them.
+      if (/V2 swap not available/i.test(msg.message || '') && !_lsFellBack) {
+        _lsFellBack = true;
+        const v1 = document.querySelector('input[name="swapEngine"][value="v1"]');
+        if (v1) v1.checked = true;
+        setStatus('liveStatus','error',
+          'V2 weights are not on the server yet — running V1. They download on the next backend restart.');
+        try { liveWs.close(); } catch(_) {}
+        setTimeout(() => { if (!liveRunning) startLiveSwap(); }, 400);
+        return;
+      }
       setStatus('liveStatus','error',msg.message);
     }
   };
