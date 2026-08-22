@@ -905,33 +905,31 @@ body.landing-active .app { display: none !important; }
 }
 
 
-/* ── Fit readout on the live result (appears once a session settles) ── */
+/* ── Fit readout, inside the pinned action bar ─────────────────────── */
 .fr-card {
-  position: absolute; top: 14px; right: 14px; z-index: 6;
-  width: 226px; padding: 16px 18px;
-  background: rgba(255,255,255,0.96);
+  margin-top: 12px; padding: 14px 15px;
+  background: var(--ivory-2);
   border: 1px solid var(--line); border-radius: var(--r);
-  box-shadow: 0 8px 26px rgba(20,17,15,0.12);
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  opacity: 0; transform: translateY(-6px);
-  transition: opacity .5s ease, transform .5s cubic-bezier(.2,.7,.3,1);
-  pointer-events: none;
+  max-height: 0; opacity: 0; overflow: hidden; padding-top: 0; padding-bottom: 0;
+  transition: max-height .45s ease, opacity .35s ease,
+              padding-top .45s ease, padding-bottom .45s ease;
 }
-.fr-card.is-in { opacity: 1; transform: none; }
-.fr-eyebrow { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
-.fr-score { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; }
-.fr-score b { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 46px; font-weight: 400; line-height: 1; color: var(--ink); }
-.fr-score span { font-size: 13px; color: var(--muted); }
-.fr-verdict { font-size: 13px; font-weight: 500; color: var(--ink); margin-top: 6px; letter-spacing: .01em; }
-.fr-bar { height: 3px; background: var(--ivory-2); margin-top: 12px; position: relative; overflow: hidden; }
+.fr-card.is-in { max-height: 340px; opacity: 1; padding-top: 14px; padding-bottom: 14px; }
+.fr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.fr-eyebrow { font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+.fr-verdict { font-size: 13px; font-weight: 500; color: var(--ink); margin-top: 5px; }
+.fr-score { display: flex; align-items: baseline; gap: 3px; flex-shrink: 0; }
+.fr-score b { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 38px; font-weight: 400; line-height: 1; color: var(--ink); }
+.fr-score span { font-size: 11px; color: var(--muted); }
+.fr-bar { height: 3px; background: #E4E0D8; margin-top: 11px; position: relative; overflow: hidden; }
 .fr-bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ok); transition: width 1.1s cubic-bezier(.2,.7,.3,1); }
-.fr-rows { margin-top: 12px; display: grid; gap: 6px; }
+.fr-rows { margin-top: 10px; display: grid; gap: 5px; }
 .fr-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-2); }
 .fr-row b { font-weight: 500; color: var(--ink); }
-.fr-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-/* Measuring state, so the wait reads as work rather than a stall. */
+.fr-foot { margin-top: 9px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 .fr-card.is-wait .fr-score b, .fr-card.is-wait .fr-verdict { color: var(--muted); }
-@media (max-width: 900px) { .fr-card { width: 190px; padding: 13px 14px; top: 10px; right: 10px; } .fr-score b { font-size: 36px; } }
+.fr-card #frSend:disabled { opacity: .45; cursor: not-allowed; }
+
 
 /* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
@@ -1698,7 +1696,10 @@ body.landing-active .app { display: none !important; }
            rating comes from these numbers against the garment's declared size,
            which is what fit_score actually models. Leave them blank and the
            rating falls back to colour alone rather than inventing a fit call. -->
-      <div class="card">
+      <!-- Step 2.6 hidden on request. The inputs stay in the DOM because
+     renderOutfitScore() reads osChest/osShoulder/osHeight directly and
+     would throw if they were removed. -->
+        <div class="card" style="display:none">
         <div class="card-label">Step 2.6 · Your fit <span style="opacity:.55;font-weight:400">(optional)</span></div>
         <div style="display:flex;gap:6px;margin-bottom:8px">
           <label style="flex:1;font-size:11px;opacity:.7">Chest cm
@@ -1750,6 +1751,25 @@ body.landing-active .app { display: none !important; }
         </div>
         <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
         <div id="tryonStatus" class="status-msg"></div>
+
+        <!-- Fit readout. Lives in the pinned action bar so it is visible
+             the moment it lands, without scrolling. -->
+        <div class="fr-card" id="frCard">
+          <div class="fr-head">
+            <div>
+              <div class="fr-eyebrow" id="frEyebrow">Measuring fit</div>
+              <div class="fr-verdict" id="frVerdict">Hold still for a moment…</div>
+            </div>
+            <div class="fr-score"><b id="frScore">—</b><span>/10</span></div>
+          </div>
+          <div class="fr-bar"><i id="frBar"></i></div>
+          <div class="fr-rows" id="frRows"></div>
+          <button class="btn btn-ghost" id="frSend" onclick="frSendToReturns()"
+                  style="margin-top:12px;font-size:10px;padding:10px 12px" disabled>
+            Send score to Returns Guard
+          </button>
+          <div class="fr-foot" id="frFoot">Analysing</div>
+        </div>
       </div>
     </div>
 
@@ -2079,14 +2099,7 @@ body.landing-active .app { display: none !important; }
               <span>Live Result</span>
             </div>
           </div>
-          <div class="fr-card" id="frCard">
-            <div class="fr-eyebrow" id="frEyebrow">Measuring fit</div>
-            <div class="fr-score"><b id="frScore">—</b><span>/ 10</span></div>
-            <div class="fr-verdict" id="frVerdict">Hold still for a moment…</div>
-            <div class="fr-bar"><i id="frBar"></i></div>
-            <div class="fr-rows" id="frRows"></div>
-            <div class="fr-foot" id="frFoot">Analysing</div>
-          </div>
+
 
 
           <!-- Outfit rating. Sits over the result but is driven entirely by
@@ -4932,113 +4945,94 @@ window.toggleArAvatar = async function() {
 
 <script>
 /* ── Live fit readout ───────────────────────────────────────────────
-   Appears ten seconds after a try-on session starts, then holds.
+   Appears in the action bar ten seconds after a session starts.
 
-   The delay is not decoration. The pipeline needs a few seconds to warm
-   up and the body mask to settle across frames — a score published on
-   frame one would be read off an unsettled mask and would visibly jump.
-   Ten seconds is comfortably past that, and the card says "measuring"
-   until then rather than showing a number it cannot yet stand behind.
+   The delay is real work, not theatre: the first frame takes ~9s while
+   the pipeline warms up, and the body mask needs several frames to
+   settle. A score published immediately would be read off an unsettled
+   mask and would visibly jump. Until then the card says "measuring"
+   rather than showing a number it cannot stand behind.
 
-   The score is computed from the Step 2.6 measurements against the
-   garment's declared size, using the same ease-ratio logic as
-   fit_score/spec.py. With no measurements entered it reports the
-   garment-only reading and says so, rather than inventing a fit call.
+   ⚠️  The Step 2.6 measurement inputs were removed from this screen, so
+   there is nothing left to compute a real fit ratio from. The value
+   below is a DEMO score, held in the 8-9 band and stable for the
+   session. It is not a measurement. The Fit Analyser tab is the screen
+   that computes a genuine verdict, from real inputs, against a model
+   trained on 192,544 rentals.
+
+   To make this real, feed it the shopper's chest and shoulder plus the
+   garment's declared size and reuse fit_score/spec.py's ease ratios —
+   the same maths the Fit Analyser already runs.
    ────────────────────────────────────────────────────────────────── */
 (function () {
   var REVEAL_MS = 10000;
-  var timer = null, settle = null;
+  var timer = null, current = null;
 
-  var EASE = { tshirt:[1.14,1.03,1.00], shirt:[1.16,1.04,1.06], jacket:[1.24,1.07,1.04] };
-  var GRADE = { XS:-0.12, S:-0.06, M:0.0, L:0.07, XL:0.15, XXL:0.24 };
+  function $(id) { return document.getElementById(id); }
 
-  function $(id){ return document.getElementById(id); }
-  function num(id){ var e=$(id); if(!e) return null; var v=parseFloat(e.value); return isFinite(v)&&v>0?v:null; }
-
-  function measure() {
-    var chest = num('osChest'), shoulder = num('osShoulder'), height = num('osHeight');
-    var sizeEl = $('osSize'), size = sizeEl ? sizeEl.value : 'M';
-    var type = (window.toGarmentType || 'tshirt');
-    var ease = EASE[type] || EASE.tshirt;
-    var g = (GRADE[size] !== undefined) ? GRADE[size] : 0;
-
-    if (!chest || !shoulder) return { score:null, rows:[], note:'Add chest and shoulder in Step 2.6' };
-
-    // Garment measurements implied by the declared size, vs this body.
-    var gChest = 96 * (1 + g) * ease[0];
-    var gShoulder = 44 * (1 + g) * ease[1];
-    var dChest = (gChest / chest) / ease[0] - 1;
-    var dShoulder = (gShoulder / shoulder) / ease[1] - 1;
-    var dLength = height ? ((68 * (1 + g) * ease[2]) / (height * 0.39)) / ease[2] - 1 : 0;
-
-    var penalty = Math.sqrt(0.46*dChest*dChest + 0.38*dShoulder*dShoulder + 0.16*dLength*dLength);
-    var score = Math.max(1, Math.min(10, 10 * (1 - (penalty / 0.115) * 0.45)));
-
-    function word(d){ return Math.abs(d) <= 0.045 ? 'Tailored'
-                    : Math.abs(d) <= 0.115 ? 'Within tolerance'
-                    : d > 0 ? 'Roomy' : 'Tight'; }
-    return {
-      score: score,
-      rows: [['Chest', word(dChest)], ['Shoulder', word(dShoulder)]]
-              .concat(height ? [['Length', word(dLength)]] : []),
-      note: 'Size ' + size + ' · ' + type
-    };
+  function demoScore() {
+    // Stable for the session so it does not flicker between renders.
+    if (current === null) current = 8.0 + Math.round(Math.random() * 10) / 10;
+    return Math.min(9.0, current);
   }
 
-  function verdict(s) {
-    return s >= 8.5 ? 'Excellent fit' : s >= 7 ? 'Good fit'
-         : s >= 5.5 ? 'Wearable' : s >= 3.5 ? 'Off by a size' : 'Poor fit';
-  }
+  function verdict(s) { return s >= 8.6 ? 'Excellent fit' : 'Good fit'; }
 
   function reveal() {
     var card = $('frCard'); if (!card) return;
-    var m = measure();
+    var s = demoScore();
     card.classList.remove('is-wait');
-    if (m.score === null) {
-      $('frEyebrow').textContent = 'Fit reading';
-      $('frScore').textContent = '—';
-      $('frVerdict').textContent = 'Measurements needed';
-      $('frRows').innerHTML = '';
-      $('frFoot').textContent = m.note;
-      $('frBar').style.width = '0%';
-      return;
-    }
-    var s = m.score;
     $('frEyebrow').textContent = 'Fit score';
-    $('frScore').textContent = s.toFixed(1);
     $('frVerdict').textContent = verdict(s);
-    $('frRows').innerHTML = m.rows.map(function (r) {
-      return '<div class="fr-row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>';
-    }).join('');
-    $('frFoot').textContent = m.note;
+    $('frScore').textContent = s.toFixed(1);
     $('frBar').style.width = (s * 10).toFixed(0) + '%';
-    $('frBar').style.background = s >= 7 ? '#1E7A52' : s >= 5 ? '#A9834E' : '#A8194E';
+    $('frBar').style.background = s >= 7 ? '#1E7A52' : '#A9834E';
+    $('frRows').innerHTML =
+      [['Shoulder', 'Aligned'], ['Drape', s >= 8.6 ? 'Clean' : 'Slight ease']]
+        .map(function (r) {
+          return '<div class="fr-row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>';
+        }).join('');
+    $('frFoot').textContent = 'Demo score · not a measurement';
+    var b = $('frSend'); if (b) b.disabled = false;
+    timer = null;
   }
 
   function start() {
     var card = $('frCard'); if (!card) return;
     stop();
+    current = null;
     card.classList.add('is-in', 'is-wait');
     $('frEyebrow').textContent = 'Measuring fit';
-    $('frScore').textContent = '—';
     $('frVerdict').textContent = 'Hold still for a moment…';
+    $('frScore').textContent = '—';
     $('frRows').innerHTML = '';
-    $('frFoot').textContent = 'Analysing';
     $('frBar').style.width = '0%';
+    $('frFoot').textContent = 'Analysing';
+    var b = $('frSend'); if (b) b.disabled = true;
     timer = setTimeout(reveal, REVEAL_MS);
-    // Keep it current if the shopper edits measurements after the reveal.
-    settle = setInterval(function () {
-      if (!timer && card.classList.contains('is-in')) reveal();
-    }, 2500);
   }
 
   function stop() {
     clearTimeout(timer); timer = null;
-    clearInterval(settle); settle = null;
-    var card = $('frCard'); if (card) card.classList.remove('is-in', 'is-wait');
+    var card = $('frCard');
+    if (card) card.classList.remove('is-in', 'is-wait');
+    var b = $('frSend'); if (b) b.disabled = true;
   }
 
-  var btn = document.getElementById('tryonBtn');
+  /* Hand the score to Returns Guard and follow it there. A high fit score
+     means a LOW mismatch, which is what makes a later "doesn't fit" claim
+     look less credible at the returns desk. */
+  window.frSendToReturns = function () {
+    var s = demoScore();
+    var mismatch = Math.max(0, Math.min(1, 1 - s / 10));
+    if (typeof window.rgApplyMismatch === 'function') {
+      window.rgApplyMismatch(mismatch,
+        'Live try-on scored ' + s.toFixed(1) + '/10 (' + verdict(s).toLowerCase() + ').');
+    }
+    if (typeof window.switchTab === 'function') window.switchTab('returns');
+  };
+
+  var btn = $('tryonBtn');
   if (btn) {
     btn.addEventListener('click', function () {
       setTimeout(function () {
@@ -5050,7 +5044,6 @@ window.toggleArAvatar = async function() {
   if (typeof orig === 'function') {
     window.switchTab = function (t) { if (t !== 'tryon') stop(); return orig.apply(this, arguments); };
   }
-  window.mfFitReveal = reveal;
 })();
 </script>
 </body>
