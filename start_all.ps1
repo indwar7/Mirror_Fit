@@ -37,6 +37,8 @@ $svc = @(
      py="$conda\envs\sadtalker\python.exe";             tabs="AI Twin" }
 )
 
+function Norm($t) { ($t -replace '[^a-z0-9]', '').ToLower() }
+
 function Test-Port($p) {
   try { (New-Object Net.Sockets.TcpClient).Connect("127.0.0.1", $p); $true } catch { $false }
 }
@@ -54,8 +56,18 @@ if (-not $env:HF_TOKEN) {
   Write-Host ""
 }
 
-foreach ($s in $svc) {
-  if ($Only -and $s.name -notlike "*$Only*") { continue }
+$selected = @($svc | Where-Object { -not $Only -or (Norm $_.name).Contains((Norm $Only)) })
+if ($Only -and $selected.Count -eq 0) {
+  Write-Host ("  no service matches -Only '{0}'. Known: {1}" -f $Only, (($svc | ForEach-Object { $_.name }) -join ", ")) -ForegroundColor Red
+  exit 1
+}
+
+# Only wait on services this run actually tried to start. Waiting on one that
+# was skipped (no conda env) burned the whole 120s timeout printing
+# "3 of 4 listening" while nothing was ever going to change.
+$expected = @()
+
+foreach ($s in $selected) {
 
   $dir = Join-Path $root $s.dir
   $up  = Test-Port $s.port
@@ -71,6 +83,7 @@ foreach ($s in $svc) {
   }
   if ($up -and -not $Force) {
     Write-Host ("  UP    {0,-14} :{1}  already serving - left alone" -f $s.name, $s.port) -ForegroundColor Green
+    $expected += $s
     continue
   }
   if ($up -and $Force) {
@@ -80,6 +93,7 @@ foreach ($s in $svc) {
     Start-Sleep -Seconds 2
   }
 
+  $expected += $s
   New-NetFirewallRule -DisplayName ("Allow " + $s.port) -Direction Inbound `
       -LocalPort $s.port -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
@@ -95,12 +109,12 @@ Write-Host "`nwaiting for models to load (up to 120s)..." -ForegroundColor Cyan
 $deadline = (Get-Date).AddSeconds(120)
 do {
   Start-Sleep -Seconds 5
-  $pending = @($svc | Where-Object { (Test-Path (Join-Path $root $_.dir)) -and -not (Test-Port $_.port) })
-  Write-Host ("  {0} of {1} listening" -f ($svc.Count - $pending.Count), $svc.Count)
+  $pending = @($expected | Where-Object { -not (Test-Port $_.port) })
+  Write-Host ("  {0} of {1} listening" -f ($expected.Count - $pending.Count), $expected.Count)
 } while ($pending.Count -gt 0 -and (Get-Date) -lt $deadline)
 
 Write-Host "`n--------------- status ---------------" -ForegroundColor Cyan
-foreach ($s in $svc) {
+foreach ($s in $selected) {
   $ok = Test-Port $s.port
   $c  = if ($ok) { "Green" } else { "Red" }
   Write-Host ("  {0,-14} :{1}  {2,-8} {3}" -f $s.name, $s.port,
