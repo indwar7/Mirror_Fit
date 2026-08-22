@@ -13,7 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 
 from model import TryOnModel
 
@@ -27,12 +27,19 @@ _thread_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vton-worker
 
 
 def _decode_image(b64: str) -> Image.Image:
-    return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    # exif_transpose is required: Pillow does NOT apply the EXIF Orientation
+    # tag on open, so a garment or person photo shot in portrait on a phone
+    # arrives here as a sideways landscape buffer. (OpenCV's imdecode does
+    # apply it, which is why the cv2-based backends never showed this.)
+    # Canvas-captured WebSocket frames carry no EXIF, so this is a no-op on
+    # the hot path.
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(base64.b64decode(b64))))
+    return img.convert("RGB")
 
 
 def _decode_image_raw(b64: str) -> Image.Image:
     """Decode without forcing RGB — preserves RGBA alpha for garment PNG."""
-    return Image.open(io.BytesIO(base64.b64decode(b64)))
+    return ImageOps.exif_transpose(Image.open(io.BytesIO(base64.b64decode(b64))))
 
 
 def _encode_jpeg(img: Image.Image, quality: int = 88) -> str:

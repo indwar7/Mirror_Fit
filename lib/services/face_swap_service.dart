@@ -22,11 +22,26 @@ class AvatarModel {
   final String category;
   final String imageUrl; // absolute URL including host
 
+  /// True for avatars the user enrolled from their own photo. Presets are
+  /// fixed and cannot be deleted; enrolled ones can.
+  final bool enrolled;
+
+  /// Whether a full-body image has been generated for this avatar yet. Only
+  /// meaningful for enrolled avatars — try-on needs a torso, and the enrolled
+  /// selfie alone does not have one.
+  final bool hasBody;
+
+  /// Body measurements captured for this avatar, or null if not provided yet.
+  final Map<String, dynamic>? measurements;
+
   const AvatarModel({
     required this.id,
     required this.name,
     required this.category,
     required this.imageUrl,
+    this.enrolled = false,
+    this.hasBody = false,
+    this.measurements,
   });
 
   factory AvatarModel.fromJson(Map<String, dynamic> j) => AvatarModel(
@@ -34,6 +49,9 @@ class AvatarModel {
         name: j['name'] as String,
         category: j['category'] as String,
         imageUrl: '$_kLocalBase${j['image_url']}',
+        enrolled: j['enrolled'] as bool? ?? false,
+        hasBody: j['has_body'] as bool? ?? false,
+        measurements: j['measurements'] as Map<String, dynamic>?,
       );
 }
 
@@ -62,6 +80,96 @@ class FaceSwapService {
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     final list = (data['avatars'] as List).cast<Map<String, dynamic>>();
     return list.map(AvatarModel.fromJson).toList();
+  }
+
+  // ── Enrol the user's own face as an avatar ───────────────────────
+
+  /// Upload [photo] as a new avatar. The backend validates that a face is
+  /// actually detectable before it stores anything, so a 422 here means the
+  /// photo is unusable rather than that the request was malformed.
+  ///
+  /// Returns the created avatar. Its id works everywhere a preset id does.
+  static Future<AvatarModel> createAvatar({
+    required Uint8List photo,
+    String name = 'You',
+    String? gender,
+    void Function(String)? onStatus,
+  }) async {
+    onStatus?.call('Creating your avatar…');
+    final req = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_kLocalBase/avatars/create'),
+    )
+      ..fields['name'] = name
+      ..files.add(http.MultipartFile.fromBytes('photo', photo,
+          filename: 'selfie.jpg'));
+    if (gender != null) req.fields['gender'] = gender;
+
+    final streamed = await req.send().timeout(const Duration(seconds: 60));
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode != 200) {
+      throw FaceSwapException('Enrolment failed: ${_extractDetail(res.body)}');
+    }
+    return AvatarModel.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// Give an enrolled avatar a full body so garments have a torso to sit on.
+  ///
+  /// The enrolled selfie is head-and-shoulders; try-on needs shoulders and hips
+  /// to build a torso mask, so a face alone cannot be dressed. The backend
+  /// picks a pre-rendered body matching these measurements and swaps the
+  /// person's face onto it.
+  ///
+  /// Measurements are centimetres. [chestCm] and [waistCm] are circumferences;
+  /// [shoulderCm] is a width. A 422 means a measurement was rejected as
+  /// implausible — most often inches typed into a cm field.
+  ///
+  /// Returns the raw response: `body_image_url`, the stored `measurements`, and
+  /// `selection` (which template was chosen and why), so the UI can show the
+  /// body as an approximation rather than as something measured from the user.
+  static Future<Map<String, dynamic>> createAvatarBody({
+    required String avatarId,
+    required double chestCm,
+    required double waistCm,
+    double? shoulderCm,
+    double? heightCm,
+    double? weightKg,
+    void Function(String)? onStatus,
+  }) async {
+    onStatus?.call('Building your body model…');
+    final req = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_kLocalBase/avatars/$avatarId/body'),
+    )
+      ..fields['chest_cm'] = chestCm.toString()
+      ..fields['waist_cm'] = waistCm.toString();
+    if (shoulderCm != null) req.fields['shoulder_cm'] = shoulderCm.toString();
+    if (heightCm != null) req.fields['height_cm'] = heightCm.toString();
+    if (weightKg != null) req.fields['weight_kg'] = weightKg.toString();
+
+    final streamed = await req.send().timeout(const Duration(seconds: 60));
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode != 200) {
+      throw FaceSwapException('Body setup failed: ${_extractDetail(res.body)}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// URL of an avatar's full-body image, for try-on and for previewing.
+  /// Only meaningful once [createAvatarBody] has succeeded — check
+  /// [AvatarModel.hasBody] first.
+  static String bodyImageUrl(String avatarId) =>
+      '$_kLocalBase/avatars/$avatarId/body-image';
+
+  /// Delete an enrolled avatar and its images. Presets return 403.
+  static Future<void> deleteAvatar(String avatarId) async {
+    final res = await http
+        .delete(Uri.parse('$_kLocalBase/avatars/$avatarId'))
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw FaceSwapException('Delete failed: ${_extractDetail(res.body)}');
+    }
   }
 
   // ── Swap into avatar (local backend) ─────────────────────────────

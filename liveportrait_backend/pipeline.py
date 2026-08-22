@@ -3,7 +3,7 @@ LivePortrait runner for LUCY — driving-frame expression transfer.
 
 Per-frame contract:
     prepare_source(session_id, source_bgr) -> bool  (one-time per session)
-    drive(session_id, driving_bgr) -> ndarray | None
+    drive(session_id, driving_bgr) -> DriveResult
 
 Why this exists separately from face_swap_backend and instantid_backend:
 LivePortrait is built specifically to carry the DRIVING frame's expression
@@ -15,6 +15,15 @@ choice for live mirror-style face animation.
 Heavy lifting (Cropper, LivePortraitWrapper) comes from the upstream
 KwaiVGI/LivePortrait repo, cloned during setup.ps1 into
 liveportrait_backend/LivePortrait/. We add it to sys.path at import.
+
+Driving-frame alignment
+-----------------------
+The motion extractor is only meaningful when every driving frame is
+cropped the same way the source was: face-aligned, same scale, same
+vertical offset. We therefore follow upstream's video path exactly —
+detect once, then track landmarks frame-to-frame with landmark.onnx
+(~2 ms) and run `crop_image` with the driving crop params. Re-detection
+happens on a slow cadence purely to correct tracker drift.
 """
 from __future__ import annotations
 
@@ -22,17 +31,50 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
-import gc
 import numpy as np
 
 log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _REPO = _HERE / "LivePortrait"
+
+# ── Tunables ──────────────────────────────────────────────────────────────
+# All of these are per-session and can be changed at runtime by the client
+# (WS `config` message) so the deployed box can be tuned without a redeploy.
+DEFAULT_PARAMS: dict[str, float] = {
+    # Expression amplification on the delta from the neutral baseline.
+    # With a properly averaged baseline, mild amplification is enough;
+    # 1.35+ produced distorted geometry when baseline drift added up.
+    "exp_amp": 1.1,
+    # How much of the driver's head rotation is carried onto the portrait.
+    # 0.0 = head locked to the source pose (only the face animates), which
+    # is the safe default: large relative yaw stretches a still portrait.
+    # 0.6-0.8 gives a natural "mirror" feel on near-frontal avatars.
+    "pose_gain": 0.0,
+    # EMA weight on the *new* frame's expression delta. 0.7 → ~110 ms tau:
+    # catches single-frame outliers, passes blinks through near full
+    # amplitude. Lower = smoother but laggier.
+    "smooth": 0.7,
+}
+
+# Frames averaged into the neutral baseline before live driving starts.
+BASELINE_FRAMES = 10
+# Face re-detection cadence (frames). Landmarks are tracked every frame;
+# detection only corrects tracker drift, so it is cheap to amortise — at
+# 20 fps this is a detector pass every ~0.75 s, which bounds how long a
+# diverged tracker can keep animating on nonsense.
+DETECT_EVERY = 15
+# Longest run of tracking-only frames tolerated before a forced re-detect.
+MAX_TRACK_MISS = 3
+# Source frames are downscaled to this max dimension. Paste-back and JPEG
+# encode both scale with it, and anything above 720 is invisible in a
+# webcam-sized canvas while costing real milliseconds per frame.
+SOURCE_MAX_DIM = 720
 
 
 def _lazy_imports():
@@ -52,44 +94,96 @@ def _lazy_imports():
     from src.config.inference_config import InferenceConfig
     from src.config.crop_config import CropConfig
     from src.utils.camera import get_rotation_matrix
-    return (
-        torch,
-        LivePortraitWrapper,
-        Cropper,
-        InferenceConfig,
-        CropConfig,
-        get_rotation_matrix,
+    from src.utils.crop import crop_image, prepare_paste_back, paste_back
+    from src.utils.io import contiguous, resize_to_limit
+
+    return dict(
+        torch=torch,
+        LivePortraitWrapper=LivePortraitWrapper,
+        Cropper=Cropper,
+        InferenceConfig=InferenceConfig,
+        CropConfig=CropConfig,
+        get_rotation_matrix=get_rotation_matrix,
+        crop_image=crop_image,
+        prepare_paste_back=prepare_paste_back,
+        paste_back=paste_back,
+        contiguous=contiguous,
+        resize_to_limit=resize_to_limit,
     )
+
+
+@dataclass
+class DriveResult:
+    """One frame's outcome. `state` lets the client tell the difference
+    between "no face in shot" and "still measuring your neutral face",
+    which used to both surface as a silent no-op."""
+
+    state: str                          # "live" | "calibrating" | "no_face"
+    image: Optional[np.ndarray] = None  # BGR, full source frame size
+    infer_ms: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        return self.image is not None
+
+
+@dataclass
+class _Session:
+    # Source (static for the life of the session)
+    I_s: Any = None
+    x_s_info: Any = None
+    f_s: Any = None
+    x_s: Any = None
+    R_s: Any = None
+    M_c2o: Any = None
+    src_full: Any = None      # RGB — paste_back composites onto RGB
+    mask_ori: Any = None      # float mask in source-frame space
+    # Driving-frame landmark tracking (original driving-frame space)
+    lmk_track: Optional[np.ndarray] = None
+    track_center: Optional[tuple] = None
+    track_miss: int = 0
+    force_detect: bool = False
+    # Neutral baseline, averaged over the first BASELINE_FRAMES frames
+    base: Optional[dict] = None
+    _accum: Optional[dict] = None
+    # Rolling state
+    exp_smooth: Any = None
+    frame_n: int = 0
+    params: dict = field(default_factory=lambda: dict(DEFAULT_PARAMS))
+    last_seen: float = 0.0
+    infer_ema: float = 0.0
+    drives: int = 0
 
 
 class LivePortraitEngine:
     """One process-wide pipeline + many per-session source caches.
 
-    Thread-safety: per-frame work serialized under one lock because the
-    wrapper holds GPU state that cannot be entered concurrently.
+    Thread-safety: every public method takes `self._lock`. The wrapper
+    holds GPU state that cannot be entered concurrently, and the session
+    map is mutated from FastAPI's executor threads.
 
     Session lifecycle:
         prepare_source(sid, src_bgr) -> caches appearance feature, kp_source,
-            initial rotation matrix, paste-back transform, neutral
-            driving info (filled on first drive() call).
-        drive(sid, drv_bgr) -> returns animated source frame as BGR ndarray.
+            source rotation, paste-back transform + mask.
+        drive(sid, drv_bgr) -> DriveResult with the animated frame.
         drop_session(sid) -> releases cached tensors.
     """
 
     def __init__(self):
-        (
-            torch,
-            LivePortraitWrapper,
-            Cropper,
-            InferenceConfig,
-            CropConfig,
-            get_rotation_matrix,
-        ) = _lazy_imports()
+        u = _lazy_imports()
+        self._torch = u["torch"]
+        self._get_rotation_matrix = u["get_rotation_matrix"]
+        self._crop_image = u["crop_image"]
+        self._prepare_paste_back = u["prepare_paste_back"]
+        self._paste_back = u["paste_back"]
+        self._contiguous = u["contiguous"]
+        self._resize_to_limit = u["resize_to_limit"]
 
-        self._torch = torch
-        self._get_rotation_matrix = get_rotation_matrix
+        torch = self._torch
+        # Fixed 256x256 input shape every frame — let cuDNN autotune once.
+        torch.backends.cudnn.benchmark = True
 
-        cfg = InferenceConfig(
+        cfg = u["InferenceConfig"](
             flag_use_half_precision=True,
             flag_do_crop=True,
             flag_stitching=True,
@@ -103,16 +197,43 @@ class LivePortraitEngine:
         self._cfg = cfg
 
         log.info("[LP] loading LivePortraitWrapper (motion, warp, generator)")
-        self.wrap = LivePortraitWrapper(inference_cfg=cfg)
+        self.wrap = u["LivePortraitWrapper"](inference_cfg=cfg)
         log.info("[LP] loading Cropper (insightface buffalo_l + landmark.onnx)")
-        self.cropper = Cropper(crop_cfg=CropConfig())
+        self.cropper = u["Cropper"](crop_cfg=u["CropConfig"]())
+        self._crop_cfg = self.cropper.crop_cfg
+        # Upstream renamed this attribute (landmark_runner → human_landmark_runner)
+        # and setup.ps1 clones HEAD, so accept either.
+        self._lmk_runner = getattr(
+            self.cropper, "human_landmark_runner", None
+        ) or getattr(self.cropper, "landmark_runner")
 
-        self._sessions: dict[str, dict] = {}
+        self._sessions: dict[str, _Session] = {}
         self._lock = threading.Lock()
+        self._started = time.time()
+        self._warmup()
         log.info("[LP] engine ready")
 
+    # ── Startup warmup ──────────────────────────────────────────────────────
+    def _warmup(self) -> None:
+        """Run one synthetic frame through the network so cuDNN autotuning
+        and lazy CUDA context creation happen before the first user frame
+        instead of adding ~1 s to it. No face needed — the cropper is not
+        involved and the output is discarded."""
+        try:
+            dummy = np.full((256, 256, 3), 127, dtype=np.uint8)
+            I = self.wrap.prepare_source(dummy)
+            info = self.wrap.get_kp_info(I)
+            f = self.wrap.extract_feature_3d(I)
+            x = self.wrap.transform_keypoint(info)
+            self.wrap.warp_decode(f, x, self.wrap.stitching(x, x))
+            log.info("[LP] warmup pass complete")
+        except Exception as e:  # never block startup on a warmup failure
+            log.warning("[LP] warmup skipped: %s", e)
+
     # ── Source registration (one-time per WebSocket session) ───────────────
-    def prepare_source(self, session_id: str, source_bgr: np.ndarray) -> bool:
+    def prepare_source(
+        self, session_id: str, source_bgr: np.ndarray, **params: float
+    ) -> bool:
         """Crop the source face, extract appearance features and source
         keypoints. Caches everything needed for the per-frame drive call.
         Returns True on success, False if no face detected.
@@ -122,242 +243,348 @@ class LivePortraitEngine:
         noise — which is exactly what we saw before this fix.
         """
         source_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
-        try:
-            crop = self.cropper.crop_source_image(source_rgb, self.cropper.crop_cfg)
-        except Exception as e:
-            log.warning("[LP] source crop failed: %s", e)
-            return False
-        if crop is None or "img_crop_256x256" not in crop:
-            log.warning("[LP] no face in source")
-            return False
-
-        I_s = self.wrap.prepare_source(crop["img_crop_256x256"])
-        x_s_info = self.wrap.get_kp_info(I_s)
-        f_s      = self.wrap.extract_feature_3d(I_s)
-        x_s      = self.wrap.transform_keypoint(x_s_info)
-        R_s = self._get_rotation_matrix(
-            x_s_info["pitch"], x_s_info["yaw"], x_s_info["roll"]
-        )
-
-        self._sessions[session_id] = {
-            "I_s":        I_s,
-            "x_s_info":   x_s_info,
-            "f_s":        f_s,
-            "x_s":        x_s,
-            "R_s":        R_s,
-            "M_c2o":      crop["M_c2o"],
-            # paste_back operates on the RGB result `I_p` so it needs an
-            # RGB canvas; store the source as RGB to match.
-            "src_full":   source_rgb,
-            "mask_crop":  crop.get("mask_crop"),
-            # Filled on the first drive() call. Without a neutral driving
-            # baseline relative-motion produces a garbage frame.
-            "x_d_0_info": None,
-            "R_d_0":      None,
-            # Last-known driving crop bbox for fast re-crop (avoid running
-            # the full Cropper every frame — re-detect only every Nth frame).
-            # EMA-smoothed across re-detections so periodic bbox snap doesn't
-            # show up as a zoom pulse on the rendered portrait.
-            "last_bbox":  None,
-            # Running EMA of the per-frame expression delta. Light smoothing
-            # removes the high-frequency component that reads as breathing /
-            # face-size jitter while still passing through blinks and lips.
-            "exp_smooth": None,
-            "frame_n":    0,
-        }
-        log.info("[LP] source prepared for session %s", session_id)
-        return True
-
-    def drop_session(self, session_id: str) -> None:
-        sess = self._sessions.pop(session_id, None)
-        if sess is not None:
-            with self._torch.cuda.device("cuda"):
-                self._torch.cuda.empty_cache()
-
-    # ── Per-frame driving ───────────────────────────────────────────────────
-    def drive(self, session_id: str, driving_bgr: np.ndarray) -> Optional[np.ndarray]:
-        """Animate the cached source by the driving frame's expression
-        and head pose. Returns the result as BGR ndarray (same shape as
-        the source's full frame so the demo client can overlay 1-to-1).
-        """
-        sess = self._sessions.get(session_id)
-        if sess is None:
-            log.warning("[LP] unknown session: %s", session_id)
-            return None
+        # Cap the working resolution: every paste-back and JPEG encode for
+        # the rest of the session is proportional to it. `division=2` keeps
+        # the warp transform on whole pixels.
+        source_rgb = self._resize_to_limit(source_rgb, SOURCE_MAX_DIM, 2)
 
         with self._lock:
-            return self._drive_locked(sess, driving_bgr)
-
-    def _drive_locked(self, sess: dict, driving_bgr: np.ndarray) -> Optional[np.ndarray]:
-        torch = self._torch
-
-        # Crop the driving frame using the upstream cropper. The newer
-        # KwaiVGI/LivePortrait code dropped the convenience method
-        # `crop_driving_image` and only ships `crop_driving_video` which
-        # takes a list of RGB frames. We adapt by passing a 1-element
-        # list per call; on success we reuse the bbox for ~10 frames to
-        # save the ~30 ms face_analysis call on every frame.
-        #
-        # Returned dict (new schema):
-        #   frame_crop_lst[i] : 512×512 RGB ndarray
-        #   lmk_crop_lst[i]   : (203, 2) landmark array
-        # We resize the crop to 256×256 BGR for compatibility with the
-        # rest of the pipeline (wrap.prepare_source expects this shape).
-        sess["frame_n"] += 1
-        crop_d = None
-        # Slow path: detect + use the cropper's face-aligned 512→256 crop.
-        # This MUST happen on the first frame so the neutral baseline x_d_0
-        # is computed from a properly aligned face — otherwise downstream
-        # expression deltas are noise. last_bbox is also updated here (with
-        # EMA blend) and used by the fast path on subsequent frames.
-        # Detect every 10 frames — rarer than this and the face position
-        # drifts off-center between detections, feeding the motion extractor
-        # a misaligned crop and producing noisy expression coefficients.
-        # OOM is handled by the MemoryError branch below.
-        if sess["frame_n"] % 10 == 1 or sess["last_bbox"] is None:
             try:
-                driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
-                out = self.cropper.crop_driving_video([driving_rgb])
-                if out and out.get("frame_crop_lst"):
-                    crop512_rgb = out["frame_crop_lst"][0]
-                    crop256_rgb = cv2.resize(
-                        crop512_rgb, (256, 256), interpolation=cv2.INTER_LINEAR
-                    )
-                    crop_d = {"img_crop_256x256": crop256_rgb}
-                    lmks = out["lmk_crop_lst"][0]
-                    if lmks is not None and len(lmks) > 0:
-                        x1, y1 = lmks[:, 0].min(), lmks[:, 1].min()
-                        x2, y2 = lmks[:, 0].max(), lmks[:, 1].max()
-                        pw, ph = (x2 - x1) * 0.4, (y2 - y1) * 0.4
-                        new_bbox = (x1 - pw, y1 - ph, x2 + pw, y2 + ph)
-                        # EMA-blend with previous bbox so the fast-path crop
-                        # window doesn't snap each detection.
-                        if sess["last_bbox"] is None:
-                            sess["last_bbox"] = new_bbox
-                        else:
-                            a = 0.35
-                            sess["last_bbox"] = tuple(
-                                a * n + (1 - a) * o
-                                for n, o in zip(new_bbox, sess["last_bbox"])
-                            )
-                # Release the cropper's intermediate 512x512x3 buffer
-                # immediately — under CPU-fallback the GC delay was tripping
-                # MemoryError when system RAM was already tight.
-                del out
-                gc.collect()
-            except MemoryError as e:
-                # Free what we can and skip this detection. The fast path
-                # using last_bbox will keep the session alive.
-                log.warning("[LP] cropper OOM at frame %d: %s", sess["frame_n"], e)
-                gc.collect()
-                crop_d = None
+                crop = self.cropper.crop_source_image(source_rgb, self._crop_cfg)
             except Exception as e:
-                if sess["frame_n"] % 30 == 1:
-                    log.warning(
-                        "[LP] crop_driving_video failed (frame=%d shape=%s): %s",
-                        sess["frame_n"], driving_bgr.shape, e,
+                log.warning("[LP] source crop failed: %s", e)
+                return False
+            if crop is None or "img_crop_256x256" not in crop:
+                log.warning("[LP] no face in source")
+                return False
+
+            I_s = self.wrap.prepare_source(crop["img_crop_256x256"])
+            x_s_info = self.wrap.get_kp_info(I_s)
+            f_s = self.wrap.extract_feature_3d(I_s)
+            x_s = self.wrap.transform_keypoint(x_s_info)
+            R_s = self._get_rotation_matrix(
+                x_s_info["pitch"], x_s_info["yaw"], x_s_info["roll"]
+            )
+
+            # Paste-back needs the mask warped into source-frame space. The
+            # source never moves, so this is computed once per session —
+            # previously `crop.get("mask_crop")` was read, but the cropper
+            # returns no such key, so paste-back silently never ran and the
+            # client got a bare 512x512 crop instead of the full portrait.
+            mask_ori = None
+            if self._cfg.flag_pasteback:
+                try:
+                    mask_ori = self._prepare_paste_back(
+                        self._cfg.mask_crop,
+                        crop["M_c2o"],
+                        dsize=(source_rgb.shape[1], source_rgb.shape[0]),
                     )
-                crop_d = None
-        # Fast path: cv2 bbox crop from the smoothed last_bbox.
-        if crop_d is None and sess["last_bbox"] is not None:
-            x1, y1, x2, y2 = (int(v) for v in sess["last_bbox"])
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(driving_bgr.shape[1], x2), min(driving_bgr.shape[0], y2)
-            if x2 - x1 < 16 or y2 - y1 < 16:
-                return None
-            patch_bgr = driving_bgr[y1:y2, x1:x2]
-            patch_rgb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2RGB)
-            patch_rgb = cv2.resize(patch_rgb, (256, 256), interpolation=cv2.INTER_LINEAR)
-            crop_d = {"img_crop_256x256": patch_rgb}
-        if crop_d is None:
+                except Exception as e:
+                    log.warning("[LP] paste-back mask unavailable: %s", e)
+
+            sess = _Session(
+                I_s=I_s, x_s_info=x_s_info, f_s=f_s, x_s=x_s, R_s=R_s,
+                M_c2o=crop["M_c2o"], src_full=source_rgb, mask_ori=mask_ori,
+                last_seen=time.time(),
+            )
+            for k, v in params.items():
+                if k in DEFAULT_PARAMS:
+                    try:
+                        sess.params[k] = float(v)
+                    except (TypeError, ValueError):
+                        log.warning("[LP] ignoring bad %s=%r", k, v)
+            self._sessions[session_id] = sess
+
+        log.info(
+            "[LP] source prepared for session %s (%dx%d, pasteback=%s)",
+            session_id, source_rgb.shape[1], source_rgb.shape[0],
+            mask_ori is not None,
+        )
+        return True
+
+    def configure(self, session_id: str, **params: float) -> dict:
+        """Live-tune expression amp / pose follow / smoothing without
+        restarting the session. Unknown keys are ignored."""
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                return {}
+            for k, v in params.items():
+                if k in DEFAULT_PARAMS:
+                    try:
+                        sess.params[k] = float(v)
+                    except (TypeError, ValueError):
+                        continue
+            return dict(sess.params)
+
+    def recalibrate(self, session_id: str) -> bool:
+        """Drop the neutral baseline so the next frames re-measure it.
+        Used when the user changes seat/lighting and the portrait locks
+        into a skewed resting expression."""
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                return False
+            sess.base = None
+            sess._accum = None
+            sess.exp_smooth = None
+            return True
+
+    def drop_session(self, session_id: str) -> None:
+        with self._lock:
+            sess = self._sessions.pop(session_id, None)
+            if sess is None:
+                return
+            if self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+
+    def sweep(self, max_idle: float = 300.0) -> int:
+        """Release sessions whose client vanished without a clean close
+        (mobile Safari backgrounding, laptop lid, dropped LTE). Without
+        this their appearance features sit in VRAM until restart."""
+        now = time.time()
+        with self._lock:
+            stale = [
+                sid for sid, s in self._sessions.items()
+                if now - s.last_seen > max_idle
+            ]
+            for sid in stale:
+                self._sessions.pop(sid, None)
+            if stale and self._torch.cuda.is_available():
+                self._torch.cuda.empty_cache()
+        if stale:
+            log.info("[LP] swept %d idle session(s): %s", len(stale), ", ".join(stale))
+        return len(stale)
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "uptime_s": round(time.time() - self._started, 1),
+                "sessions": len(self._sessions),
+                "detail": [
+                    {
+                        "id": sid,
+                        "frames": s.drives,
+                        "infer_ms": round(s.infer_ema, 1),
+                        "calibrated": s.base is not None,
+                        "params": s.params,
+                        "idle_s": round(time.time() - s.last_seen, 1),
+                    }
+                    for sid, s in self._sessions.items()
+                ],
+            }
+
+    # ── Driving-frame crop (detect once, then track) ────────────────────────
+    def _crop_driving(self, sess: _Session, driving_rgb: np.ndarray) -> Optional[np.ndarray]:
+        """Return a 256x256 RGB face-aligned crop of the driving frame, or
+        None when there is no face to work with.
+
+        Alignment must match how the source was cropped or the expression
+        coefficients are noise. Upstream does detect-then-track for video;
+        so do we. The previous implementation re-used `lmk_crop_lst`
+        (which is in *crop* space) as a bbox into the *original* frame,
+        so 9 of every 10 frames were driven by a misaligned, near-full-frame
+        crop — that is what produced the weak expressions and the visible
+        pulse every 10th frame.
+        """
+        cfg = self._crop_cfg
+        # Re-detect on a slow cadence to correct drift, and on every frame
+        # while the detector is missing — a user who walked out of shot must
+        # surface as no_face within a few frames, not at the next cadence
+        # boundary.
+        force_detect = (
+            sess.lmk_track is None
+            or sess.force_detect
+            or sess.frame_n % DETECT_EVERY == 1
+            or sess.track_miss > 0
+        )
+        sess.force_detect = False
+
+        lmk = None
+        if force_detect:
+            try:
+                faces = self.cropper.face_analysis_wrapper.get(
+                    self._contiguous(driving_rgb[..., ::-1]),  # BGR for insightface
+                    flag_do_landmark_2d_106=True,
+                    direction=cfg.direction,
+                )
+            except Exception as e:
+                if sess.frame_n % 60 == 1:
+                    log.warning("[LP] face detect failed: %s", e)
+                faces = []
+            if faces:
+                lmk = self._lmk_runner.run(driving_rgb, faces[0].landmark_2d_106)
+                sess.track_miss = 0
+            elif sess.lmk_track is None:
+                return None                      # nothing to fall back to
+            else:
+                # Detector blinked (motion blur, backlight). Keep tracking
+                # from the last landmarks, but give up after MAX_TRACK_MISS
+                # consecutive misses so a user who left the frame reports
+                # no_face instead of animating on garbage.
+                sess.track_miss += 1
+                if sess.track_miss > MAX_TRACK_MISS:
+                    sess.lmk_track = None
+                    sess.track_center = None
+                    sess.track_miss = 0
+                    return None
+
+        if lmk is None:
+            lmk = self._lmk_runner.run(driving_rgb, sess.lmk_track)
+
+        # Guard against a diverged tracker feeding a degenerate crop. The
+        # landmark runner will happily lock onto a wall once the face is
+        # gone, so its output is sanity-checked rather than trusted.
+        if not np.all(np.isfinite(lmk)):
+            sess.lmk_track = None
+            sess.track_center = None
+            return None
+        span = float(max(np.ptp(lmk[:, 0]), np.ptp(lmk[:, 1])))
+        if span < 16.0:
+            sess.lmk_track = None
+            sess.track_center = None
             return None
 
-        I_d = self.wrap.prepare_source(crop_d["img_crop_256x256"])
-        x_d_info = self.wrap.get_kp_info(I_d)
-        R_d = self._get_rotation_matrix(
-            x_d_info["pitch"], x_d_info["yaw"], x_d_info["roll"]
+        h, w = driving_rgb.shape[:2]
+        cx, cy = float(lmk[:, 0].mean()), float(lmk[:, 1].mean())
+        if not (0 <= cx < w and 0 <= cy < h):
+            sess.lmk_track = None            # tracker walked off the image
+            sess.track_center = None
+            return None
+        if sess.track_center is not None:
+            dx, dy = abs(cx - sess.track_center[0]), abs(cy - sess.track_center[1])
+            if dx > 0.4 * w or dy > 0.4 * h:
+                # A face cannot cross half the frame in one frame; make the
+                # detector confirm it before we keep driving off this track.
+                sess.force_detect = True
+        sess.track_center = (cx, cy)
+
+        sess.lmk_track = lmk
+        ret = self._crop_image(
+            driving_rgb,
+            lmk,
+            dsize=cfg.dsize,
+            scale=cfg.scale_crop_driving_video,
+            vx_ratio=cfg.vx_ratio_crop_driving_video,
+            vy_ratio=cfg.vy_ratio_crop_driving_video,
+            flag_do_rot=False,   # keep head roll in the signal, as upstream does
         )
+        return cv2.resize(ret["img_crop"], (256, 256), interpolation=cv2.INTER_AREA)
 
-        # Average the neutral baseline over the first N frames so that a
-        # non-neutral first capture (mid-blink, slight smile, off-center
-        # head) doesn't permanently miscalibrate every subsequent delta.
-        # During the collection window, return the source unchanged — the
-        # user just sees the static avatar for ~800ms before live driving
-        # kicks in. This is the single most important fix for distortion:
-        # without it, amp * (current - non_neutral_baseline) drives the
-        # face into a locked-in weird expression.
-        BASELINE_FRAMES = 10
-        if sess["x_d_0_info"] is None:
-            acc = sess.get("x_d_0_accum")
-            if acc is None:
-                sess["x_d_0_accum"] = {
-                    "kp":    x_d_info["kp"].clone(),
-                    "exp":   x_d_info["exp"].clone(),
-                    "t":     x_d_info["t"].clone(),
-                    "scale": x_d_info["scale"].clone(),
-                    "R":     R_d.clone(),
-                    "n":     1,
-                }
-            else:
-                acc["kp"]    = acc["kp"]    + x_d_info["kp"]
-                acc["exp"]   = acc["exp"]   + x_d_info["exp"]
-                acc["t"]     = acc["t"]     + x_d_info["t"]
-                acc["scale"] = acc["scale"] + x_d_info["scale"]
-                acc["R"]     = acc["R"]     + R_d
-                acc["n"]    += 1
-                if acc["n"] >= BASELINE_FRAMES:
-                    n = acc["n"]
-                    sess["x_d_0_info"] = {
-                        "kp":    acc["kp"]    / n,
-                        "exp":   acc["exp"]   / n,
-                        "t":     acc["t"]     / n,
-                        "scale": acc["scale"] / n,
-                    }
-                    sess["R_d_0"] = acc["R"] / n
-                    del sess["x_d_0_accum"]
-            if sess["x_d_0_info"] is None:
-                # Still collecting baseline — show the source unchanged.
-                return cv2.cvtColor(sess["src_full"], cv2.COLOR_RGB2BGR)
+    # ── Per-frame driving ───────────────────────────────────────────────────
+    def drive(self, session_id: str, driving_bgr: np.ndarray) -> DriveResult:
+        """Animate the cached source by the driving frame's expression
+        (and optionally head pose). Returns the result as a BGR ndarray
+        the same size as the source frame, so the client can overlay 1-to-1.
+        """
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                log.warning("[LP] unknown session: %s", session_id)
+                return DriveResult(state="no_face")
+            t0 = time.perf_counter()
+            res = self._drive_locked(sess, driving_bgr)
+            dt = (time.perf_counter() - t0) * 1000
+            sess.last_seen = time.time()
+            sess.drives += 1
+            sess.infer_ema = dt if sess.infer_ema == 0 else 0.1 * dt + 0.9 * sess.infer_ema
+            res.infer_ms = dt
+            return res
 
-        x_d_0 = sess["x_d_0_info"]
-        R_d_0 = sess["R_d_0"]
+    def _drive_locked(self, sess: _Session, driving_bgr: np.ndarray) -> DriveResult:
+        sess.frame_n += 1
+        driving_rgb = cv2.cvtColor(driving_bgr, cv2.COLOR_BGR2RGB)
 
-        # Head pose locked to source — driving frame contributes expression only.
-        # Carrying R_d / scale / translation through produced visible neck
-        # movement on the rendered portrait. Eyes / lips / mouth still animate
-        # because delta_exp is independent of pose.
-        R_new = sess["R_s"]
-        # Light EMA (alpha=0.7 → ~110ms tau) catches single-frame outliers
-        # but passes blinks/lip closures through near full amplitude.
-        # Amp 1.1 — with a properly averaged baseline, mild amplification
-        # is enough; 1.35+ produced distorted geometry when baseline drift
-        # added up.
-        raw_delta = x_d_info["exp"] - x_d_0["exp"]
-        if sess["exp_smooth"] is None:
-            sess["exp_smooth"] = raw_delta.clone()
+        crop256 = self._crop_driving(sess, driving_rgb)
+        if crop256 is None:
+            return DriveResult(state="no_face")
+
+        I_d = self.wrap.prepare_source(crop256)
+        x_d_info = self.wrap.get_kp_info(I_d)
+
+        # ── Neutral baseline ────────────────────────────────────────────────
+        # Averaged over the first N frames so a non-neutral first capture
+        # (mid-blink, slight smile, off-centre head) doesn't permanently
+        # miscalibrate every subsequent delta. During collection the source
+        # is returned unchanged — ~500 ms of still portrait, then live.
+        if sess.base is None:
+            if not self._accumulate_baseline(sess, x_d_info):
+                return DriveResult(
+                    state="calibrating",
+                    image=cv2.cvtColor(sess.src_full, cv2.COLOR_RGB2BGR),
+                )
+
+        base = sess.base
+        p = sess.params
+
+        # ── Expression ──────────────────────────────────────────────────────
+        raw_delta = x_d_info["exp"] - base["exp"]
+        if sess.exp_smooth is None:
+            sess.exp_smooth = raw_delta.clone()
         else:
-            sess["exp_smooth"] = 0.7 * raw_delta + 0.3 * sess["exp_smooth"]
-        delta_exp = 1.1 * sess["exp_smooth"] + sess["x_s_info"]["exp"]
-        scale_new = sess["x_s_info"]["scale"]
-        t_new = sess["x_s_info"]["t"].clone()
+            a = p["smooth"]
+            sess.exp_smooth = a * raw_delta + (1.0 - a) * sess.exp_smooth
+        delta_exp = p["exp_amp"] * sess.exp_smooth + sess.x_s_info["exp"]
+
+        # ── Head pose ───────────────────────────────────────────────────────
+        # pose_gain 0 keeps the head locked to the source (stable for still
+        # portraits); >0 carries a scaled share of the driver's rotation
+        # delta. Working in Euler space rather than composing rotation
+        # matrices is what makes the gain well-defined — and the baseline
+        # angles average correctly, which averaged rotation matrices do not.
+        gain = p["pose_gain"]
+        if gain > 0.0:
+            R_new = self._get_rotation_matrix(
+                sess.x_s_info["pitch"] + gain * (x_d_info["pitch"] - base["pitch"]),
+                sess.x_s_info["yaw"] + gain * (x_d_info["yaw"] - base["yaw"]),
+                sess.x_s_info["roll"] + gain * (x_d_info["roll"] - base["roll"]),
+            )
+        else:
+            R_new = sess.R_s
+
+        # Scale and translation stay locked to the source: carrying them
+        # through moved the whole head around the frame and broke the
+        # paste-back seam.
+        scale_new = sess.x_s_info["scale"]
+        t_new = sess.x_s_info["t"].clone()
         t_new[..., 2] = 0
 
-        x_d_new = scale_new * (sess["x_s_info"]["kp"] @ R_new + delta_exp) + t_new
+        x_d_new = scale_new * (sess.x_s_info["kp"] @ R_new + delta_exp) + t_new
         if self._cfg.flag_stitching:
-            x_d_new = self.wrap.stitching(sess["x_s"], x_d_new)
+            x_d_new = self.wrap.stitching(sess.x_s, x_d_new)
 
-        out = self.wrap.warp_decode(sess["f_s"], sess["x_s"], x_d_new)
+        out = self.wrap.warp_decode(sess.f_s, sess.x_s, x_d_new)
         # parse_output returns 1xHxWx3 (batch-prefixed) per upstream
         # docstring. Squeeze the batch dim so I_p is HxWx3 RGB uint8.
         I_p = self.wrap.parse_output(out["out"])
         if I_p.ndim == 4:
             I_p = I_p[0]
 
-        if self._cfg.flag_pasteback and sess["mask_crop"] is not None:
+        if sess.mask_ori is not None:
             try:
-                from src.utils.crop import paste_back
-                I_p = paste_back(I_p, sess["M_c2o"], sess["src_full"], sess["mask_crop"])
+                I_p = self._paste_back(I_p, sess.M_c2o, sess.src_full, sess.mask_ori)
             except Exception as e:
                 log.warning("[LP] paste_back failed: %s", e)
 
-        return cv2.cvtColor(I_p, cv2.COLOR_RGB2BGR)
+        return DriveResult(state="live", image=cv2.cvtColor(I_p, cv2.COLOR_RGB2BGR))
+
+    def _accumulate_baseline(self, sess: _Session, x_d_info: dict) -> bool:
+        """Fold one frame into the neutral baseline. Returns True once the
+        baseline is complete and live driving can start."""
+        keys = ("exp", "pitch", "yaw", "roll")
+        acc = sess._accum
+        if acc is None:
+            sess._accum = {k: x_d_info[k].clone() for k in keys}
+            sess._accum["n"] = 1
+            return False
+
+        for k in keys:
+            acc[k] = acc[k] + x_d_info[k]
+        acc["n"] += 1
+        if acc["n"] < BASELINE_FRAMES:
+            return False
+
+        n = acc["n"]
+        sess.base = {k: acc[k] / n for k in keys}
+        sess._accum = None
+        return True

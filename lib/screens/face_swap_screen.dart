@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../services/face_swap_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/haptics.dart';
+import 'avatar_enroll_screen.dart';
 
 class FaceSwapScreen extends StatefulWidget {
   const FaceSwapScreen({super.key});
@@ -67,8 +68,12 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
     });
   }
 
-  Future<void> _loadAvatars() async {
-    if (_avatars.isNotEmpty || _avatarsLoading) return;
+  /// Loads the catalogue. [force] re-fetches even when a list is already held —
+  /// needed after enrolment, since the cheap "already loaded" guard would
+  /// otherwise hide the avatar the user just created.
+  Future<void> _loadAvatars({bool force = false}) async {
+    if (!force && (_avatars.isNotEmpty || _avatarsLoading)) return;
+    if (_avatarsLoading) return;
     setState(() => _avatarsLoading = true);
     try {
       final list = await FaceSwapService.getAvatars();
@@ -78,6 +83,65 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
     } finally {
       if (mounted) setState(() => _avatarsLoading = false);
     }
+  }
+
+  /// Entry point for enrolment, shown as the first tile of the avatar grid.
+  ///
+  /// On return it force-refreshes the catalogue and selects the new avatar, so
+  /// the user lands back on the screen with themselves already chosen rather
+  /// than having to hunt for what they just made.
+  Widget _createMineTile(BuildContext sheetCtx, StateSetter setSheet) {
+    return GestureDetector(
+      onTap: () async {
+        Haptics.light();
+        final newId = await Navigator.push<String>(
+          context,
+          MaterialPageRoute(builder: (_) => const AvatarEnrollScreen()),
+        );
+        if (newId == null || !mounted) return;
+
+        await _loadAvatars(force: true);
+        if (!mounted) return;
+
+        AvatarModel? created;
+        for (final a in _avatars) {
+          if (a.id == newId) created = a;
+        }
+        if (created == null) {
+          // Enrolled but not in the catalogue yet — leave the sheet open and
+          // just repaint, rather than silently selecting nothing.
+          setSheet(() {});
+          return;
+        }
+        setState(() {
+          _selectedAvatar = created;
+          _targetBytes = null;
+          _resultBytes = null;
+        });
+        if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: AppColors.darkSurface,
+          border: Border.all(color: AppColors.darkBorder, width: 1.5),
+        ),
+        child: const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_a_photo_outlined, color: AppColors.primary, size: 24),
+            SizedBox(height: 8),
+            Text('Create\nmine',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: AppColors.darkTextPrimary,
+                    fontSize: 11.5,
+                    height: 1.25,
+                    fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _swap() async {
@@ -282,9 +346,15 @@ class _FaceSwapScreenState extends State<FaceSwapScreen> {
                             mainAxisSpacing: 10,
                             childAspectRatio: 0.78,
                           ),
-                          itemCount: _filteredAvatars.length,
+                          // +1 for the "Create mine" tile, which leads the
+                          // grid so enrolment is reachable without scrolling
+                          // past 40-odd presets to find it.
+                          itemCount: _filteredAvatars.length + 1,
                           itemBuilder: (_, i) {
-                            final av = _filteredAvatars[i];
+                            if (i == 0) {
+                              return _createMineTile(ctx, setSheet);
+                            }
+                            final av = _filteredAvatars[i - 1];
                             final selected = _selectedAvatar?.id == av.id;
                             return GestureDetector(
                               onTap: () {

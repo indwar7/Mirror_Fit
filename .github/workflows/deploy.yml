@@ -29,4 +29,20 @@ jobs:
             -WorkingDirectory "C:\virtual-try-on\face_swap_backend" `
             -RedirectStandardOutput "C:\logs\faceswap.log" `
             -RedirectStandardError "C:\logs\faceswap_err.log"
+          Start-Sleep -Seconds 2
+          # LivePortrait runs in its own conda env (Python 3.11 + CUDA torch),
+          # so it cannot share the base interpreter the other two use. The
+          # Stop-Process above kills it along with everything else, so it has
+          # to be restarted here or the Live Portrait tab hits a dead port.
+          $lpPython = "C:\miniconda3\envs\liveportrait\python.exe"
+          if (Test-Path $lpPython) {
+            Start-Process -FilePath $lpPython `
+              -ArgumentList "server.py" `
+              -WorkingDirectory "C:\virtual-try-on\liveportrait_backend" `
+              -RedirectStandardOutput "C:\logs\liveportrait.log" `
+              -RedirectStandardError "C:\logs\liveportrait_err.log"
+            Write-Host "LivePortrait backend starting on :7862"
+          } else {
+            Write-Host "SKIP LivePortrait: conda env missing. Run liveportrait_backend\setup.ps1 on this box." -ForegroundColor Yellow
+          }
           Write-Host "Backends restarted. Logs at C:\logs\"

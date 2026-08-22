@@ -27,6 +27,9 @@ try:
 except Exception:
     transfer_hair = None  # face_parser module unavailable — hair pass becomes a no-op
 
+import user_avatars
+import body_shapes
+
 from fastapi import (
     FastAPI, File, Form, HTTPException, Response,
     UploadFile, WebSocket, WebSocketDisconnect,
@@ -41,6 +44,12 @@ from fastapi.staticfiles import StaticFiles
 _HERE          = pathlib.Path(__file__).parent
 _AVATAR_CACHE  = _HERE / "avatars_cache"
 _AVATAR_CACHE.mkdir(exist_ok=True)
+
+# Pre-rendered full-body templates, one per (gender x size x taper) bucket that
+# body_shapes.py can select. Populated offline by generate_bodies.py — see that
+# file for why body generation is not a runtime step.
+_BODY_CACHE = _HERE / "bodies_cache"
+_BODY_CACHE.mkdir(exist_ok=True)
 
 _INSWAPPER_PATH = str(_HERE / "models" / "models" / "inswapper_128.onnx")
 _CASCADE_PATH   = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -178,6 +187,31 @@ _AVATARS = [
 ]
 _AVATAR_MAP = {a["id"]: a for a in _AVATARS}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Avatar resolution — presets + user-enrolled
+# ─────────────────────────────────────────────────────────────────────────────
+#  _AVATAR_MAP is fixed at import. Enrolled avatars are created at runtime and
+#  live in a JSON sidecar, so membership has to be a lookup rather than a dict
+#  test. Every call site that used `avatar_id in _AVATAR_MAP` goes through
+#  _avatar_record() instead, which is what makes a `usr_` id work in the swap,
+#  the live WS and the lipsync path without changing any of them.
+def _avatar_record(avatar_id: str) -> Optional[dict]:
+    """Preset or enrolled record for `avatar_id`, else None."""
+    preset = _AVATAR_MAP.get(avatar_id)
+    if preset is not None:
+        return preset
+    if avatar_id.startswith(user_avatars.ID_PREFIX):
+        return user_avatars.get(_AVATAR_CACHE, avatar_id)
+    return None
+
+
+def _avatar_image_path(avatar_id: str) -> pathlib.Path:
+    """On-disk image for `avatar_id`. Presets and enrolled avatars share the
+    `avatars_cache/{id}.jpg` convention, which is why nothing downstream had
+    to learn about enrolment."""
+    return _AVATAR_CACHE / f"{avatar_id}.jpg"
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Voice FX map (Tone.js fallback when OpenVoice not loaded)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,6 +322,19 @@ _MOUTH_MASK     = os.environ.get("LUCY_MOUTH_MASK", "1") == "1"
 _MOUTH_DILATE   = int(os.environ.get("LUCY_MOUTH_DILATE",   "8"))
 _MOUTH_FEATHER  = int(os.environ.get("LUCY_MOUTH_FEATHER",  "11"))
 _TRACK_SMOOTH   = float(os.environ.get("LUCY_TRACK_SMOOTH", "0.7"))
+
+# ── Paste-back blend mode ───────────────────────────────────────────────────
+#   normal  Poisson NORMAL_CLONE. Hides the seam and adopts the user's
+#           lighting, but the swapped face's OWN gradients are what get
+#           reconstructed — so the uploaded identity survives. Default.
+#   mixed   Poisson MIXED_CLONE. Keeps whichever gradient is stronger, which
+#           in practice means the user's real brows/eye-creases/nose edges
+#           ghost back through the swap. Looks "half you, half them" — this
+#           was the old default and the main reason the mask read as wrong.
+#   alpha   Feathered alpha blend, no Poisson (roop / Deep-Live-Cam default).
+#           Strongest identity and the cheapest of the three (~8 ms saved per
+#           frame), at the cost of a slightly more visible edge in hard light.
+_CLONE_MODE     = os.environ.get("LUCY_CLONE_MODE", "normal").strip().lower()
 
 
 async def _get_session(session_id: str) -> dict:
@@ -688,6 +735,14 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
     # single biggest per-frame cost. ROI clone is ~3-5x faster with
     # identical visual output (the clone only touches pixels inside
     # blend_mask anyway).
+    if _CLONE_MODE == "alpha":
+        bm    = cv2.GaussianBlur(blend_mask, (21, 21), 0)
+        alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
+        swapped = (patch_back.astype(np.float32) * alpha +
+                   tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+        return _restore_face(swapped, tgt_face)
+
+    clone_flag = cv2.MIXED_CLONE if _CLONE_MODE == "mixed" else cv2.NORMAL_CLONE
     pad = max(40, (fw + fh) // 8)
     rx1 = max(0, x1 - pad);  ry1 = max(0, y1 - pad)
     rx2 = min(iw, x2 + pad); ry2 = min(ih, y2 + pad)
@@ -710,31 +765,32 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
                 else:
                     roi_cx, roi_cy = roi_w // 2, roi_h // 2
             cloned_roi = cv2.seamlessClone(
-                src_roi, tgt_roi, mask_roi, (roi_cx, roi_cy), cv2.MIXED_CLONE,
+                src_roi, tgt_roi, mask_roi, (roi_cx, roi_cy), clone_flag,
             )
             swapped = tgt_img.copy()
             swapped[ry1:ry2, rx1:rx2] = cloned_roi
         else:
             swapped = cv2.seamlessClone(patch_back, tgt_img, blend_mask,
-                                        (poisson_cx, poisson_cy), cv2.MIXED_CLONE)
+                                        (poisson_cx, poisson_cy), clone_flag)
     except cv2.error:
         bm = cv2.GaussianBlur(blend_mask, (41, 41), 0)
         alpha = bm[:, :, np.newaxis].astype(np.float32) / 255.0
         swapped = (patch_back.astype(np.float32) * alpha +
                    tgt_img.astype(np.float32) * (1 - alpha)).astype(np.uint8)
 
-    # ── CodeFormer restoration on the swapped face ──────────────────────────
-    # Direct fix for the 128px softness ceiling of inswapper. CodeFormer
-    # works at 512px aligned-to-template and restores identity-consistent
-    # detail (eyes, lips, pores) on top of the inswapper paste. We pass
-    # the SOURCE keypoints projected into the target (M_inv mapping the
-    # ArcFace template back) so CodeFormer aligns to the freshly-pasted
-    # face, not the original target face. weight=0.7 = preserve identity
-    # while sharpening; lower weight smooths too aggressively and the
-    # restored face stops looking like the avatar.
-    #
-    # Replaces the old unsharp mask (just amplified noise) and GFPGAN
-    # (ran on full frame, slow + weight=0.5 erased identity).
+    return _restore_face(swapped, tgt_face)
+
+
+def _restore_face(swapped: np.ndarray, tgt_face) -> np.ndarray:
+    """CodeFormer restoration on the swapped face — the direct fix for
+    inswapper's 128 px softness ceiling. Works at 512 px aligned-to-template
+    and restores identity-consistent detail (eyes, lips, pores) on top of the
+    paste. weight=0.9 sharpens while locking identity; lower weight smooths so
+    aggressively the restored face stops looking like the avatar.
+
+    Replaces the old unsharp mask (amplified noise) and GFPGAN (full frame,
+    slow, weight=0.5 erased identity).
+    """
     global _CODEFORMER_COUNTER
     if (_codeformer is not None
             and _CODEFORMER_EVERY > 0
@@ -747,7 +803,6 @@ def _run_inswapper(src_face, tgt_face, tgt_img: np.ndarray) -> np.ndarray:
         except Exception:
             pass
     _CODEFORMER_COUNTER += 1
-
     return swapped
 
 
@@ -1242,7 +1297,7 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
 
     if src_real and tgt_face is not None:
         result = _run_inswapper(src_face, tgt_face, target_img)
-        result = _color_correct_face(result, target_img, tgt_face.bbox)
+        result = _color_correct_face_hull(result, target_img, tgt_face)
 
         # ── Hair transfer (BiSeNet path) ─────────────────────────────────────
         # Warps the avatar's hair onto the user's head using the cached
@@ -1551,26 +1606,45 @@ async def face_swap(
 
 @app.get("/avatars")
 async def list_avatars():
-    """Return avatar catalogue."""
+    """Return avatar catalogue — presets first, then this device's enrolments.
+
+    Enrolled avatars carry `enrolled: true` so the client can render them in
+    their own section and offer delete, which presets do not support.
+    """
     avatars_out = [
         {
             "id":        a["id"],
             "name":      a["name"],
             "category":  a["category"],
             "image_url": f"/avatars/{a['id']}/image",
+            "enrolled":  False,
         }
         for a in _AVATARS
+    ]
+    avatars_out += [
+        {
+            "id":        r["id"],
+            "name":      r.get("name") or "You",
+            "category":  r.get("category", user_avatars.CATEGORY),
+            "image_url": f"/avatars/{r['id']}/image",
+            "enrolled":  True,
+            # Reserved stages, surfaced so the client can show enrolment
+            # progress rather than having to probe for them.
+            "has_body":     bool(r.get("body_image")),
+            "measurements": r.get("measurements"),
+        }
+        for r in user_avatars.load(_AVATAR_CACHE)
     ]
     return {"avatars": avatars_out}
 
 
 @app.get("/avatars/{avatar_id}/image")
 async def get_avatar_image(avatar_id: str):
-    """Serve a generated AI avatar from disk."""
-    if avatar_id not in _AVATAR_MAP:
+    """Serve an avatar image from disk — preset or enrolled."""
+    if _avatar_record(avatar_id) is None:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
-    cache_path = _AVATAR_CACHE / f"{avatar_id}.jpg"
+    cache_path = _avatar_image_path(avatar_id)
     if not cache_path.exists():
         raise HTTPException(
             status_code=404,
@@ -1580,16 +1654,249 @@ async def get_avatar_image(avatar_id: str):
     return FileResponse(str(cache_path), media_type="image/jpeg")
 
 
+@app.post("/avatars/create")
+async def create_avatar(
+    photo:  UploadFile = File(...),
+    name:   str        = Form("You"),
+    gender: str        = Form(""),
+):
+    """Enrol a selfie as an avatar. The person becomes the avatar.
+
+    The face is validated before anything is written, because an avatar with
+    no detectable face fails later in the swap with a much less obvious error.
+    Detected gender is recorded for the full-body stage, which needs it to
+    describe the figure; an explicit `gender` form field overrides it.
+    """
+    raw = await photo.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty photo upload")
+
+    img = _decode_image(raw)
+
+    # Validate before writing. In LUCY_MINIMAL_MODE the detectors are not
+    # loaded at all — enrol anyway rather than blocking the whole feature on a
+    # GPU that was deliberately freed, but say so in the response.
+    detected_gender = None
+    face_validated = False
+    if _face_app is not None:
+        try:
+            face, kps, _bbox, is_real = await asyncio.get_event_loop().run_in_executor(
+                None, _detect, img
+            )
+            if kps is None and not is_real:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No face detected. Use a clear, front-facing photo.",
+                )
+            face_validated = True
+            # InsightFace exposes sex as 'M'/'F' on the full pipeline only.
+            sex = getattr(face, "sex", None)
+            if sex in ("M", "F"):
+                detected_gender = "male" if sex == "M" else "female"
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Face detection failed: {e}")
+
+    gender_out = gender.strip().lower() or detected_gender
+    if gender_out not in ("male", "female", None):
+        gender_out = detected_gender
+
+    avatar_id = user_avatars.new_id()
+    filename  = f"{avatar_id}.jpg"
+    try:
+        _avatar_image_path(avatar_id).write_bytes(_encode_jpeg(img))
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save avatar: {e}")
+
+    record = user_avatars.make_record(
+        avatar_id=avatar_id,
+        name=name.strip() or "You",
+        gender=gender_out,
+        face_image=filename,
+    )
+    try:
+        user_avatars.add(_AVATAR_CACHE, record)
+    except OSError as e:
+        # Roll back the image so a failed enrolment leaves nothing behind.
+        with contextlib.suppress(OSError):
+            _avatar_image_path(avatar_id).unlink()
+        raise HTTPException(status_code=500, detail=f"Could not save avatar: {e}")
+
+    return {
+        "id":             record["id"],
+        "name":           record["name"],
+        "category":       record["category"],
+        "gender":         record["gender"],
+        "image_url":      f"/avatars/{record['id']}/image",
+        "enrolled":       True,
+        "face_validated": face_validated,
+    }
+
+
+@app.post("/avatars/{avatar_id}/body")
+async def create_avatar_body(
+    avatar_id:   str,
+    chest_cm:    float = Form(...),
+    waist_cm:    float = Form(...),
+    shoulder_cm: Optional[float] = Form(None),
+    height_cm:   Optional[float] = Form(None),
+    weight_kg:   Optional[float] = Form(None),
+):
+    """Give an enrolled avatar a full body, so garments have a torso to sit on.
+
+    The enrolled selfie is head-and-shoulders — try-on needs shoulders AND hips
+    to build a torso mask, so a face alone cannot be dressed. This picks the
+    pre-rendered body template matching the measurements and swaps the person's
+    own face onto it, producing a full-length figure that is recognisably them
+    and roughly their build.
+
+    Roughly, not exactly: see body_shapes.py. Eighteen templates cannot encode
+    a continuous body, and neither could per-user diffusion — you cannot prompt
+    a waist measurement. The measurements are stored verbatim alongside, so fit
+    grading works from the real numbers rather than from the bucket.
+    """
+    record = _avatar_record(avatar_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    if not avatar_id.startswith(user_avatars.ID_PREFIX):
+        raise HTTPException(
+            status_code=400,
+            detail="Only enrolled avatars can be given a body. Preset avatars "
+                   "are portraits with no measurements behind them.",
+        )
+
+    try:
+        measurements = body_shapes.parse_measurements({
+            "chest_cm": chest_cm, "waist_cm": waist_cm,
+            "shoulder_cm": shoulder_cm, "height_cm": height_cm,
+            "weight_kg": weight_kg,
+        })
+    except body_shapes.MeasurementError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    selection = body_shapes.describe(measurements, record.get("gender"))
+    template_path = _BODY_CACHE / f"{selection['body_id']}.jpg"
+    if not template_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Body template {selection['body_id']} is missing. Run "
+                   f"`python generate_bodies.py` in face_swap_backend/.",
+        )
+
+    face_path = _avatar_image_path(avatar_id)
+    if not face_path.exists():
+        raise HTTPException(status_code=404, detail="Enrolled face image is missing")
+
+    if _face_app is None or _inswapper is None:
+        # Minimal mode frees the GPU for another backend; the swap cannot run.
+        raise HTTPException(
+            status_code=503,
+            detail="Face swap models are not loaded (LUCY_MINIMAL_MODE). "
+                   "Body generation needs them.",
+        )
+
+    loop = asyncio.get_event_loop()
+    face_img = await loop.run_in_executor(None, _decode_image, face_path.read_bytes())
+    body_img = await loop.run_in_executor(None, _decode_image, template_path.read_bytes())
+
+    try:
+        dressed = await loop.run_in_executor(None, _swap, face_img, body_img)
+    except ValueError as e:
+        # Raised when a face can't be found in either image. The template side
+        # is the likelier culprit — SD renders faces poorly at full-body scale,
+        # which is exactly what generate_bodies.py --validate checks for.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not place the face on the body template: {e}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Body swap failed: {e}")
+
+    body_filename = f"{avatar_id}_body.jpg"
+    try:
+        (_AVATAR_CACHE / body_filename).write_bytes(_encode_jpeg(dressed))
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save body image: {e}")
+
+    updated = user_avatars.update(_AVATAR_CACHE, avatar_id, {
+        "body_image": body_filename,
+        "body_template": selection["body_id"],
+        "measurements": measurements.as_dict(),
+    })
+    if updated is None:
+        with contextlib.suppress(OSError):
+            (_AVATAR_CACHE / body_filename).unlink()
+        raise HTTPException(status_code=404, detail="Avatar disappeared during update")
+
+    return {
+        "id": avatar_id,
+        "body_image_url": f"/avatars/{avatar_id}/body-image",
+        "measurements": updated["measurements"],
+        # Returned so the UI can explain the choice rather than presenting a
+        # body the user did not ask for as if it were measured from them.
+        "selection": selection,
+    }
+
+
+@app.get("/avatars/{avatar_id}/body-image")
+async def get_avatar_body_image(avatar_id: str):
+    """Serve an enrolled avatar's full-body image — the try-on input."""
+    record = _avatar_record(avatar_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+
+    filename = record.get("body_image")
+    if not filename:
+        raise HTTPException(
+            status_code=404,
+            detail="This avatar has no body yet. POST /avatars/{id}/body with "
+                   "measurements first.",
+        )
+
+    path = _AVATAR_CACHE / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Body image file is missing")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
+@app.get("/body-templates")
+async def list_body_templates():
+    """Which body templates exist on disk, and which are still missing.
+
+    Exposed because a missing template is invisible until a user with those
+    exact measurements tries to build a body and gets a 503 — this makes the
+    gap checkable before that happens.
+    """
+    expected = body_shapes.all_body_ids()
+    present = [b for b in expected if (_BODY_CACHE / f"{b}.jpg").exists()]
+    return {
+        "expected": expected,
+        "present": present,
+        "missing": [b for b in expected if b not in present],
+    }
+
+
+@app.delete("/avatars/{avatar_id}")
+async def delete_avatar(avatar_id: str):
+    """Remove an enrolled avatar and its images. Presets are not deletable."""
+    if avatar_id in _AVATAR_MAP:
+        raise HTTPException(status_code=403, detail="Preset avatars cannot be deleted")
+    if not user_avatars.remove(_AVATAR_CACHE, avatar_id):
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return {"deleted": avatar_id}
+
+
 @app.post("/face-swap/with-avatar")
 async def face_swap_with_avatar(
     target:    UploadFile = File(...),
     avatar_id: str        = Form(...),
 ):
     """Swap target face with a catalogue avatar."""
-    if avatar_id not in _AVATAR_MAP:
+    if _avatar_record(avatar_id) is None:
         raise HTTPException(status_code=404, detail="Avatar not found")
 
-    cache_path = _AVATAR_CACHE / f"{avatar_id}.jpg"
+    cache_path = _avatar_image_path(avatar_id)
     if not cache_path.exists():
         raise HTTPException(
             status_code=404,
@@ -1622,7 +1929,7 @@ async def voice_transform(
     Accept a browser audio recording (webm/ogg) and an avatar_id.
     Apply pitch shift + optional effect, return transformed WAV.
     """
-    if avatar_id not in _AVATAR_MAP:
+    if _avatar_record(avatar_id) is None:
         raise HTTPException(status_code=404, detail=f"Unknown avatar_id: {avatar_id}")
 
     audio_bytes = await audio.read()
@@ -1659,7 +1966,7 @@ def _lipsync_generate(wav_bytes: bytes, avatar_id: str) -> bytes:
         sr = 16000
 
     # Load avatar + detect face
-    avatar_path = _AVATAR_CACHE / f"{avatar_id}.jpg"
+    avatar_path = _avatar_image_path(avatar_id)
     if not avatar_path.exists():
         raise RuntimeError(f"Avatar image missing for {avatar_id}")
     avatar_img = _decode_image(avatar_path.read_bytes())
@@ -1720,7 +2027,7 @@ async def lipsync_generate(
     profile, then run Wav2Lip to generate a video of the avatar lip-syncing
     that transformed audio. Returns MP4 bytes.
     """
-    if avatar_id not in _AVATAR_MAP:
+    if _avatar_record(avatar_id) is None:
         raise HTTPException(status_code=404, detail=f"Unknown avatar_id: {avatar_id}")
     if _wav2lip is None:
         raise HTTPException(
@@ -1868,7 +2175,7 @@ async def ws_live_swap(ws: WebSocket):
     # last Face object on the others. Detection is ~25 ms; reusing kps drifts
     # by sub-pixel amounts between adjacent frames at 6+ fps so the swap stays
     # locked. DETECT_EVERY=1 disables the skip. Tune via env LUCY_DETECT_EVERY.
-    DETECT_EVERY = max(1, int(os.environ.get("LUCY_DETECT_EVERY", "2")))
+    DETECT_EVERY = max(1, int(os.environ.get("LUCY_DETECT_EVERY", "1")))
     last_tgt_face = None
 
     async def send(obj):
@@ -1894,8 +2201,8 @@ async def ws_live_swap(ws: WebSocket):
                 if "avatar_id" in msg:
                     av_id      = msg["avatar_id"]
                     av_id_for_session = av_id
-                    cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
-                    if av_id not in _AVATAR_MAP:
+                    cache_path = _avatar_image_path(av_id)
+                    if _avatar_record(av_id) is None:
                         await send({"type":"error","message":"Unknown avatar"})
                         continue
                     if not cache_path.exists():
@@ -1937,7 +2244,7 @@ async def ws_live_swap(ws: WebSocket):
                     await send({"type":"error","message":"Send init first"})
                     continue
                 if processing:
-                    await send({"type":"dropped"})
+                    await send({"type":"dropped", "id": msg.get("id")})
                     continue
 
                 processing = True
@@ -1980,7 +2287,7 @@ async def ws_live_swap(ws: WebSocket):
                     if result is None:
                         # Drop the stale hint so we re-detect next frame.
                         last_tgt_face = None
-                        await send({"type":"no_face"})
+                        await send({"type":"no_face", "id": msg.get("id")})
                     else:
                         # Hair / expression amp / CodeFormer all removed for
                         # max responsiveness. User priority: lowest possible
@@ -2021,7 +2328,9 @@ async def ws_live_swap(ws: WebSocket):
                         _, buf = cv2.imencode(".jpg", result, [cv2.IMWRITE_JPEG_QUALITY, 80])
                         # `audio_t_ms` lets the client align playback if it
                         # wants — for now it just sees the latest frame.
-                        payload = {"type":"result","image": base64.b64encode(buf).decode()}
+                        payload = {"type":"result",
+                                   "id": msg.get("id"),
+                                   "image": base64.b64encode(buf).decode()}
                         if session is not None:
                             payload["audio_t_ms"] = session.get("audio_t_ms", 0)
                         await send(payload)
@@ -2095,8 +2404,8 @@ async def ws_live_swap_v2(ws: WebSocket):
                 # Decode source image (avatar_id from cache or base64)
                 if "avatar_id" in msg:
                     av_id = msg["avatar_id"]
-                    cache_path = _AVATAR_CACHE / f"{av_id}.jpg"
-                    if av_id not in _AVATAR_MAP:
+                    cache_path = _avatar_image_path(av_id)
+                    if _avatar_record(av_id) is None:
                         await send({"type": "error", "message": "Unknown avatar"})
                         continue
                     if not cache_path.exists():
@@ -2128,7 +2437,7 @@ async def ws_live_swap_v2(ws: WebSocket):
                     await send({"type": "error", "message": "Send init first"})
                     continue
                 if processing:
-                    await send({"type": "dropped"})
+                    await send({"type": "dropped", "id": msg.get("id")})
                     continue
                 processing = True
                 try:
@@ -2141,7 +2450,7 @@ async def ws_live_swap_v2(ws: WebSocket):
                         None, _face_app_fast.get, frame)
                     tgt_face = _largest_face(tgt_faces)
                     if tgt_face is None:
-                        await send({"type": "no_face"})
+                        await send({"type": "no_face", "id": msg.get("id")})
                         continue
 
                     # Run V2 pipeline
@@ -2150,7 +2459,7 @@ async def ws_live_swap_v2(ws: WebSocket):
                         src_embedding, frame, tgt_face,
                     )
                     if result is None:
-                        await send({"type": "no_face"})
+                        await send({"type": "no_face", "id": msg.get("id")})
                         continue
 
                     # JPEG q=85 — slightly higher than V1 because GFPGAN
@@ -2158,6 +2467,7 @@ async def ws_live_swap_v2(ws: WebSocket):
                     _, buf = cv2.imencode(".jpg", result,
                                           [cv2.IMWRITE_JPEG_QUALITY, 85])
                     await send({"type": "result",
+                                "id": msg.get("id"),
                                 "image": base64.b64encode(buf).decode()})
                 finally:
                     processing = False
@@ -2238,7 +2548,7 @@ async def ws_voice_stream(ws: WebSocket):
                 if ptype == "init":
                     avatar_id  = payload.get("avatar_id")
                     session_id = payload.get("session_id") or avatar_id
-                    if avatar_id and avatar_id in _AVATAR_MAP:
+                    if avatar_id and _avatar_record(avatar_id) is not None:
                         # Match longest voice-fx prefix
                         for prefix in sorted(_VOICE_FX.keys(), key=len, reverse=True):
                             if avatar_id.startswith(prefix):

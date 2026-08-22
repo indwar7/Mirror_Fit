@@ -1490,13 +1490,30 @@ body.landing-active .app { display: none !important; }
         </div>
       </div>
 
-      <!-- Step 3: Start -->
+      <!-- Step 3: Motion -->
+      <div class="card">
+        <div class="card-label">Step 3 · Motion</div>
+        <label class="preview-toggle" style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <input type="checkbox" id="lpFollowHead" onchange="setLpFollowHead(this.checked)">
+          <span>Follow my head movement</span>
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin:6px 0 10px">
+          Off, only the face animates and the portrait holds its pose. On, the
+          portrait turns with you — best with a front-facing source photo.
+        </div>
+        <button class="btn btn-ghost" id="lpRecalBtn" onclick="lpRecalibrate()" disabled>
+          Recalibrate neutral face
+        </button>
+      </div>
+
+      <!-- Step 4: Start -->
       <div class="sticky-action">
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div class="status-row" style="flex:1">
             <div class="dot" id="lpDot"></div>
             <span id="lpStatusText" style="font-size:12px">Not connected</span>
           </div>
+          <span id="lpTelemetry" style="font-size:11px;color:var(--muted);align-self:center"></span>
         </div>
         <button class="btn btn-primary" id="lpStartBtn" onclick="toggleLp()" disabled>Start Live Portrait</button>
         <div id="lpStatus" class="status-msg"></div>
@@ -1552,6 +1569,53 @@ body.landing-active .app { display: none !important; }
                   onclick="selectGarmentType('jacket', this)" style="flex:1;font-size:12px;padding:8px 4px">
             Jacket
           </button>
+        </div>
+      </div>
+
+      <!-- Step 2.6: what the fit rating needs.
+           Fit cannot be read off the try-on render — CatVTON warps the garment
+           onto the torso mask, so the output always looks like it fits. The
+           rating comes from these numbers against the garment's declared size,
+           which is what fit_score actually models. Leave them blank and the
+           rating falls back to colour alone rather than inventing a fit call. -->
+      <div class="card">
+        <div class="card-label">Step 2.6 · Your fit <span style="opacity:.55;font-weight:400">(optional)</span></div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <label style="flex:1;font-size:11px;opacity:.7">Chest cm
+            <input id="osChest" type="number" min="50" max="200" placeholder="98"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Shoulder cm
+            <input id="osShoulder" type="number" min="25" max="70" placeholder="45"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Height cm
+            <input id="osHeight" type="number" min="100" max="230" placeholder="175"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+        </div>
+        <div style="display:flex;gap:6px">
+          <label style="flex:1;font-size:11px;opacity:.7">Garment size
+            <select id="osSize" onchange="renderOutfitScore()"
+                    style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+              <option value="">—</option>
+              <option>S</option><option selected>M</option><option>L</option>
+              <option>XL</option><option>XXL</option>
+            </select>
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Skin tone
+            <select id="osSkin" onchange="renderOutfitScore()"
+                    style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+              <option value="light">Light</option>
+              <option value="medium" selected>Medium</option>
+              <option value="olive">Olive</option>
+              <option value="brown">Brown</option>
+              <option value="deep">Deep</option>
+            </select>
+          </label>
         </div>
       </div>
 
@@ -1807,7 +1871,7 @@ body.landing-active .app { display: none !important; }
       </div>
       <div id="liveGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
         <div class="canvas-wrap" id="liveCameraPane" style="max-width:100%;display:none">
-          <video id="liveVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <video id="liveVideo" autoplay muted playsinline></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">Your camera</div>
           </div>
@@ -1834,7 +1898,7 @@ body.landing-active .app { display: none !important; }
       </div>
       <div id="lpGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
         <div class="canvas-wrap" id="lpCameraPane" style="max-width:100%;display:none">
-          <video id="lpVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <video id="lpVideo" autoplay muted playsinline></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">Your camera</div>
           </div>
@@ -1861,7 +1925,7 @@ body.landing-active .app { display: none !important; }
       </div>
       <div id="tryonGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
         <div class="canvas-wrap" id="tryonCameraPane" style="max-width:100%;display:none">
-          <video id="tryonVideo" autoplay muted playsinline style="transform:scaleX(-1)"></video>
+          <video id="tryonVideo" autoplay muted playsinline></video>
           <div class="canvas-overlay">
             <div class="overlay-badge">Your camera</div>
           </div>
@@ -1873,6 +1937,31 @@ body.landing-active .app { display: none !important; }
               <div class="dot" id="toDot2"></div>
               <span>Live Result</span>
             </div>
+          </div>
+
+          <!-- Outfit rating. Sits over the result but is driven entirely by
+               the measurements + declared size, never by the rendered pixels. -->
+          <div id="osPanel" style="display:none;position:absolute;left:14px;bottom:14px;
+               max-width:min(330px,calc(100% - 28px));padding:12px 14px;border-radius:14px;
+               background:rgba(251,249,246,0.94);backdrop-filter:blur(8px);
+               -webkit-backdrop-filter:blur(8px);border:1px solid rgba(15,23,42,.10);
+               box-shadow:0 6px 22px rgba(0,0,0,.10);z-index:6">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span id="osEmoji" style="font-size:20px;line-height:1"></span>
+              <span id="osOverall" style="font-family:'Fraunces',serif;font-size:30px;
+                    font-weight:600;letter-spacing:-.02em;line-height:1"></span>
+              <span id="osGrade" style="font-size:10.5px;letter-spacing:.16em;
+                    text-transform:uppercase;opacity:.6"></span>
+            </div>
+            <div id="osFit" style="font-size:13px;font-weight:600;margin-top:7px"></div>
+            <div id="osFitNote" style="font-size:11.5px;opacity:.72;line-height:1.45;margin-top:2px"></div>
+            <div id="osColour" style="font-size:11.5px;opacity:.72;line-height:1.45;margin-top:5px;
+                 display:flex;align-items:center;gap:6px"></div>
+            <div id="osNotes" style="font-size:11px;opacity:.6;line-height:1.45;margin-top:6px"></div>
+            <button id="osToReturns" class="btn btn-ghost" style="display:none;margin-top:9px;
+                    width:100%;font-size:11.5px;padding:7px" onclick="sendTryOnToReturns()">
+              Send this fit to Returns Guard →
+            </button>
           </div>
           <!-- Processing spinner — visible while CatVTON is running -->
           <div id="toSpinner" style="display:none;position:absolute;inset:0;
@@ -2044,6 +2133,10 @@ body.landing-active .app { display: none !important; }
   </div>
 </div>
 
+<!-- Outfit rating for live try-on. Loaded before the inline script below so
+     OutfitScore is defined when that parses. -->
+<script src="outfit-score.js"></script>
+
 <script>
 // Backend host. This page is served by tryon_backend itself (it mounts
 // /demo), so when it is opened from the server the correct host is simply
@@ -2069,7 +2162,12 @@ function selectedSwapWs() {
   const el = document.querySelector('input[name="swapEngine"]:checked');
   return el && el.value === 'v2' ? SWAP_WS_V2 : SWAP_WS_V1;
 }
-const LIVEPORTRAIT_WS = `ws://${BACKEND_HOST}:7862/ws/liveportrait-swap`;
+// Follow the page's own scheme: a browser blocks a ws:// socket opened from
+// an https:// page as mixed content, and the LP tab surfaced that as the
+// misleading "is port 7862 running?" error. (The three constants above still
+// hard-code ws:// — same latent issue, left alone here.)
+const LP_WS_SCHEME = location.protocol === 'https:' ? 'wss://' : 'ws://';
+const LIVEPORTRAIT_WS = `${LP_WS_SCHEME}${BACKEND_HOST}:7862/ws/liveportrait-swap`;
 // Same session_id is sent on both /ws/live-swap and /ws/voice-stream so
 // the server can correlate audio with frames for Wav2Lip lip-sync.
 const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
@@ -2174,6 +2272,22 @@ const _toCtx = _toCvs.getContext('2d');
 // image moves left). Try-On does NOT: mirroring the person flips the garment
 // with them, so logos and plackets would come back reversed.
 const MIRROR = { ls: true, lp: true, to: false };
+
+// The raw <video> preview panes ("Your camera") must agree with the result
+// canvas beside them, or the two halves of the same screen disagree about
+// which way the shopper is facing. These used to carry a hard-coded
+// `transform:scaleX(-1)` in the markup, which quietly contradicted MIRROR.to.
+// Driving the CSS from the same constant is what stops that recurring.
+function applyPreviewMirror(videoId, mirror) {
+  const el = document.getElementById(videoId);
+  if (el) el.style.transform = mirror ? 'scaleX(-1)' : 'none';
+}
+applyPreviewMirror('liveVideo', MIRROR.ls);
+applyPreviewMirror('lpVideo', MIRROR.lp);
+// Try-on is not a mirror, it is a fitting-room photo: mirroring the shopper
+// flips the garment with them, so a logo or button placket would come back
+// reversed. The preview follows the capture rather than the other way round.
+applyPreviewMirror('tryonVideo', MIRROR.to);
 
 // Draw a centre-cropped square of `video` into `ctx` at `sz`, honouring the
 // feature's mirror policy. Every camera draw in this file goes through here so
@@ -2625,8 +2739,19 @@ function sendLiveFrame() {
 // Completely independent of liveswap above — own stream, own WebSocket, own
 // canvas. Switching tabs does NOT stop the other backend, so the operator
 // can flip back and forth without re-init.
+//
+// Transport: frames go out as raw binary JPEG and animated frames come back
+// the same way. Base64 in JSON cost a third more bytes in both directions,
+// which on a phone over LTE is the difference between smooth and stuttering.
+// Status messages (calibrating / no_face / dropped / error) stay JSON.
 let lpStream=null,lpWs=null,lpSource=null,lpRunning=false;
-let lpLatestResult=null,lpRafId=null,lpSendTimer=null;
+let lpLatestResult=null,lpRafId=null,lpWatchdog=null;
+// Exactly one frame may be in flight. The old code ran an 80 ms interval AND
+// re-sent on every reply, so each `dropped` reply immediately produced another
+// frame the server would also drop — a busy loop that burned uplink and made
+// latency worse the more the server struggled.
+let lpInFlight=false,lpSentAt=0,lpCapturing=false;
+let lpFrames=0,lpStatsAt=0,lpMs=0;
 
 function _checkLpReady(){
   if (lpSource && lpStream) document.getElementById('lpStartBtn').disabled=false;
@@ -2646,18 +2771,31 @@ function setLpSourceFile(inp) {
   r.onload=e=>{ lpSource={src:e.target.result}; _checkLpReady(); };
   r.readAsDataURL(f);
 }
+function _lpSend(obj){
+  if (lpWs && lpWs.readyState===WebSocket.OPEN) lpWs.send(JSON.stringify(obj));
+}
+// Head-follow and recalibrate are live controls: the backend re-tunes an
+// existing session, so neither needs a stop/start round trip.
+function setLpFollowHead(on){ _lpSend({type:'config', pose_gain: on ? 0.7 : 0.0}); }
+function lpRecalibrate(){
+  _lpSend({type:'recalibrate'});
+  setStatus('lpStatus','info','Recalibrating — hold a neutral face…');
+}
 function toggleLp(){ lpRunning ? stopLp() : startLp(); }
 function startLp() {
   setStatus('lpStatus','info','Connecting…');
-  lpLatestResult=null;
+  lpLatestResult=null; lpInFlight=false; lpFrames=0; lpMs=0; lpStatsAt=performance.now();
   lpWs = new WebSocket(LIVEPORTRAIT_WS);
+  lpWs.binaryType = 'arraybuffer';
   lpWs.onopen=()=>{
     setDot('lp',true); document.getElementById('lpStatusText').textContent='Connected';
     const src_b64 = lpSource.src.split(',')[1];
     lpWs.send(JSON.stringify({type:'init', source_image: src_b64,
-                              session_id: LUCY_SESSION_ID + '_lp'}));
+                              session_id: LUCY_SESSION_ID + '_lp',
+                              pose_gain: document.getElementById('lpFollowHead').checked ? 0.7 : 0.0}));
     document.getElementById('lpStartBtn').textContent='Stop';
     document.getElementById('lpStartBtn').className='btn btn-stop';
+    document.getElementById('lpRecalBtn').disabled=false;
     lpRunning=true;
 
     // Auto-start streaming voice — same UX as Live Face Swap. The
@@ -2672,31 +2810,98 @@ function startLp() {
       _startStreamingVoice().catch(err => console.warn('[lp+voice] auto-start failed', err));
     }
   };
-  lpWs.onmessage=e=>{
+  lpWs.onmessage=async e=>{
+    // Binary reply = an animated frame.
+    if (e.data instanceof ArrayBuffer) {
+      _lpArrive(performance.now());
+      try {
+        const bmp = await createImageBitmap(new Blob([e.data], {type:'image/jpeg'}));
+        if (lpLatestResult && lpLatestResult.close) lpLatestResult.close();
+        lpLatestResult = bmp;
+      } catch(_) { /* a dropped frame is not worth tearing the session down */ }
+      sendLpFrame();
+      return;
+    }
     const msg=JSON.parse(e.data);
-    if (msg.type==='ping') { try{ lpWs.send(JSON.stringify({type:'pong',t:msg.t})); }catch(_){} return; }
-    if (msg.type==='ready')  { setStatus('lpStatus','success','Live portrait active'); _startLpRender(); _startLpTimer(); sendLpFrame(); }
-    if (msg.type==='result') { const img=new Image(); img.src='data:image/jpeg;base64,'+msg.image; img.onload=()=>{lpLatestResult=img;}; sendLpFrame(); }
-    if (msg.type==='dropped'){ sendLpFrame(); }
-    if (msg.type==='no_face'){ /* keep camera underneath */ }
-    if (msg.type==='error')  { setStatus('lpStatus','error',msg.message); }
+    if (msg.type==='ping') { _lpSend({type:'pong',t:msg.t}); return; }
+    if (msg.type==='ready') {
+      setStatus('lpStatus','info','Hold a neutral face for a moment…');
+      _startLpRender(); _startLpWatchdog(); sendLpFrame();
+      return;
+    }
+    if (msg.type==='calibrating') {
+      // Still measuring the neutral face — the image is the untouched
+      // portrait. Showing it (instead of nothing) means the canvas is never
+      // blank while the baseline is collected.
+      _lpArrive(performance.now());
+      const img=new Image();
+      img.onload=()=>{ if (lpLatestResult && lpLatestResult.close) lpLatestResult.close();
+                       lpLatestResult=img; };
+      img.src='data:image/jpeg;base64,'+msg.image;
+      sendLpFrame();
+      return;
+    }
+    if (msg.type==='result') {           // JSON fallback transport
+      _lpArrive(performance.now());
+      const img=new Image();
+      img.onload=()=>{ if (lpLatestResult && lpLatestResult.close) lpLatestResult.close();
+                       lpLatestResult=img; };
+      img.src='data:image/jpeg;base64,'+msg.image;
+      sendLpFrame();
+      return;
+    }
+    if (msg.type==='dropped'){ lpInFlight=false; sendLpFrame(); return; }
+    if (msg.type==='no_face'){
+      lpInFlight=false;
+      setStatus('lpStatus','info','No face detected — move into frame');
+      sendLpFrame();
+      return;
+    }
+    if (msg.type==='recalibrating'){ lpLatestResult=null; return; }
+    if (msg.type==='config'){ return; }
+    if (msg.type==='error')  { setStatus('lpStatus','error',msg.message); lpInFlight=false; }
   };
-  lpWs.onclose=()=>{ setDot('lp',false); _stopLpTimer(); _stopLpRender(); lpRunning=false; };
+  lpWs.onclose=()=>{ setDot('lp',false); _stopLpWatchdog(); _stopLpRender(); lpRunning=false; };
   lpWs.onerror=()=>{ setStatus('lpStatus','error','Connection error — is port 7862 running?'); stopLp(); };
 }
 function stopLp() {
   if (lpWs) lpWs.close();
-  _stopLpTimer(); _stopLpRender(); lpRunning=false;
+  _stopLpWatchdog(); _stopLpRender(); lpRunning=false; lpInFlight=false;
   document.getElementById('lpStartBtn').textContent='Start Live Portrait';
   document.getElementById('lpStartBtn').className='btn btn-primary';
+  document.getElementById('lpRecalBtn').disabled=true;
+  document.getElementById('lpTelemetry').textContent='';
   // Auto-stop streaming voice alongside the portrait swap.
   if (typeof _stopStreamingVoice === 'function' && _vsActive) {
     _stopStreamingVoice();
   }
 }
+// Round-trip bookkeeping: clears the in-flight gate and keeps a 1 s rolling
+// fps / latency readout so a slow link is visible instead of just "laggy".
+function _lpArrive(now){
+  lpInFlight=false;
+  lpFrames++; lpMs += now - lpSentAt;
+  if (now - lpStatsAt >= 1000) {
+    const fps=(lpFrames*1000/(now-lpStatsAt)).toFixed(1);
+    const ms=Math.round(lpMs/Math.max(lpFrames,1));
+    const el=document.getElementById('lpTelemetry');
+    if (el) el.textContent = `${fps} fps · ${ms} ms`;
+    if (lpFrames>2) setStatus('lpStatus','success','Live portrait active');
+    lpFrames=0; lpMs=0; lpStatsAt=now;
+  }
+}
 let _lpCvs=document.createElement('canvas'), _lpCtx=_lpCvs.getContext('2d');
-function _startLpTimer(){ if(lpSendTimer)clearInterval(lpSendTimer); lpSendTimer=setInterval(sendLpFrame,80); }
-function _stopLpTimer(){ if(lpSendTimer){clearInterval(lpSendTimer);lpSendTimer=null;} }
+// The watchdog only covers a lost reply (backend restart, dropped packet):
+// the steady-state loop is reply-driven, so this fires rarely.
+function _startLpWatchdog(){
+  if(lpWatchdog)clearInterval(lpWatchdog);
+  lpWatchdog=setInterval(()=>{
+    if(!lpRunning) return;
+    if(lpInFlight && performance.now()-lpSentAt > 1500){ lpInFlight=false; sendLpFrame(); }
+    else if(!lpInFlight) sendLpFrame();
+  },500);
+}
+function _stopLpWatchdog(){ if(lpWatchdog){clearInterval(lpWatchdog);lpWatchdog=null;} }
 function _startLpRender(){
   const cv=document.getElementById('lpCanvas'), ctx=cv.getContext('2d');
   const video=document.getElementById('lpVideo');
@@ -2709,20 +2914,43 @@ function _startLpRender(){
     }
     if(lpLatestResult){
       ctx.globalAlpha=1.0;
-      ctx.drawImage(lpLatestResult,0,0,cv.width,cv.height);
+      // The backend now pastes the animated face back into the whole source
+      // portrait, so the result carries the photo's aspect ratio. Stretching
+      // it to the square canvas (what the old code did) visibly squashed
+      // every non-square upload — cover-fit instead.
+      _drawCover(ctx,lpLatestResult,cv.width,cv.height);
     }
     if(lpRunning) lpRafId=requestAnimationFrame(render);
   })();
 }
+function _drawCover(ctx,img,W,H){
+  const iw=img.width||img.naturalWidth, ih=img.height||img.naturalHeight;
+  if(!iw||!ih) return;
+  const s=Math.max(W/iw,H/ih), dw=iw*s, dh=ih*s;
+  ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);
+}
 function _stopLpRender(){ if(lpRafId){cancelAnimationFrame(lpRafId);lpRafId=null;} }
 function sendLpFrame(){
   if(!lpWs||lpWs.readyState!==WebSocket.OPEN) return;
+  if(lpInFlight||lpCapturing) return;
   const video=document.getElementById('lpVideo');
-  const vw=video.videoWidth||640, vh=video.videoHeight||480;
+  if(!video.videoWidth) return;
+  const vw=video.videoWidth, vh=video.videoHeight;
   const sz=Math.min(vw,vh,384);
   if(_lpCvs.width!==sz){_lpCvs.width=sz;_lpCvs.height=sz;}
   drawCam(_lpCtx,video,sz,MIRROR.lp);
-  lpWs.send(JSON.stringify({type:'frame',image:_lpCvs.toDataURL('image/jpeg',0.70).split(',')[1]}));
+  lpCapturing=true;
+  // toBlob keeps the JPEG as bytes instead of a base64 data URL, so the
+  // frame goes out ~33% smaller and skips a main-thread string round trip.
+  _lpCvs.toBlob(blob=>{
+    lpCapturing=false;
+    if(!blob||!lpWs||lpWs.readyState!==WebSocket.OPEN||lpInFlight) return;
+    blob.arrayBuffer().then(buf=>{
+      if(!lpWs||lpWs.readyState!==WebSocket.OPEN) return;
+      lpInFlight=true; lpSentAt=performance.now();
+      lpWs.send(buf);
+    }).catch(()=>{ lpInFlight=false; });
+  },'image/jpeg',0.70);
 }
 
 // ── Live Try-On ────────────────────────────────────────────────────────────────
@@ -2744,6 +2972,13 @@ function setGarment(inp) {
   // If a live try-on is already running, re-send init so the server
   // picks up the new garment without the user having to stop/start.
   _resendTryOnInit();
+  // The preview <img> is what the rating samples the colour from, and it has
+  // not decoded yet at this point — wait for it rather than reading a blank.
+  const gp = document.getElementById('gp');
+  if (gp) {
+    if (gp.complete && gp.naturalWidth) renderOutfitScore();
+    else gp.addEventListener('load', renderOutfitScore, { once: true });
+  }
 }
 
 function selectGarmentType(type, btn) {
@@ -2755,6 +2990,104 @@ function selectGarmentType(type, btn) {
   // server immediately so the user sees the difference without
   // stopping and starting.
   _resendTryOnInit();
+  renderOutfitScore();
+}
+
+// ── Outfit rating ────────────────────────────────────────────────────────────
+// Rates what the shopper is wearing: fit from their measurements against the
+// garment's declared size, colour from the garment image against their skin
+// tone. See outfit-score.js for why fit is NOT read off the try-on render.
+OutfitScore.load()
+  .then(renderOutfitScore)
+  .catch(err => console.warn('[outfit] fit_model.json not loaded —', err.message));
+
+function _osNum(id) {
+  const v = parseFloat(document.getElementById(id).value);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function renderOutfitScore() {
+  const panel = document.getElementById('osPanel');
+  if (!panel) return;
+
+  // The garment preview <img> doubles as the colour source. Only sample it
+  // once the browser has actually decoded it, or getImageData reads nothing.
+  const gp = document.getElementById('gp');
+  const garmentImage = (gp && gp.src && gp.complete && gp.naturalWidth) ? gp : null;
+
+  const result = OutfitScore.rate({
+    garmentImage,
+    garmentType: toGarmentType || 'tshirt',
+    size: document.getElementById('osSize').value,
+    skinTone: document.getElementById('osSkin').value,
+    body: {
+      chest_cm: _osNum('osChest'),
+      shoulder_cm: _osNum('osShoulder'),
+      height_cm: _osNum('osHeight'),
+    },
+  });
+
+  if (result.overall === null) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+
+  document.getElementById('osEmoji').textContent = result.emoji || '';
+  document.getElementById('osOverall').textContent = result.overall.toFixed(1);
+  document.getElementById('osGrade').textContent = result.grade ? 'Grade ' + result.grade : '';
+
+  const fitEl = document.getElementById('osFit');
+  const fitNoteEl = document.getElementById('osFitNote');
+  if (result.fit) {
+    fitEl.textContent = result.fit.label;
+    // Un-confident verdicts are shown greyed, with the model's own reasoning —
+    // the shopper sees that we chose not to advise, rather than seeing nothing.
+    fitEl.style.color = result.fit.confident ? 'var(--ink)' : '#8A8378';
+    fitNoteEl.textContent = result.fit.detail;
+  } else {
+    fitEl.textContent = '';
+    fitNoteEl.textContent = '';
+  }
+
+  const colourEl = document.getElementById('osColour');
+  if (result.colour) {
+    const { r, g, b } = result.colour.rgb;
+    colourEl.innerHTML =
+      '<span style="width:12px;height:12px;border-radius:3px;flex:0 0 auto;' +
+      'border:1px solid rgba(15,23,42,.18);background:rgb(' + r + ',' + g + ',' + b + ')"></span>' +
+      '<span></span>';
+    colourEl.lastElementChild.textContent = result.colour.verdict;
+  } else {
+    colourEl.innerHTML = '';
+  }
+
+  document.getElementById('osNotes').textContent = result.notes.join(' ');
+
+  // The handoff only exists when there is a measured fit behind it. Colour
+  // alone says nothing about whether a garment gets sent back.
+  _osLastFit = result.fit;
+  document.getElementById('osToReturns').style.display = result.fit ? 'block' : 'none';
+}
+
+let _osLastFit = null;
+
+/// Live try-on → Returns Guard, the same join Fit Analyser uses:
+/// fit_mismatch_score is what the returns model was trained against, so it is
+/// computed by the ported spec.py formula rather than re-derived from the
+/// class probabilities.
+///
+/// The confidence guard withholds *advice from the shopper*; it deliberately
+/// does not withhold this *feature from another model*. Returns Guard weighs
+/// the number itself, and a low-confidence class is still a real measurement.
+function sendTryOnToReturns() {
+  if (!_osLastFit) return;
+  const note = 'Measured in live try-on — ' +
+    (_osLastFit.confident
+      ? _osLastFit.label.toLowerCase()
+      : 'no confident fit call, geometry only') +
+    ' (fit score ' + Math.round(_osLastFit.score100) + '/100).';
+  if (typeof window.rgApplyMismatch === 'function') {
+    window.rgApplyMismatch(_osLastFit.mismatch, note);
+  }
+  if (typeof window.switchTab === 'function') window.switchTab('returns');
 }
 
 let toFabric = null;          // File object
