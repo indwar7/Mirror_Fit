@@ -46,18 +46,27 @@ Result: `avatars_cache/{id}_body.jpg`, served at `/avatars/{id}/body-image`.
 
 ### Why bodies are pre-rendered, not generated per user
 
-Two constraints, and the first is absolute:
+1. **Diffusion does not obey numbers.** "waist 82 cm" is not promptable. You
+   can only describe a build in words, and words land you in a bucket anyway —
+   so per-user generation would produce one of a handful of silhouettes
+   regardless, just slower and non-reproducibly.
+2. **A rendered library is reviewable.** You can look at all 18 figures and
+   approve them. You cannot approve a diffusion sample nobody has seen yet,
+   and a bad one reaches the shopper directly.
+3. **Selection stays testable.** Measurements → template is plain code with
+   unit tests, not a GPU round-trip whose output varies per call.
+4. **No render latency.** Enrolment is a swap, not a 10-second diffusion wait.
 
-1. **This backend cannot run Stable Diffusion.** Its env is Python 3.14, which
-   has no PyTorch CUDA wheels — the documented reason `instantid_backend` is a
-   separate 3.11 service. `torch`/`diffusers` are not in `requirements.txt` and
-   cannot be. Adding them will not work; do not try.
-2. **Diffusion does not obey numbers.** "waist 82 cm" is not promptable. You
-   can only describe a build in words, and words land you in a bucket anyway.
+> **Correction.** An earlier version of this file claimed this backend *could
+> not* run Stable Diffusion — Python 3.14, no PyTorch CUDA wheels. That is not
+> true of the deployed box: `.github/workflows/deploy.yml` starts
+> face_swap_backend with `C:\miniconda3\python.exe` (conda `base`), which has
+> torch 2.6.0+cu124 with CUDA available. Runtime generation is therefore
+> *possible* here; it is just not worth it, for the reasons above.
 
-So bucketing costs almost nothing over per-user generation, and buys instant
-response, a library you can look at and approve, and selection logic that is
-plain testable code rather than a GPU round-trip.
+Note that `torch`/`diffusers` are still absent from this backend's
+`requirements.txt`, so `generate_bodies.py` depends on the ambient conda env
+rather than on anything this service declares.
 
 The measurements are stored **verbatim** on the record alongside the bucket, so
 fit grading (`fit_score/`) works from the real numbers, not the approximation.

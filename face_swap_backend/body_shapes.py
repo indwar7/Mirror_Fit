@@ -3,19 +3,19 @@ Body measurements → which pre-rendered body template to use.
 
 Why templates instead of generating a body per user
 ---------------------------------------------------
-Two hard constraints decide this:
+Diffusion does not obey numbers. "waist 82 cm" is not a thing you can prompt
+for — you can only describe a build in words, and words land you in a bucket
+anyway. Per-user generation would therefore produce one of a handful of
+silhouettes regardless, just slower and non-reproducibly.
 
-  1. face_swap_backend cannot run Stable Diffusion at all. Its env is Python
-     3.14, which has no PyTorch CUDA wheels (this is the documented reason
-     instantid_backend exists as a separate 3.11 service). torch/diffusers are
-     not in its requirements and cannot be.
-  2. Even where SD does run, it does not obey numbers. "waist 82 cm" is not a
-     thing you can prompt for — you can only describe a build in words, and
-     words land you in a bucket anyway.
+What bucketing buys on top of that: a body library somebody can look at and
+approve before a shopper ever sees it, selection logic that is plain testable
+code rather than a GPU round-trip, and no render latency at enrolment.
 
-So bucketing loses almost nothing over per-user generation, and buys instant
-response, a body library you can actually look at and approve, and selection
-logic that is plain testable code rather than a GPU round-trip.
+(An earlier version of this note claimed the backend *could not* run Stable
+Diffusion at all. That was wrong for the deployed box — deploy.yml starts this
+service with conda `base`, which has CUDA torch. Runtime generation is
+possible here; it is just not worth it.)
 
 The axes
 --------

@@ -7,8 +7,13 @@ these, their enrolled face is swapped onto it, and the result becomes that
 avatar's body image for virtual try-on.
 
 Run in an env that HAS PyTorch — the same one generate_avatars.py runs in.
-face_swap_backend's own env is Python 3.14 and cannot install PyTorch CUDA, so
-this is deliberately a separate offline step and not a runtime endpoint:
+Run in an env that has PyTorch and diffusers — on the G5 that is conda `base`
+(C:\miniconda3\python.exe), the same interpreter deploy.yml starts this backend
+with, and the one generate_avatars.py already uses.
+
+Offline by choice, not by necessity: diffusion cannot be prompted with a waist
+measurement, so generating per user would land in one of these same buckets
+anyway, just slower and non-reproducibly. See body_shapes.py.
 
     python generate_bodies.py                 # render what's missing
     python generate_bodies.py --validate      # re-check faces are detectable
