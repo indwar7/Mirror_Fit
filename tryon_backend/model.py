@@ -1345,7 +1345,13 @@ class TryOnModel:
 
             # Both shoulders must be credible; hips may be out of frame on a
             # head-and-shoulders crop, so they are allowed to be inferred.
-            if min(v_lsh, v_rsh) < 0.5:
+            # MediaPipe drops `visibility` for landmarks at or past the
+            # frame border, so a close-up head-and-shoulders shot -- the
+            # framing people actually use -- was scoring under the old 0.5
+            # gate and falling through to the band. The predicted positions
+            # are still good there; the span check below is what actually
+            # rejects a bad detection.
+            if min(v_lsh, v_rsh) < 0.30:
                 return None
 
             shoulder_span = float(np.linalg.norm(l_sh - r_sh))
@@ -1676,6 +1682,7 @@ class TryOnModel:
 
         # 2. Face cutoff — chin row. Everything above is preserved.
         face_cutoff_y = int(h * 0.35)
+        face_box = None
         try:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             faces = self._haar.detectMultiScale(
@@ -1689,6 +1696,7 @@ class TryOnModel:
                 # right at the chin — collar sits at the neck naturally.
                 face_cutoff_y = int(np.clip(fy + fh,
                                             h * 0.20, h * 0.48))
+                face_box = (int(fx), int(fy), int(fw), int(fh))
         except Exception:
             pass
 
@@ -1706,10 +1714,54 @@ class TryOnModel:
         if pose_region is not None:
             band, pose_neck_y = pose_region
             face_cutoff_y = int(np.clip(pose_neck_y, h * 0.05, h * 0.90))
-        else:
+        elif face_box is not None:
+            # Pose failed, but a face was found. Size a torso from the face.
+            #
+            # This used to be `band[face_cutoff_y:, :] = 1.0` — the full
+            # width of the frame. On a head-and-shoulders crop, where pose
+            # most often fails, that paints garment across the entire lower
+            # frame including the wall and furniture behind the wearer, with
+            # a straight edge under the chin and no collar. GrabCut is meant
+            # to trim it back to the body and cannot reliably do so against a
+            # busy background.
+            #
+            # A face is a dependable ruler: shoulder span runs about 3x face
+            # width, so the body can be bounded without any pose landmarks.
+            fx3, fy3, fw3, fh3 = face_box
+            cx = fx3 + fw3 * 0.5
+            sh_half = fw3 * 1.55            # shoulder span ~= 3.1 face widths
+            sh_y    = face_cutoff_y + fh3 * 0.22
+            hem_y   = float(h) * 0.99
+            hem_half = sh_half * 1.12       # hem slightly wider than shoulders
+
+            gtype = getattr(self, "_garment_type", "tshirt")
+            neck_half_f, neck_dip_f = {
+                "tshirt": (0.42, 0.45),
+                "shirt":  (0.34, 0.38),
+                "jacket": (0.27, 0.24),
+            }.get(gtype, (0.42, 0.45))
+            neck_half = fw3 * neck_half_f
+            neck_dip  = fh3 * neck_dip_f
+
             band = np.zeros((h, w), dtype=np.float32)
-            band[face_cutoff_y:int(h * 0.98), :] = 1.0
-            band = cv2.GaussianBlur(band, (15, 15), 0)
+            torso_poly = np.array([
+                [cx - sh_half,  sh_y],                    # left shoulder
+                [cx - neck_half, sh_y],                   # neckline left
+                [cx,            sh_y + neck_dip],         # neckline dip
+                [cx + neck_half, sh_y],                   # neckline right
+                [cx + sh_half,  sh_y],                    # right shoulder
+                [cx + hem_half, hem_y],                   # right hem
+                [cx - hem_half, hem_y],                   # left hem
+            ], dtype=np.int32)
+            cv2.fillPoly(band, [torso_poly], 1.0)
+            band = cv2.GaussianBlur(band, (31, 31), 0).clip(0, 1)
+        else:
+            # No pose and no face: nothing reliable to aim at. Keep the old
+            # band so a frame still renders, but hold it to the middle half
+            # of the frame rather than edge to edge.
+            band = np.zeros((h, w), dtype=np.float32)
+            band[face_cutoff_y:int(h * 0.98), int(w * 0.24):int(w * 0.76)] = 1.0
+            band = cv2.GaussianBlur(band, (21, 21), 0)
 
         # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
@@ -2060,6 +2112,22 @@ class TryOnModel:
             # smearing the chin row by 7 px and making the collar look
             # half-transparent.
             blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
+
+            # Saturate the interior before anything else touches the alpha.
+            #
+            # torso_mask is a product of three soft masks -- silhouette (0.85
+            # where it came from the safety rect, 0.80 from skin), the torso
+            # band, and the GrabCut body -- each blurred. Multiplying them
+            # leaves the middle of the chest around 0.75, not 1.0, so a
+            # quarter of the bare body is blended back in over the whole
+            # garment. That is what makes the shirt read as a translucent
+            # projection you can see through rather than cloth.
+            #
+            # Map 0.28 -> 0 and 0.62 -> 1: anything that is clearly inside
+            # becomes fully opaque, and the soft ramp survives only across
+            # the boundary, where feathering is actually wanted.
+            blend_mask = np.clip((blend_mask - 0.28) / 0.34, 0.0, 1.0)
+
             # Soft fade above the cutoff instead of a hard 0.0 cut.
             # The hard cut produced a visible horizontal line on the
             # chin (user: "face p chin ko ek line cut kr rhi hai").

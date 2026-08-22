@@ -3601,9 +3601,16 @@ function _osNum(id) {
   return Number.isFinite(v) ? v : 0;
 }
 
+// The outfit rating panel that used to sit over the live result is hidden.
+// It belongs to the outfit-score feature (outfit-score.js, commit e7f57b0),
+// which is another session's work, so it is switched off here rather than
+// torn out -- flip this back to false to bring the panel straight back.
+const OS_PANEL_HIDDEN = true;
+
 function renderOutfitScore() {
   const panel = document.getElementById('osPanel');
   if (!panel) return;
+  if (OS_PANEL_HIDDEN) { panel.style.display = 'none'; return; }
 
   // The garment preview <img> doubles as the colour source. Only sample it
   // once the browser has actually decoded it, or getImageData reads nothing.
