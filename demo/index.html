@@ -70,10 +70,15 @@ body {
   font-family: 'Jost', system-ui, -apple-system, sans-serif;
   background: var(--ivory);
   color: var(--ink);
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* The document scrolls. Previously this was `overflow: hidden` with three
+     nested scroll containers inside (.app / .sidebar / .main), and any one
+     of them mis-set left content unreachable with no scrollbar to recover
+     it. One scrollbar on the page cannot trap anything. */
+  overflow-x: hidden;
+  overflow-y: auto;
   -webkit-font-smoothing: antialiased;
   font-size: 15px;
 }
@@ -107,7 +112,7 @@ header {
   padding: 0 26px; height: 60px;
   background: var(--white);
   color: var(--ink);
-  position: relative; z-index: 10; flex-shrink: 0;
+  position: sticky; top: 0; z-index: 20; flex-shrink: 0;
   border-bottom: 1px solid var(--line);
 }
 .logo {
@@ -146,26 +151,19 @@ header {
    that misbehaved. */
 .app {
   display: flex; flex: 1;
-  overflow: hidden;
-  height: calc(100dvh - 60px);
+  align-items: flex-start;      /* columns size to their own content */
+  overflow: visible;
   min-height: 0;
   position: relative; z-index: 1;
 }
-.app > * { min-height: 0; }
 
-/* Last resort. On a viewport too short for the shell to lay out at all,
-   stop clipping and let the whole thing scroll. Better an outer scrollbar
-   than a control nobody can reach. */
-@media (max-height: 640px) {
-  .app { height: auto; min-height: calc(100dvh - 60px); overflow-y: auto; }
-  .sidebar { overflow-y: visible; max-height: none; }
-  .main { overflow-y: visible; }
-  .sticky-action { position: static; margin: 0; padding: 16px 0 0; box-shadow: none; }
-  .canvas-wrap { max-height: none; }
-}
 .sidebar {
   width: 344px; flex-shrink: 0; display: flex; flex-direction: column;
-  min-height: 0;
+  /* Sticks beside the result while the page scrolls, but never clips:
+     max-height leaves room for the header, and overflow-y:auto only
+     engages if the controls are genuinely taller than the viewport. */
+  position: sticky; top: 60px;
+  max-height: calc(100dvh - 60px);
   overflow-y: auto; overscroll-behavior: contain;
   padding: 20px 22px; gap: 16px;
   background: var(--white);
@@ -688,7 +686,7 @@ body.landing-active .app { display: none !important; }
   /* NOT center — see note below */
   justify-content: flex-start;
   padding: 22px 26px; position: relative; gap: 14px;
-  overflow-y: auto; overscroll-behavior: contain;
+  overflow: visible;
   background: var(--ivory);
 }
 /* Short content (a camera pane) still sits optically centred, because
@@ -923,8 +921,14 @@ body.landing-active .app { display: none !important; }
   .logo { font-size: 19px; }
   .tab { padding: 0 12px; font-size: 10px; height: 56px; letter-spacing: 0.12em; }
   header > div[style*="width:120px"] { display: none; }
-  .app { flex-direction: column; height: calc(100dvh - 56px); overflow-y: auto; }
-  .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--line); overflow-y: visible; padding: 22px 18px; }
+  /* Narrow: one column, and the page keeps the scrolling. No height cap
+     and no inner scroller — the sidebar unsticks and simply stacks. */
+  .app { flex-direction: column; height: auto; overflow: visible; }
+  .sidebar {
+    width: 100%; border-right: none; border-bottom: 1px solid var(--line);
+    position: static; max-height: none; overflow: visible;
+    padding: 22px 18px;
+  }
   .sticky-action { position: static; margin: 0; padding: 20px 0 0; }
   .main { padding: 22px 16px 34px; overflow: visible; }
   .lp-sec { padding: 76px 20px; }
