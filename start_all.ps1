@@ -1,5 +1,5 @@
-# ═══════════════════════════════════════════════════════════════════════
-#  Mirror Fit — start every backend
+# =======================================================================
+#  Mirror Fit - start every backend
 #
 #  Usage (PowerShell, on the GPU box):
 #      powershell -ExecutionPolicy Bypass .\start_all.ps1
@@ -10,9 +10,9 @@
 #  serving is left alone, so running this cannot interrupt a session
 #  someone else is in the middle of.
 #
-#  Three of the eight tabs — AR Avatar, Fit Analyser, Returns Guard —
+#  Three of the eight tabs - AR Avatar, Fit Analyser, Returns Guard -
 #  need no backend at all. They run entirely in the browser.
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 param(
   [switch]$Force,
   [string]$Only = ""
@@ -41,13 +41,13 @@ function Test-Port($p) {
   try { (New-Object Net.Sockets.TcpClient).Connect("127.0.0.1", $p); $true } catch { $false }
 }
 
-Write-Host "`nMirror Fit — backend startup" -ForegroundColor Cyan
+Write-Host "`nMirror Fit - backend startup" -ForegroundColor Cyan
 Write-Host ("root: {0}`n" -f $root)
 
 # The try-on backend needs a Hugging Face token to pull the CatVTON /
 # inpainting weights. Without it the model falls back to a tier that does
 # not mask properly, which looks like a rendering bug rather than a
-# missing credential — so fail loudly here instead.
+# missing credential - so fail loudly here instead.
 if (-not $env:HF_TOKEN) {
   Write-Host "HF_TOKEN is not set. Try-On needs it to fetch model weights." -ForegroundColor Yellow
   Write-Host 'Set it first:  $env:HF_TOKEN = "hf_..."' -ForegroundColor Yellow
@@ -70,7 +70,7 @@ foreach ($s in $svc) {
     continue
   }
   if ($up -and -not $Force) {
-    Write-Host ("  UP    {0,-14} :{1}  already serving — left alone" -f $s.name, $s.port) -ForegroundColor Green
+    Write-Host ("  UP    {0,-14} :{1}  already serving - left alone" -f $s.name, $s.port) -ForegroundColor Green
     continue
   }
   if ($up -and $Force) {
@@ -99,7 +99,7 @@ do {
   Write-Host ("  {0} of {1} listening" -f ($svc.Count - $pending.Count), $svc.Count)
 } while ($pending.Count -gt 0 -and (Get-Date) -lt $deadline)
 
-Write-Host "`n─────────────── status ───────────────" -ForegroundColor Cyan
+Write-Host "`n--------------- status ---------------" -ForegroundColor Cyan
 foreach ($s in $svc) {
   $ok = Test-Port $s.port
   $c  = if ($ok) { "Green" } else { "Red" }
@@ -112,6 +112,6 @@ foreach ($s in $svc) {
     }
   }
 }
-Write-Host "`n  AR Avatar / Fit Analyser / Returns Guard — browser only, no backend" -ForegroundColor DarkGray
+Write-Host "`n  AR Avatar / Fit Analyser / Returns Guard - browser only, no backend" -ForegroundColor DarkGray
 Write-Host ("`nopen:  http://localhost:7860/demo/index.html" ) -ForegroundColor Cyan
 Write-Host   "       (localhost avoids the Chrome insecure-origin flag entirely)`n"

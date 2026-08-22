@@ -3,7 +3,7 @@
 #
 # The env's interpreter is invoked directly rather than via `conda activate`:
 # activation only works in a conda-initialised shell, and when it silently
-# fails the script runs `python server.py` against base — which has no CUDA
+# fails the script runs `python server.py` against base - which has no CUDA
 # torch, so the server starts and then dies on the first import.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
