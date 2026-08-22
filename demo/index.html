@@ -142,7 +142,8 @@ header {
 .app { display: flex; flex: 1; overflow: hidden; height: calc(100vh - 60px); position: relative; z-index: 1; }
 .sidebar {
   width: 344px; flex-shrink: 0; display: flex; flex-direction: column;
-  overflow-y: auto; padding: 20px 22px; gap: 16px;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 20px 22px; gap: 16px;
   background: var(--white);
   border-right: 1px solid var(--line);
   position: relative;
@@ -150,12 +151,20 @@ header {
 .sidebar::-webkit-scrollbar { width: 4px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--line-2); }
-.panel { display: none; flex-direction: column; gap: 16px; }
+/* Flex children shrink by default. Without this the panel is squeezed to
+   fit the sidebar, its content overflows the PANEL rather than the
+   sidebar, and the sidebar therefore has nothing to scroll — leaving the
+   Start button below the fold and unreachable. */
+.panel { display: none; flex-direction: column; gap: 16px; flex: 0 0 auto; }
+.sidebar > *, .panel > * { flex-shrink: 0; }
 .panel.active { display: flex; }
 .sticky-action {
-  position: sticky; bottom: -20px;
+  /* bottom:0, not a negative offset — a negative value parks the lower
+     edge of the bar outside the scrollport, where the button cannot be
+     clicked. */
+  position: sticky; bottom: 0;
   background: var(--white);
-  margin: 0 -22px -20px; padding: 16px 22px 20px;
+  margin: 0 -22px -20px; padding: 16px 22px 24px;
   border-top: 1px solid var(--line);
   box-shadow: 0 -10px 20px -8px rgba(20,17,15,0.10);
   z-index: 5;
@@ -648,7 +657,21 @@ body.landing-active .app { display: none !important; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
 @keyframes spin  { to { transform: rotate(360deg) } }
 
-.main { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 22px 26px; position: relative; gap: 14px; overflow-y: auto; background: var(--ivory); }
+.main {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center;
+  /* NOT center — see note below */
+  justify-content: flex-start;
+  padding: 22px 26px; position: relative; gap: 14px;
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--ivory);
+}
+/* Short content (a camera pane) still sits optically centred, because
+   auto margins only absorb leftover space. Tall content (the analytics
+   screens) starts at the top and scrolls normally. */
+#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #placeholder { margin-block: auto; }
+#fitWrap, #returnsWrap { margin-block: 0; width: 100%; }
+.main > * { flex-shrink: 0; }
 /* The square is capped by viewport height as well as width. Without the
    cap, two 1:1 panes on a short laptop screen overflow downward and push
    the sidebar controls out of reach. */
@@ -715,7 +738,7 @@ body.landing-active .app { display: none !important; }
 .rg-preset.active { background: var(--berry); color: var(--white); border-color: var(--berry); }
 
 /* ── Result panel ── */
-.rg-wrap { width: 100%; max-width: 940px; margin: 0 auto; }
+.rg-wrap { width: 100%; max-width: 1040px; margin: 0 auto; padding-bottom: 28px; }
 .rg-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
 .rg-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
 .rg-score { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 68px; line-height: 1; color: var(--ink); }
@@ -789,7 +812,7 @@ body.landing-active .app { display: none !important; }
 /* ══════════════════════════════════════════════════════════════════
    FIT ANALYSER — garment vs body geometry
    ══════════════════════════════════════════════════════════════════ */
-.fa-wrap { width: 100%; max-width: 980px; margin: 0 auto; }
+.fa-wrap { width: 100%; max-width: 1040px; margin: 0 auto; padding-bottom: 28px; }
 .fa-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
 .fa-top { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; }
 .fa-verdict-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 42px; line-height: 1.05; color: var(--ink); }
@@ -846,6 +869,7 @@ body.landing-active .app { display: none !important; }
   .fa-dev { grid-template-columns: 74px 1fr 62px; gap: 10px; }
   .fa-scale { padding-left: 84px; padding-right: 72px; }
 }
+
 
 /* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
@@ -1778,7 +1802,28 @@ body.landing-active .app { display: none !important; }
       </div>
 
       <div class="card">
-        <div class="card-label">Step 4 · What history says</div>
+        <div class="card-label">Step 4 · How you like it to sit</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">
+          Fit is partly taste. A roomy cut is only "too large" if you did not
+          want it roomy — so your preference changes the advice, not the model.
+        </div>
+        <div class="rg-field">
+          <div class="rg-label">Preferred cut</div>
+          <select id="faPref">
+            <option value="fitted">Fitted — close to the body</option>
+            <option value="regular" selected>Regular — as designed</option>
+            <option value="relaxed">Relaxed — room to move</option>
+          </select>
+        </div>
+        <div class="rg-field">
+          <label class="rg-check">
+            <input type="checkbox" id="faLayer"> I usually layer underneath
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 5 · What history says</div>
         <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">
           The strongest signal in the data. Body measurements barely predict fit —
           what an item did for previous renters does.
@@ -1966,6 +2011,7 @@ body.landing-active .app { display: none !important; }
               <span>Live Result</span>
             </div>
           </div>
+
 
           <!-- Outfit rating. Sits over the result but is driven entirely by
                the measurements + declared size, never by the rendered pixels. -->
@@ -4564,8 +4610,29 @@ window.toggleArAvatar = async function() {
     // Confidence gate — mirrors real_model.gate(). Below the threshold we
     // stay silent rather than move the shopper to a worse size.
     const gateT = (M.gate && M.gate.min_confidence) || 0;
-    const gated = (cls !== 'fit' && confidence < gateT) ? 'fit' : cls;
+    let gated = (cls !== 'fit' && confidence < gateT) ? 'fit' : cls;
     const suppressed = (gated !== cls);
+
+    // Preference layer, applied AFTER the model and never inside it. The
+    // classifier answers a factual question — will this run large? The
+    // shopper's preference answers a different one — do they mind? Folding
+    // taste into the model would corrupt its probabilities; layering it on
+    // top keeps both answers separately inspectable.
+    const pref = ($('faPref') || {}).value || 'regular';
+    const layers = !!(($('faLayer') || {}).checked);
+    let prefNote = '';
+    if (gated === 'large' && (pref === 'relaxed' || layers)) {
+      gated = 'fit';
+      prefNote = layers && pref !== 'relaxed'
+        ? 'Runs large, but you layer underneath — that room is useful.'
+        : 'Runs large, and you prefer a relaxed cut — so this suits you.';
+    } else if (gated === 'small' && pref === 'fitted') {
+      prefNote = 'Runs small, though you prefer a close fit — you may still want it.';
+    } else if (gated === 'fit' && pref === 'relaxed' && cls === 'fit') {
+      prefNote = 'True to size, which will read closer than a relaxed cut.';
+    } else if (gated === 'fit' && pref === 'fitted' && cls === 'fit') {
+      prefNote = 'True to size, which will sit looser than a fitted cut.';
+    }
 
     const copy = COPY[gated] || [gated, ''];
     $('faVerdict').textContent = suppressed ? 'No advice' : copy[0];
@@ -4574,7 +4641,7 @@ window.toggleArAvatar = async function() {
          (confidence*100).toFixed(0) + '% confidence, under the ' +
          (gateT*100).toFixed(0) + '% bar. Staying quiet: bad sizing advice moves a ' +
          'shopper to a worse size and causes the return it meant to prevent.')
-      : copy[1];
+      : (prefNote || copy[1]);
     $('faConf').textContent = (confidence * 100).toFixed(1) + '% confidence'
       + (active ? '  ·  real rental, actual outcome: ' + active.truth : '');
 
@@ -4716,7 +4783,7 @@ window.toggleArAvatar = async function() {
           render();
         });
       });
-      ['faBody','faCat','faFor'].forEach(id => {
+      ['faBody','faCat','faFor','faPref','faLayer'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('change', () => { active = null; render(); });
       });
@@ -4733,5 +4800,7 @@ window.toggleArAvatar = async function() {
     });
 })();
 </script>
+
+
 </body>
 </html>
