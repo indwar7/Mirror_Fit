@@ -1549,6 +1549,12 @@ body.landing-active .app { display: none !important; }
             <span style="color:var(--muted)">— re-projects the swap onto your head every display frame instead of waiting for the server</span>
           </span>
         </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:8px">
+          <input type="checkbox" id="lsHair" checked>
+          <span>Swap hair too
+            <span style="color:var(--muted)">— warps the avatar's hairstyle on as well as its face; costs ~30 ms a frame</span>
+          </span>
+        </label>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:10px">
           <input type="checkbox" id="lsLiveMouth" checked>
           <span>Live mouth
@@ -2826,6 +2832,8 @@ let _lsStatTimer = null;
 
 const _lsPatchCvs = document.createElement('canvas');
 const _lsMouthCvs = document.createElement('canvas');
+const _lsAlphaCvs = document.createElement('canvas');
+let _lsHairNote = '';   // why hair is off, when the user asked for it
 
 // A result older than this is not worth pasting on a live face any more —
 // it happens when the server loses the face for a while but the local
@@ -2951,7 +2959,7 @@ function _lsPath(ctx, lm, idx, size, scale) {
 // MediaPipe's oval exactly would carry a rim of un-swapped — and by the time
 // it is drawn, stale — forehead along with it. The blur is what makes the
 // boundary invisible; a hard edge is the single most obvious tell.
-function _lsBuildPatch(img, lm) {
+function _lsBuildPatch(img, lm, maskImg) {
   const R = img.width || 384;
   const c = _lsPatchCvs, x = c.getContext('2d');
   if (c.width !== R) { c.width = R; c.height = R; }
@@ -2959,12 +2967,51 @@ function _lsBuildPatch(img, lm) {
   x.clearRect(0,0,R,R);
   x.drawImage(img, 0, 0, R, R);
   x.globalCompositeOperation = 'destination-in';
+  if (maskImg && maskImg.width) {
+    x.drawImage(_lsAlphaFrom(lm, maskImg, R), 0, 0);
+  } else {
+    x.filter = 'blur(' + Math.max(4, Math.round(R * 0.03)) + 'px)';
+    x.fillStyle = '#fff';
+    _lsPath(x, lm, LS_OVAL, R, 0.94);
+    x.fill();
+    x.filter = 'none';
+  }
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
+// When hair is being swapped the face oval is the wrong cut — hair sits above
+// it and would be cropped straight off, which looks exactly like the feature
+// doing nothing. The server sends the pixels it actually touched instead.
+//
+// That mask arrives as a grey JPEG: its brightness is the alpha we want, but
+// every pixel of it is opaque, so handing it to destination-in as-is would
+// keep the whole square. So: union it with the face oval — which covers any
+// interior pixel the swap happened to reproduce almost exactly, and which a
+// difference mask would otherwise punch a hole through — then move luminance
+// into the alpha channel.
+function _lsAlphaFrom(lm, maskImg, R) {
+  const c = _lsAlphaCvs, x = c.getContext('2d', { willReadFrequently: true });
+  if (c.width !== R) { c.width = R; c.height = R; }
+  x.setTransform(1,0,0,1,0,0);
+  x.globalCompositeOperation = 'source-over';
+  x.filter = 'none';
+  x.fillStyle = '#000';
+  x.fillRect(0, 0, R, R);
+  x.drawImage(maskImg, 0, 0, R, R);
+  x.globalCompositeOperation = 'lighter';           // union, not replace
   x.filter = 'blur(' + Math.max(4, Math.round(R * 0.03)) + 'px)';
   x.fillStyle = '#fff';
   _lsPath(x, lm, LS_OVAL, R, 0.94);
   x.fill();
   x.filter = 'none';
   x.globalCompositeOperation = 'source-over';
+  const d = x.getImageData(0, 0, R, R), px = d.data;
+  for (let i = 0; i < px.length; i += 4) {
+    px[i + 3] = px[i];                              // grey level → alpha
+    px[i] = px[i + 1] = px[i + 2] = 255;
+  }
+  x.putImageData(d, 0, 0);
   return c;
 }
 
@@ -3002,7 +3049,8 @@ function startLiveSwap() {
   liveWs = new WebSocket(selectedSwapWs());
   liveWs.onopen = () => {
     setDot('ls',true);
-    const baseInit = { type:'init', session_id: LUCY_SESSION_ID };
+    const baseInit = { type:'init', session_id: LUCY_SESSION_ID,
+                       hair: _lsOpt('lsHair', true) };
     const initMsg = (liveSource&&liveSource.avatar_id)
       ? Object.assign(baseInit, { avatar_id: liveSource.avatar_id })
       : Object.assign(baseInit, { source_image: liveSource });
@@ -3019,7 +3067,13 @@ function startLiveSwap() {
     }
     if (msg.type==='pong') return;
     if (msg.type==='ready') {
-      setStatus('liveStatus','success','Live swap active');
+      // Hair can be asked for and still not happen — no BiSeNet on the box,
+      // or an avatar photographed in a hat. Silence there reads as a broken
+      // feature, so carry the reason into the status line.
+      _lsHairNote = (_lsOpt('lsHair', true) && !msg.hair)
+        ? ' · hair off: ' + (msg.hair_reason || 'unavailable')
+        : (msg.hair ? ' · hair on' : '');
+      setStatus('liveStatus','success','Live swap active' + _lsHairNote);
       _startLsStats(); _startLsRender();
       // Voice auto-starts with the swap — the user gesture from the Start
       // click is what satisfies the browser's audioCtx.resume() rule, so
@@ -3036,14 +3090,24 @@ function startLiveSwap() {
       const lm  = (key != null) ? _lsPending.get(key) : null;
       _lsSettle(msg.id);
       if (key != null) _lsPending.delete(key);
-      const img = new Image();
-      img.onload = () => {
+      const img     = new Image();
+      const maskImg = msg.mask ? new Image() : null;
+      let waiting   = maskImg ? 2 : 1;
+      const settled = () => {
+        if (--waiting) return;
         _lsResult = {
           img, lm: lm || null, t: performance.now(),
-          patch: lm ? _lsBuildPatch(img, lm) : null,
+          patch: lm ? _lsBuildPatch(img, lm, maskImg) : null,
         };
         _lsStat.frames++;
       };
+      img.onload = settled;
+      if (maskImg) {
+        // A mask that fails to decode is not worth dropping the frame for —
+        // fall back to the face oval.
+        maskImg.onload = maskImg.onerror = settled;
+        maskImg.src = 'data:image/jpeg;base64,' + msg.mask;
+      }
       img.src='data:image/jpeg;base64,'+msg.image;
     } else if (msg.type==='no_face'||msg.type==='dropped') {
       _lsSettle(msg.id);
@@ -3103,7 +3167,7 @@ function _startLsStats() {
     if (!liveRunning) return;
     const locked = _lsTracker ? 'locked' : 'unlocked';
     setStatus('liveStatus','success',
-      `Live swap active · ${_lsStat.fps.toFixed(1)} swap fps · ${Math.round(_lsStat.ms)} ms · mask ${locked}`);
+      `Live swap active · ${_lsStat.fps.toFixed(1)} swap fps · ${Math.round(_lsStat.ms)} ms · mask ${locked}${_lsHairNote}`);
   }, 1000);
 }
 function _stopLsStats(){ if(_lsStatTimer){clearInterval(_lsStatTimer);_lsStatTimer=null;} }
@@ -4114,7 +4178,48 @@ function loadArAvatar(preset) {
   _arAvatar = buildArHead(preset);
   // matrixAutoUpdate off so we can drive the transform from MediaPipe directly
   _arAvatar.matrixAutoUpdate = false;
+  // Seed it 45 cm in front of the camera.
+  //
+  // Without this the matrix stays IDENTITY until the first successful
+  // detection, which puts the head at the world origin — exactly where the
+  // camera is. The camera then sits inside the head and renders nothing, so a
+  // working pipeline is indistinguishable from a broken one: the tab says "AR
+  // running" and the screen shows only the webcam. Seeding it means the avatar
+  // is visible the moment the scene renders, and if it never moves you know
+  // the problem is detection rather than rendering.
+  _arAvatar.matrix.makeTranslation(0, 0, -0.45);
+  _arAvatar.matrixWorldNeedsUpdate = true;
   _arScene.add(_arAvatar);
+}
+
+// MediaPipe hands back 16 floats; Three.js Matrix4.fromArray() reads them
+// column-major. Which order MediaPipe writes has differed between releases,
+// and it is not something to guess at from a comment — so decide it once, from
+// the data: a real face has to land IN FRONT of the camera at a human
+// distance. Whichever reading does that is the right one, and the choice is
+// then held for the session so the avatar cannot flip convention mid-stream.
+let _arMatrixOrder = null;   // null until decided, then 'column' | 'row'
+
+function _arPlausible(m) {
+  const p = new THREE.Vector3().setFromMatrixPosition(m);
+  const d = p.length();
+  // Camera is at the origin looking down -Z, so the face sits at negative z,
+  // somewhere between 15 cm and 1.5 m away.
+  return p.z < 0 && d > 0.15 && d < 1.5;
+}
+
+function _arApplyMatrix(obj, data) {
+  const asColumn = new THREE.Matrix4().fromArray(data);
+  if (_arMatrixOrder === null) {
+    const asRow = new THREE.Matrix4().fromArray(data).transpose();
+    _arMatrixOrder = _arPlausible(asColumn) ? 'column'
+                   : _arPlausible(asRow)    ? 'row'
+                   : 'column';               // neither looked sane — keep the documented one
+  }
+  const m = _arMatrixOrder === 'row' ? asColumn.clone().transpose() : asColumn;
+  obj.matrix.copy(m);
+  obj.matrixWorldNeedsUpdate = true;
+  return new THREE.Vector3().setFromMatrixPosition(m);
 }
 
 // ── Per-frame: detect face → drive avatar transform → render ─────────────────
@@ -4127,18 +4232,53 @@ function loadArAvatar(preset) {
 // One subtlety: MediaPipe's coordinate system has +Y up and -Z forward (away
 // from camera), matching OpenGL/Three.js. So the matrix can be applied 1:1
 // to the avatar's transform.
+let _arSeenFace = false, _arLastReport = 0, _arDetectErr = '';
+
 function arFrame() {
   if (!_arRunning) return;
+  let pos = null;
   if (_arVideo.readyState >= 2 && _arVideo.currentTime !== _arLastVideoTime) {
     _arLastVideoTime = _arVideo.currentTime;
-    const result = _arLandmarker.detectForVideo(_arVideo, performance.now());
-    const mtx = result.facialTransformationMatrixes?.[0]?.data;
-    if (mtx && _arAvatar) {
-      _arAvatar.matrix.fromArray(mtx);
-      _arAvatar.matrixWorldNeedsUpdate = true;
+    try {
+      const result = _arLandmarker.detectForVideo(_arVideo, performance.now());
+      const mtx = result.facialTransformationMatrixes?.[0]?.data;
+      if (mtx && _arAvatar) {
+        pos = _arApplyMatrix(_arAvatar, mtx);
+        _arSeenFace = true;
+        _arDetectErr = '';
+      }
+    } catch (e) {
+      // A throw here used to kill the rAF loop outright and leave the tab
+      // claiming "AR running" forever. Keep rendering and report it instead.
+      _arDetectErr = e.message || String(e);
     }
   }
   _arRenderer.render(_arScene, _arCamera);
+
+  // Say which half is working. "AR running" on its own cannot distinguish
+  // "detection is dead" from "rendering is dead", which is exactly the
+  // ambiguity that made this hard to diagnose.
+  const now = performance.now();
+  if (now - _arLastReport > 500) {
+    _arLastReport = now;
+    const el = document.getElementById('arStatus');
+    if (el) {
+      if (_arDetectErr) {
+        el.innerHTML = '<span style="color:var(--red)">Face detection error: ' +
+          _arDetectErr + '</span>';
+      } else if (pos) {
+        el.innerHTML = '<span style="color:var(--green)">Tracking — ' +
+          Math.round(pos.length() * 100) + ' cm away (' + _arMatrixOrder + '-major)</span>';
+      } else if (_arSeenFace) {
+        el.innerHTML = '<span style="color:var(--accent-hot)">Face lost — ' +
+          'move back into frame</span>';
+      } else {
+        el.innerHTML = '<span style="color:var(--accent-hot)">Rendering, but no ' +
+          'face detected yet. If the head is visible, detection is the problem.</span>';
+      }
+    }
+  }
+
   _arRafId = requestAnimationFrame(arFrame);
 }
 
@@ -4148,6 +4288,12 @@ window.toggleArAvatar = async function() {
     _arRunning = false;
     if (_arRafId) cancelAnimationFrame(_arRafId);
     _arRafId = null;
+    // Re-decide the matrix order and the "seen a face yet" state next run, so
+    // restarting is a genuinely clean attempt rather than inheriting a choice
+    // made from one bad frame.
+    _arMatrixOrder = null;
+    _arSeenFace = false;
+    _arDetectErr = '';
     document.getElementById('arStartBtn').textContent = 'Start AR';
     document.getElementById('arStartBtn').className = 'btn btn-primary';
     document.getElementById('arStatusText').textContent = 'Stopped';
