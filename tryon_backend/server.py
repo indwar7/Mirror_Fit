@@ -10,6 +10,28 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
 
+# Must be set before transformers is imported, which happens via `model`.
+#
+# transformers 5.x materialises weights across a thread pool
+# (core_model_loading.py: spawn_materialize -> _job -> _materialize_copy).
+# On this Windows box that races inside torch storage indexing and takes the
+# whole interpreter out:
+#
+#   Windows fatal exception: access violation
+#     torch/storage.py:469 __getitem__
+#     transformers/core_model_loading.py:938 _materialize_copy
+#     diffusers/loaders/ip_adapter.py:207 load_ip_adapter
+#
+# It is a race, so it only sometimes fires -- the backend would come up
+# cleanly one run and die mid-load the next, with no traceback before
+# faulthandler was added.
+#
+# The real fix is the pin: requirements.txt asks for transformers==4.46.0,
+# which has no core_model_loading.py at all, and the box has drifted off it.
+# These serve as a guard for when the environment drifts again.
+os.environ.setdefault("HF_ENABLE_PARALLEL_LOADING", "0")
+os.environ.setdefault("HF_PARALLEL_LOADING_WORKERS", "0")
+
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
