@@ -160,8 +160,15 @@ async def _ws_keepalive(ws: WebSocket, every: float = 20.0):
 
 
 def _decode_image(data: bytes) -> Optional[np.ndarray]:
-    arr = np.frombuffer(data, np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    """None for anything that isn't a decodable image. cv2.imdecode raises
+    on an empty buffer rather than returning None, and base64 of a garbage
+    string decodes to b"" — which used to take the whole session down."""
+    if not data:
+        return None
+    try:
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
+        return None
 
 
 def _encode_jpeg(img: np.ndarray) -> Optional[bytes]:
@@ -203,6 +210,8 @@ def _load_source(msg: dict) -> tuple[Optional[np.ndarray], Optional[str]]:
             raw = base64.b64decode(source_b64, validate=False)
         except (binascii.Error, ValueError) as e:
             return None, f"bad source_image: {e}"
+        if not raw:
+            return None, "bad source_image: not base64"
         if len(raw) > _MAX_SOURCE_BYTES:
             return None, "source image too large (max 8 MB)"
         img = _decode_image(raw)
@@ -297,6 +306,101 @@ async def ws_liveportrait_swap(ws: WebSocket):
         finally:
             processing = False
 
+    async def dispatch(packet: dict) -> None:
+        """Handle exactly one client message. Raising out of here is caught
+        by the caller and reported on the socket — a single malformed
+        message must not end an otherwise healthy session."""
+        nonlocal source_ready, client_label
+
+        # ── Binary transport: the payload *is* the JPEG ─────────────
+        if packet.get("bytes") is not None:
+            await handle_frame(packet["bytes"], binary=True)
+            return
+
+        raw = packet.get("text")
+        if raw is None:
+            return
+        try:
+            msg = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            await send({"type": "error", "message": "bad json"})
+            return
+        if not isinstance(msg, dict):
+            await send({"type": "error", "message": "expected a json object"})
+            return
+
+        mtype = msg.get("type")
+
+        if mtype in ("ping", "pong"):
+            if mtype == "ping":
+                with contextlib.suppress(Exception):
+                    await send({"type": "pong", "t": msg.get("t")})
+            return
+
+        if mtype == "init":
+            client_label = str(msg.get("session_id") or msg.get("avatar_id") or "anon")[:64]
+            src_bgr, err = _load_source(msg)
+            if err:
+                await send({"type": "error", "message": err})
+                return
+            try:
+                engine = _get_engine()
+            except Exception as e:
+                await send({"type": "error", "message": f"engine unavailable: {e}"})
+                return
+            try:
+                ok = await loop.run_in_executor(
+                    None,
+                    lambda: engine.prepare_source(engine_key, src_bgr, **_params_from(msg)),
+                )
+            except Exception as e:
+                log.exception("[LP] init failed")
+                await send({"type": "error", "message": str(e)})
+                return
+            if not ok:
+                await send({"type": "error", "message": "no face in source image"})
+                return
+            source_ready = True
+            stats.update(frames=0, dropped=0, no_face=0, ms=0.0, t0=time.time())
+            log.info("[LP] session %s ready (client=%s)", engine_key[:8], client_label)
+            await send({
+                "type": "ready",
+                "session_id": msg.get("session_id") or client_label,
+                "params": engine.configure(engine_key),
+            })
+            return
+
+        if mtype == "frame":
+            image_b64 = msg.get("image")
+            if not isinstance(image_b64, str):
+                await send({"type": "error", "message": "frame missing image"})
+                return
+            try:
+                frame_bytes = base64.b64decode(image_b64, validate=False)
+            except (binascii.Error, ValueError):
+                await send({"type": "error", "message": "bad base64"})
+                return
+            await handle_frame(frame_bytes, binary=False)
+            return
+
+        if mtype == "config":
+            if not source_ready:
+                await send({"type": "error", "message": "send init first"})
+                return
+            params = _get_engine().configure(engine_key, **_params_from(msg))
+            await send({"type": "config", "params": params})
+            return
+
+        if mtype == "recalibrate":
+            if not source_ready:
+                await send({"type": "error", "message": "send init first"})
+                return
+            _get_engine().recalibrate(engine_key)
+            await send({"type": "recalibrating"})
+            return
+
+        await send({"type": "error", "message": f"unknown message type: {mtype!r}"})
+
     keepalive_task = asyncio.create_task(_ws_keepalive(ws))
 
     try:
@@ -304,95 +408,16 @@ async def ws_liveportrait_swap(ws: WebSocket):
             packet = await ws.receive()
             if packet["type"] == "websocket.disconnect":
                 break
-
-            # ── Binary transport: the payload *is* the JPEG ─────────────
-            if packet.get("bytes") is not None:
-                await handle_frame(packet["bytes"], binary=True)
-                continue
-
-            raw = packet.get("text")
-            if raw is None:
-                continue
             try:
-                msg = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                await send({"type": "error", "message": "bad json"})
-                continue
-            if not isinstance(msg, dict):
-                await send({"type": "error", "message": "expected a json object"})
-                continue
-
-            mtype = msg.get("type")
-
-            if mtype in ("ping", "pong"):
-                if mtype == "ping":
-                    with contextlib.suppress(Exception):
-                        await send({"type": "pong", "t": msg.get("t")})
-                continue
-
-            if mtype == "init":
-                client_label = str(msg.get("session_id") or msg.get("avatar_id") or "anon")[:64]
-                src_bgr, err = _load_source(msg)
-                if err:
-                    await send({"type": "error", "message": err})
-                    continue
-                try:
-                    engine = _get_engine()
-                except Exception as e:
-                    await send({"type": "error", "message": f"engine unavailable: {e}"})
-                    continue
-                try:
-                    ok = await loop.run_in_executor(
-                        None,
-                        lambda: engine.prepare_source(engine_key, src_bgr, **_params_from(msg)),
-                    )
-                except Exception as e:
-                    log.exception("[LP] init failed")
+                await dispatch(packet)
+            except (WebSocketDisconnect, RuntimeError):
+                raise
+            except Exception as e:
+                # One bad message is a client problem, not a reason to drop
+                # a working live session.
+                log.exception("[LP] error handling %s message", packet.get("type"))
+                with contextlib.suppress(Exception):
                     await send({"type": "error", "message": str(e)})
-                    continue
-                if not ok:
-                    await send({"type": "error", "message": "no face in source image"})
-                    continue
-                source_ready = True
-                stats.update(frames=0, dropped=0, no_face=0, ms=0.0, t0=time.time())
-                log.info("[LP] session %s ready (client=%s)", engine_key[:8], client_label)
-                await send({
-                    "type": "ready",
-                    "session_id": msg.get("session_id") or client_label,
-                    "params": engine.configure(engine_key),
-                })
-                continue
-
-            if mtype == "frame":
-                image_b64 = msg.get("image")
-                if not isinstance(image_b64, str):
-                    await send({"type": "error", "message": "frame missing image"})
-                    continue
-                try:
-                    frame_bytes = base64.b64decode(image_b64, validate=False)
-                except (binascii.Error, ValueError):
-                    await send({"type": "error", "message": "bad base64"})
-                    continue
-                await handle_frame(frame_bytes, binary=False)
-                continue
-
-            if mtype == "config":
-                if not source_ready:
-                    await send({"type": "error", "message": "send init first"})
-                    continue
-                params = _get_engine().configure(engine_key, **_params_from(msg))
-                await send({"type": "config", "params": params})
-                continue
-
-            if mtype == "recalibrate":
-                if not source_ready:
-                    await send({"type": "error", "message": "send init first"})
-                    continue
-                _get_engine().recalibrate(engine_key)
-                await send({"type": "recalibrating"})
-                continue
-
-            await send({"type": "error", "message": f"unknown message type: {mtype!r}"})
 
     except WebSocketDisconnect:
         pass
