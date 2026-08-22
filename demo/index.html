@@ -959,7 +959,7 @@ body.landing-active .app { display: none !important; }
         </div>
         <div class="lp-hero-stats">
           <div>
-            <div class="lp-stat-n">7</div>
+            <div class="lp-stat-n">6</div>
             <div class="lp-stat-l">Live modes</div>
           </div>
           <div>
@@ -1056,9 +1056,9 @@ body.landing-active .app { display: none !important; }
   <section class="lp-sec" id="lp-modes" style="padding-top:0">
     <div class="lp-wrap">
       <span class="lp-tag" data-reveal>The studio</span>
-      <h2 class="lp-h2" data-reveal data-d="1">Seven ways to <em>work the mirror.</em></h2>
+      <h2 class="lp-h2" data-reveal data-d="1">Six ways to <em>work the mirror.</em></h2>
       <p class="lp-lede" data-reveal data-d="2">
-        Five modes stream from the camera and return a rendered frame, at
+        Four modes stream from the camera and return a rendered frame, at
         10 credits a session. Fit Analyser and Returns Guard score on device
         and are free.
       </p>
@@ -1084,6 +1084,7 @@ body.landing-active .app { display: none !important; }
           </div>
         </button>
 
+        <!-- DISABLED — Live Face Swap is disabled: the :7860 backend is not running and the feature does not work. Re-enable by reversing this commit.
         <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('liveswap')">
           <div class="lp-mode-top">
             <span class="lp-mode-icon">
@@ -1106,6 +1107,7 @@ body.landing-active .app { display: none !important; }
             <span class="lp-mode-port">Port 7860</span>
           </div>
         </button>
+        -->
 
         <button class="lp-mode" data-reveal data-d="3" onclick="enterFeature('liveportrait')">
           <div class="lp-mode-top">
@@ -1390,9 +1392,13 @@ body.landing-active .app { display: none !important; }
     Mirror Fit
   </div>
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
+    <!-- Live Face Swap is disabled: the :7860 backend is not running and the feature does not work. Re-enable by reversing this commit.
+         Kept in the DOM, hidden: switchTab() indexes .tab positionally, so
+         removing this node would shift every later tab onto the wrong panel. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('liveswap')">Live Face Swap</button>
     <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
-    <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
+    <button class="tab active" onclick="switchTab('tryon')">Live Try-On</button>
     <button class="tab" onclick="switchTab('ar')">AR Avatar</button>
     <button class="tab" onclick="switchTab('twin')">AI Twin</button>
     <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
@@ -1407,7 +1413,7 @@ body.landing-active .app { display: none !important; }
   <div class="sidebar">
 
     <!-- LIVE FACE SWAP -->
-    <div class="panel active" id="panel-liveswap">
+    <div class="panel" id="panel-liveswap">
       <!-- Step 1: Camera (always visible at top) -->
       <div class="card">
         <div class="card-label">Step 1 · Camera</div>
@@ -1447,7 +1453,32 @@ body.landing-active .app { display: none !important; }
         <div id="voiceStatus" class="status-msg"></div>
       </div>
 
-      <!-- Step 3: Start (sticky to bottom of sidebar so always reachable) -->
+      <!-- Step 3: Fit — how the swapped face is put back on the user -->
+      <div class="card">
+        <div class="card-label">Step 3 · Fit</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:8px">
+          <input type="checkbox" id="lsLockMask" checked>
+          <span>Lock mask to face
+            <span style="color:var(--muted)">— re-projects the swap onto your head every display frame instead of waiting for the server</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:10px">
+          <input type="checkbox" id="lsLiveMouth" checked>
+          <span>Live mouth
+            <span style="color:var(--muted)">— your real lips, at camera rate, so speech is not dubbed</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <span style="font-weight:600">Detail</span>
+          <select id="lsQuality" style="flex:1;padding:5px 8px;font:inherit">
+            <option value="320">Fast — 320 px capture</option>
+            <option value="384" selected>Balanced — 384 px</option>
+            <option value="512">Sharp — 512 px, slower</option>
+          </select>
+        </label>
+      </div>
+
+      <!-- Step 4: Start (sticky to bottom of sidebar so always reachable) -->
       <div class="sticky-action">
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div class="status-row" style="flex:1">
@@ -1521,7 +1552,7 @@ body.landing-active .app { display: none !important; }
     </div>
 
     <!-- LIVE TRY-ON -->
-    <div class="panel" id="panel-tryon">
+    <div class="panel active" id="panel-tryon">
       <!-- Step 1: Camera -->
       <div class="card">
         <div class="card-label">Step 1 · Camera</div>
@@ -2612,25 +2643,226 @@ async function _sendVoiceForTransform(blob) {
 }
 
 // ── Live Face Swap ─────────────────────────────────────────────────────────────
+// Two clocks run here, and keeping them apart is the whole design.
+//
+//   • The SERVER clock, ~5-8 fps. inswapper + CodeFormer on an A10G will not
+//     go faster and nothing on this side changes that. It decides what the
+//     swapped face LOOKS like.
+//   • The HEAD clock, display refresh. MediaPipe finds the user's face locally
+//     in ~4 ms. It decides where that face SITS.
+//
+// The old code only had the first clock: every server reply was blitted over
+// the whole canvas at full alpha, so what you actually watched was a 150-300 ms
+// old photograph of your entire head, replaced wholesale five times a second.
+// Turn your head and the face lagged behind it and then snapped — which is
+// precisely what reads as a picture taped over video rather than a mask.
+//
+// Now the reply is cut down to its face oval and re-projected onto wherever
+// the head is right now, through the similarity transform between the
+// landmarks measured when that frame was captured and the landmarks in the
+// frame on screen. Head motion tracks at display rate; only a change of
+// expression waits for the server. Everywhere outside the oval is the live
+// camera, so hair, ears, neck and background are never stale.
+//
+// MediaPipe 468-point indices. The oval is the closed face contour; the lips
+// ring is the outer lip contour. The anchors are deliberately eye corners,
+// nose bridge and temples only — no jaw, no lips. Fitting on points that move
+// with expression makes the whole mask swim when the user talks.
+const LS_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,
+                 378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,
+                 162,21,54,103,67,109];
+const LS_LIPS = [61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,
+                 37,39,40,185];
+const LS_ANCHORS = [33,133,362,263,168,6,1,197,234,454,127,356];
+
 let liveStream=null,liveWs=null,liveSource=null,liveRunning=false;
-let liveLatestResult=null,liveRafId=null,liveSendTimer=null;
+let liveRafId=null;
+
+// The latest reply, plus the landmarks from the moment the frame it answers
+// was captured. Both halves are needed: the image says what the face looks
+// like, the landmarks say where it was standing when it was photographed.
+let _lsResult   = null;   // {img, lm, patch, t}
+let _lsInFlight = null;   // {id, t0} — exactly one frame on the wire
+let _lsPending  = new Map();
+let _lsSeq      = 0;
+
+let _lsTracker = null, _lsTrackerLoading = false, _lsTrackTs = -1;
+let _lsCur = null, _lsLost = 0;
+let _lsStat = { ms: 0, frames: 0, since: 0, fps: 0 };
+let _lsStatTimer = null;
+
+const _lsPatchCvs = document.createElement('canvas');
+const _lsMouthCvs = document.createElement('canvas');
+
+// A result older than this is not worth pasting on a live face any more —
+// it happens when the server loses the face for a while but the local
+// tracker has not, and the alternative is a second-old expression sitting
+// on a head that has moved on.
+const LS_MAX_STALE_MS = 1500;
+
+function _lsOpt(id, dflt) {
+  const el = document.getElementById(id);
+  return el ? el.checked : dflt;
+}
+function _lsCaptureSize() {
+  const el = document.getElementById('lsQuality');
+  return el ? +el.value : 384;
+}
 
 function checkLiveReady() {
   if (liveSource && liveStream) document.getElementById('liveSwapBtn').disabled=false;
 }
 async function startLiveCamera() {
   try {
-    liveStream = await navigator.mediaDevices.getUserMedia({video:{width:640,height:480},audio:false});
+    liveStream = await navigator.mediaDevices.getUserMedia({video:{width:1280,height:720},audio:false});
     document.getElementById('liveVideo').srcObject = liveStream;
     const btn = document.getElementById('liveCamBtn');
     btn.textContent='Camera on'; btn.className='btn btn-active';
     checkLiveReady();
+    // Fetch the tracker now, while the user is still picking a face. It is a
+    // ~10 MB download; paying for it after they press Start is the difference
+    // between the mask locking on immediately and the first few seconds
+    // looking like the old behaviour.
+    _lsInitTracker();
   } catch(e) { alert('Camera error: '+e.message); }
 }
+
+async function _lsInitTracker() {
+  if (_lsTracker || _lsTrackerLoading) return _lsTracker;
+  if (typeof window._lucyCreateFaceLandmarker !== 'function') return null;
+  _lsTrackerLoading = true;
+  try {
+    _lsTracker = await window._lucyCreateFaceLandmarker();
+  } catch (e) {
+    // No tracker means no re-projection, so the renderer falls back to the
+    // old full-frame blit rather than showing nothing.
+    console.warn('[liveswap] face tracker unavailable, falling back to full-frame paste', e);
+    _lsTracker = null;
+  } finally {
+    _lsTrackerLoading = false;
+  }
+  return _lsTracker;
+}
+
+// Landmarks in the same normalised square-crop space the server sees: centre
+// crop to a square, then mirror if the feature mirrors. Normalised rather
+// than pixels so the same numbers work against the 384 px frame that went to
+// the server and the 720 px canvas on screen.
+function _lsTrack(video) {
+  if (!_lsTracker || video.readyState < 2 || !video.videoWidth) return null;
+  const ts = performance.now();
+  if (ts <= _lsTrackTs) return null;
+  _lsTrackTs = ts;
+  let res;
+  try { res = _lsTracker.detectForVideo(video, ts); } catch (_) { return null; }
+  const face = res && res.faceLandmarks && res.faceLandmarks[0];
+  if (!face) return null;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const side = Math.min(vw, vh), sx = (vw - side) / 2, sy = (vh - side) / 2;
+  const out = new Array(face.length);
+  for (let i = 0; i < face.length; i++) {
+    let x = (face[i].x * vw - sx) / side;
+    const y = (face[i].y * vh - sy) / side;
+    if (MIRROR.ls) x = 1 - x;
+    out[i] = { x, y };
+  }
+  return out;
+}
+
+// Least-squares similarity (uniform scale + rotation + translation) taking the
+// anchor points of `from` onto those of `to`. Closed form, no iteration — it
+// runs once per displayed frame and must not cost anything.
+function _lsFit(from, to) {
+  const n = LS_ANCHORS.length;
+  let mfx=0, mfy=0, mtx=0, mty=0;
+  for (const i of LS_ANCHORS) {
+    if (!from[i] || !to[i]) return null;
+    mfx+=from[i].x; mfy+=from[i].y; mtx+=to[i].x; mty+=to[i].y;
+  }
+  mfx/=n; mfy/=n; mtx/=n; mty/=n;
+  let dot=0, cross=0, den=0;
+  for (const i of LS_ANCHORS) {
+    const fx=from[i].x-mfx, fy=from[i].y-mfy;
+    const tx=to[i].x-mtx,   ty=to[i].y-mty;
+    dot += fx*tx + fy*ty;
+    cross += fx*ty - fy*tx;
+    den += fx*fx + fy*fy;
+  }
+  if (den < 1e-9) return null;
+  const a = dot/den, b = cross/den;          // a = s·cosθ, b = s·sinθ
+  return {
+    a, b,
+    e: mtx - (a*mfx - b*mfy),
+    f: mty - (b*mfx + a*mfy),
+    scale: Math.hypot(a, b),
+  };
+}
+
+// Trace a landmark loop, scaled about its own centroid, into `ctx` at `size`.
+function _lsPath(ctx, lm, idx, size, scale) {
+  let cx=0, cy=0;
+  for (const i of idx) { cx+=lm[i].x; cy+=lm[i].y; }
+  cx/=idx.length; cy/=idx.length;
+  ctx.beginPath();
+  for (let k=0; k<idx.length; k++) {
+    const p = lm[idx[k]];
+    const x = (cx + (p.x-cx)*scale) * size;
+    const y = (cy + (p.y-cy)*scale) * size;
+    if (k === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.closePath();
+}
+
+// Cut the server's full frame down to a feathered face oval. Pulled in to
+// 0.94: inswapper's own paste stops around the hairline, so a mask cut on
+// MediaPipe's oval exactly would carry a rim of un-swapped — and by the time
+// it is drawn, stale — forehead along with it. The blur is what makes the
+// boundary invisible; a hard edge is the single most obvious tell.
+function _lsBuildPatch(img, lm) {
+  const R = img.width || 384;
+  const c = _lsPatchCvs, x = c.getContext('2d');
+  if (c.width !== R) { c.width = R; c.height = R; }
+  x.setTransform(1,0,0,1,0,0);
+  x.clearRect(0,0,R,R);
+  x.drawImage(img, 0, 0, R, R);
+  x.globalCompositeOperation = 'destination-in';
+  x.filter = 'blur(' + Math.max(4, Math.round(R * 0.03)) + 'px)';
+  x.fillStyle = '#fff';
+  _lsPath(x, lm, LS_OVAL, R, 0.94);
+  x.fill();
+  x.filter = 'none';
+  x.globalCompositeOperation = 'source-over';
+  return c;
+}
+
+// The user's real, current lips over the swapped face. The server already
+// composites the user's mouth into the swap (LUCY_MOUTH_MASK), but that mouth
+// is as old as the frame it came in on, so speech looks dubbed. Taking the
+// lips from the frame on screen instead makes them exact — and since they are
+// the user's own lips either way, nothing about the identity changes.
+function _lsDrawLiveMouth(ctx, video, sz, lm) {
+  const c = _lsMouthCvs, x = c.getContext('2d');
+  if (c.width !== sz) { c.width = sz; c.height = sz; }
+  x.setTransform(1,0,0,1,0,0);
+  x.clearRect(0,0,sz,sz);
+  drawCam(x, video, sz, MIRROR.ls);
+  x.globalCompositeOperation = 'destination-in';
+  x.filter = 'blur(' + Math.max(3, Math.round(sz * 0.012)) + 'px)';
+  x.fillStyle = '#fff';
+  _lsPath(x, lm, LS_LIPS, sz, 1.18);
+  x.fill();
+  x.filter = 'none';
+  x.globalCompositeOperation = 'source-over';
+  ctx.drawImage(c, 0, 0);
+}
+
 function toggleLiveSwap() { liveRunning ? stopLiveSwap() : startLiveSwap(); }
+
 function startLiveSwap() {
   if (!liveSource) { setStatus('liveStatus','error','Select a face first'); return; }
-  liveLatestResult=null;
+  _lsResult = null; _lsInFlight = null; _lsPending.clear(); _lsCur = null; _lsLost = 0;
+  _lsStat = { ms: 0, frames: 0, since: performance.now(), fps: 0 };
+  _lsInitTracker();
   liveWs = new WebSocket(selectedSwapWs());
   liveWs.onopen = () => {
     setDot('ls',true);
@@ -2645,7 +2877,6 @@ function startLiveSwap() {
   };
   liveWs.onmessage = e => {
     const msg=JSON.parse(e.data);
-    // Keepalive — reply to server pings; ignore pongs.
     if (msg.type==='ping') {
       try { liveWs.send(JSON.stringify({type:'pong', t: msg.t})); } catch(_) {}
       return;
@@ -2653,86 +2884,162 @@ function startLiveSwap() {
     if (msg.type==='pong') return;
     if (msg.type==='ready') {
       setStatus('liveStatus','success','Live swap active');
-      _startLsRender(); _startLsTimer(); sendLiveFrame();
-      // Auto-start voice + lipsync when swap is ready (no separate
-      // button — user gesture from the Start Live Swap click satisfies
-      // the browser's audioCtx.resume() requirement).
+      _startLsStats(); _startLsRender();
+      // Voice auto-starts with the swap — the user gesture from the Start
+      // click is what satisfies the browser's audioCtx.resume() rule, so
+      // there is no second button to press.
       if (typeof _startStreamingVoice === 'function' && !_vsActive) {
         _startStreamingVoice().catch(err => console.warn('[voice] auto-start failed', err));
       }
     } else if (msg.type==='result') {
-      const img=new Image();
-      img.onload=()=>{ liveLatestResult=img; };
+      // Read the capture landmarks BEFORE settling — settling releases the
+      // wire and drops the pending entry for the frame it belongs to. An
+      // older server that does not echo the id still works: only one frame is
+      // ever in flight, so the one in flight is the one this answers.
+      const key = (msg.id != null) ? msg.id : (_lsInFlight ? _lsInFlight.id : null);
+      const lm  = (key != null) ? _lsPending.get(key) : null;
+      _lsSettle(msg.id);
+      if (key != null) _lsPending.delete(key);
+      const img = new Image();
+      img.onload = () => {
+        _lsResult = {
+          img, lm: lm || null, t: performance.now(),
+          patch: lm ? _lsBuildPatch(img, lm) : null,
+        };
+        _lsStat.frames++;
+      };
       img.src='data:image/jpeg;base64,'+msg.image;
-      sendLiveFrame();
     } else if (msg.type==='no_face'||msg.type==='dropped') {
-      sendLiveFrame();
+      _lsSettle(msg.id);
     } else if (msg.type==='error') {
       setStatus('liveStatus','error',msg.message);
     }
   };
-  liveWs.onclose=()=>{ setDot('ls',false); _stopLsTimer(); _stopLsRender(); liveRunning=false; };
+  liveWs.onclose=()=>{ setDot('ls',false); _stopLsStats(); _stopLsRender(); liveRunning=false; };
   liveWs.onerror=()=>{ setStatus('liveStatus','error','Connection error'); stopLiveSwap(); };
 }
+
 function stopLiveSwap() {
   if (liveWs) liveWs.close();
-  _stopLsTimer(); _stopLsRender(); liveRunning=false;
+  _stopLsStats(); _stopLsRender(); liveRunning=false;
+  _lsResult = null; _lsInFlight = null; _lsPending.clear();
   document.getElementById('liveSwapBtn').textContent='Start Live Swap';
   document.getElementById('liveSwapBtn').className='btn btn-primary';
-  // Auto-stop voice when swap stops
   if (typeof _stopStreamingVoice === 'function' && _vsActive) {
     _stopStreamingVoice();
   }
 }
-function _startLsTimer() {
-  if (liveSendTimer) clearInterval(liveSendTimer);
-  // 60 ms = ~16 fps target. Server frame-drop gate ('dropped' message)
-  // auto-throttles when the pipeline can't keep up; pushing the cap up
-  // means motion (blinks, smiles) reads faster on the user end because
-  // every successful frame is the latest possible.
-  liveSendTimer=setInterval(sendLiveFrame,60);
+
+// A reply frees the wire. An older server that does not echo the id has
+// nothing to match on, so any reply is taken as the answer to whatever is in
+// flight — which is correct, because only one frame is ever out there.
+function _lsSettle(id) {
+  if (!_lsInFlight) return;
+  if (id == null || id === _lsInFlight.id) {
+    _lsStat.ms = performance.now() - _lsInFlight.t0;
+    _lsPending.delete(_lsInFlight.id);
+    _lsInFlight = null;
+  }
 }
-function _stopLsTimer() { if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;} }
+
+function _startLsStats() {
+  if (_lsStatTimer) clearInterval(_lsStatTimer);
+  _lsStatTimer = setInterval(() => {
+    const now = performance.now();
+    const dt  = (now - _lsStat.since) / 1000;
+    if (dt > 0) { _lsStat.fps = _lsStat.frames / dt; }
+    _lsStat.frames = 0; _lsStat.since = now;
+    if (!liveRunning) return;
+    const locked = _lsTracker ? 'locked' : 'unlocked';
+    setStatus('liveStatus','success',
+      `Live swap active · ${_lsStat.fps.toFixed(1)} swap fps · ${Math.round(_lsStat.ms)} ms · mask ${locked}`);
+  }, 1000);
+}
+function _stopLsStats(){ if(_lsStatTimer){clearInterval(_lsStatTimer);_lsStatTimer=null;} }
+
 function _startLsRender() {
   if (liveRafId) cancelAnimationFrame(liveRafId);
   const canvas=document.getElementById('liveCanvas');
   const video=document.getElementById('liveVideo');
   const ctx=canvas.getContext('2d');
   (function render(){
-    const vw=video.videoWidth||480,vh=video.videoHeight||480;
-    const sz=Math.min(vw,vh);
+    liveRafId = liveRunning ? requestAnimationFrame(render) : null;
+    const vw=video.videoWidth||480, vh=video.videoHeight||480;
+    // Deliberately not the camera's full 720: the swapped face comes back at
+    // the capture size, and a razor-sharp background around a face that has
+    // been through a 128 px model is itself a tell. Holding the canvas near
+    // the capture size keeps both halves of the picture at one resolution.
+    const sz=Math.min(vw, vh, Math.max(512, _lsCaptureSize()));
     if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
-    // Always draw the live camera as the base — this is your real video at
-    // 30fps so movement, head pose, and background are mirror-smooth.
-    if(video.readyState>=2){
-      drawCam(ctx,video,sz,MIRROR.ls);
+    ctx.setTransform(1,0,0,1,0,0);
+    // The live camera is always the base layer — it is the only thing running
+    // at 30 fps, so it is what stops the picture from ever looking frozen.
+    if(video.readyState>=2) drawCam(ctx,video,sz,MIRROR.ls);
+
+    const cur = _lsTrack(video);
+    if (cur) { _lsCur = cur; _lsLost = 0; } else if (_lsTracker) { _lsLost++; }
+
+    const fresh = _lsResult && (performance.now() - _lsResult.t) < LS_MAX_STALE_MS;
+    const lock  = _lsOpt('lsLockMask', true) && _lsTracker
+                  && fresh && _lsResult.patch && _lsResult.lm && _lsCur && _lsLost < 8;
+    if (lock) {
+      const T = _lsFit(_lsResult.lm, _lsCur);
+      // A wild fit means the tracker jumped to something that is not the same
+      // face. Better to show the untouched camera for a frame than to stamp
+      // the mask somewhere it does not belong.
+      if (T && T.scale > 0.4 && T.scale < 2.5) {
+        ctx.save();
+        ctx.scale(sz, sz);
+        ctx.transform(T.a, T.b, -T.b, T.a, T.e, T.f);
+        ctx.drawImage(_lsResult.patch, 0, 0, 1, 1);
+        ctx.restore();
+        if (_lsOpt('lsLiveMouth', true)) _lsDrawLiveMouth(ctx, video, sz, _lsCur);
+      }
+    } else if (_lsResult && fresh) {
+      // No tracker, or the mask lock was turned off: the old whole-frame paste.
+      ctx.drawImage(_lsResult.img, 0, 0, sz, sz);
     }
-    // Overlay the latest swap result on top with a soft mask so the face
-    // region shows the avatar identity but the rest stays live-fresh.
-    if(liveLatestResult){
-      // Center-aligned overlay; full alpha — server result is already a full
-      // composite frame. Updates at server FPS but the underlying video is
-      // continuous so the canvas never freezes between updates.
-      ctx.globalAlpha = 1.0;
-      ctx.drawImage(liveLatestResult,0,0,sz,sz);
-    }
-    if(liveRunning) liveRafId=requestAnimationFrame(render);
+    _lsPaceSend();
   })();
 }
 function _stopLsRender(){if(liveRafId){cancelAnimationFrame(liveRafId);liveRafId=null;}}
-function sendLiveFrame() {
-  if(!liveWs||liveWs.readyState!==WebSocket.OPEN) return;
+
+// Exactly one frame on the wire, and the next one is captured the instant the
+// previous reply lands — never on a timer. The old code did both: a 60 ms
+// interval *and* a send on every reply, including on every `dropped`. Each
+// drop therefore produced another doomed frame, so the stream got slower the
+// harder the server was working, and every frame the user finally saw had
+// been queued behind two others.
+function _lsPaceSend() {
+  if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+  const now = performance.now();
+  if (_lsInFlight) {
+    if (now - _lsInFlight.t0 < 2500) return;   // still working — wait
+    _lsPending.delete(_lsInFlight.id);         // lost reply — reopen the wire
+    _lsInFlight = null;
+  }
+  // Nothing on camera to swap. Skipping the round trip here is not just a
+  // saving: a frame with no face comes back `no_face` and would leave the
+  // stale mask on screen for another 200 ms.
+  if (_lsTracker && !_lsCur) return;
   const video=document.getElementById('liveVideo');
-  const vw=video.videoWidth||640,vh=video.videoHeight||480;
-  // 384px + JPEG quality 0.85 — restored from 256 because at 256 the
-  // server result was visibly upscaled (looked zoomed + blurry) AND
-  // landmark accuracy degraded so expression detail transfer broke.
-  // 384 gives sharp face overlay + reliable landmarks while still
-  // staying under the per-frame budget.
-  const sz=Math.min(vw,vh,384);
+  const vw=video.videoWidth||0, vh=video.videoHeight||0;
+  if (!vw || !vh) return;
+  const sz=Math.min(vw,vh,_lsCaptureSize());
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
-  drawCam(_lsCtx,video,sz,MIRROR.ls);
-  liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
+  drawCam(_lsCtx, video, sz, MIRROR.ls);
+  const id = ++_lsSeq;
+  if (_lsCur) {
+    _lsPending.set(id, _lsCur);
+    // Bounded: a server that never echoes an id would otherwise add one
+    // entry per frame for the whole session.
+    while (_lsPending.size > 12) _lsPending.delete(_lsPending.keys().next().value);
+  }
+  _lsInFlight = { id, t0: now };
+  liveWs.send(JSON.stringify({
+    type:'frame', id,
+    image:_lsCvs.toDataURL('image/jpeg',0.9).split(',')[1],
+  }));
 }
 
 // ── Live Portrait (expression-driven swap, port 7862) ─────────────────────────
@@ -3226,10 +3533,14 @@ function sendToFrame(){
 // Pause when tab hidden
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden){
-    if(liveSendTimer){clearInterval(liveSendTimer);liveSendTimer=null;}
     if(toSendTimer){clearInterval(toSendTimer);toSendTimer=null;}
   } else {
-    if(liveRunning) _startLsTimer();
+    // Live swap paces itself from requestAnimationFrame, which the browser
+    // already stops for a hidden tab. Coming back, all it needs is the
+    // in-flight slot released: the reply to the frame that was on the wire
+    // when the tab went away may never arrive, and until the slot is free
+    // nothing new is sent.
+    if(liveRunning) _lsInFlight = null;
     if(toRunning)   _startToTimer();
   }
 });
@@ -3485,6 +3796,30 @@ async function initArLandmarker() {
   });
   return _arLandmarker;
 }
+
+// The Live Face Swap tab needs the same tracker, but it cannot share this
+// instance: a VIDEO-mode FaceLandmarker demands strictly increasing
+// timestamps, so two render loops feeding one instance would starve each
+// other. It gets its own, built from the already-downloaded WASM + model, and
+// without blendshapes or the transformation matrix — it only needs the 468
+// points to work out where the head is now versus where it was when the
+// server last saw it.
+let _lsVisionFileset = null;
+window._lucyCreateFaceLandmarker = async function () {
+  if (!_lsVisionFileset) {
+    _lsVisionFileset = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+  }
+  return FaceLandmarker.createFromOptions(_lsVisionFileset, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numFaces: 1,
+  });
+};
 
 // ── Three.js scene init (once) ───────────────────────────────────────────────
 function initArScene() {
@@ -3744,6 +4079,8 @@ window.toggleArAvatar = async function() {
     window.enterFeature = function (name) {
       // Returns Guard scores in the browser and consumes no GPU time, so
       // it is free. Credits pay for generation, not for risk scoring.
+      // Live Face Swap is disabled: the :7860 backend is not running and the feature does not work. Re-enable by reversing this commit.
+      if (name === 'liveswap') return;
       if (name === 'returns' || name === 'fit') return launch.apply(this, arguments);
       var v = read();
       if (v < COST) {
