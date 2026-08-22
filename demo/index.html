@@ -1490,6 +1490,9 @@ body.landing-active .app { display: none !important; }
     <button class="tab" onclick="switchTab('twin')">AI Twin</button>
     <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
     <button class="tab" onclick="switchTab('returns')">Returns Guard</button>
+    <!-- Appended, never inserted: switchTab indexes .tab positionally, so a
+         new tab is only safe at the end. -->
+    <button class="tab" onclick="switchTab('myavatar')">My Avatar</button>
   </div>
   <div style="width:120px"></div>
 </header>
@@ -1806,6 +1809,52 @@ body.landing-active .app { display: none !important; }
     </div>
 
     <!-- AI TWIN — SadTalker backend (port 7863), offline talking-head generation -->
+    <!-- ══════════════ MY AVATAR — enrol a person, then give them a body ══════ -->
+    <div class="panel" id="panel-myavatar">
+      <div class="card">
+        <div class="card-label">Step 1 · Your photo</div>
+        <div class="upload-zone" onclick="document.getElementById('avPhotoInput').click()">
+          <input type="file" id="avPhotoInput" accept="image/*" hidden onchange="avSetPhoto(this)">
+          <img id="avPhotoPreview" style="display:none;max-height:120px">
+          <span class="upload-hint" id="avPhotoHint">Upload a clear, front-facing photo</span>
+        </div>
+        <input id="avName" placeholder="Name (optional)" value="You"
+               style="width:100%;padding:8px;margin-top:8px;font-size:13px">
+        <button class="btn btn-primary" style="width:100%;margin-top:8px" id="avCreateBtn"
+                onclick="avCreate()" disabled>Create my avatar</button>
+        <div id="avCreateStatus" class="status-msg"></div>
+      </div>
+
+      <!-- Measurements are only useful once an avatar exists, so this stays
+           hidden until enrolment succeeds rather than offering a dead form. -->
+      <div class="card" id="avBodyCard" style="display:none">
+        <div class="card-label">Step 2 · Your measurements</div>
+        <div style="font-size:11.5px;opacity:.65;line-height:1.45;margin-bottom:9px">
+          Needed to try clothes on — the photo is head-and-shoulders, and a
+          garment needs a torso to sit on. Centimetres, not inches.
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px">
+          <label style="flex:1;font-size:11px;opacity:.7">Chest
+            <input id="avChest" type="number" placeholder="102"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+          <label style="flex:1;font-size:11px;opacity:.7">Waist
+            <input id="avWaist" type="number" placeholder="80"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+        </div>
+        <div style="display:flex;gap:6px">
+          <label style="flex:1;font-size:11px;opacity:.7">Shoulder
+            <input id="avShoulder" type="number" placeholder="48"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+          <label style="flex:1;font-size:11px;opacity:.7">Height
+            <input id="avHeight" type="number" placeholder="175"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+        </div>
+        <button class="btn btn-primary" style="width:100%;margin-top:9px"
+                onclick="avBuildBody()">Build my body</button>
+        <div id="avBodyStatus" class="status-msg"></div>
+      </div>
+    </div>
+
     <div class="panel" id="panel-twin">
       <div class="card">
         <div class="card-label">Step 1 · Portrait Image</div>
@@ -2169,6 +2218,28 @@ body.landing-active .app { display: none !important; }
     </div>
 
     <!-- AI TWIN — result video player -->
+    <div id="myAvatarWrap" style="display:none;width:100%;max-width:1100px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+        <div class="canvas-wrap" style="max-width:100%;min-height:320px;
+             display:flex;align-items:center;justify-content:center;position:relative">
+          <div class="canvas-overlay"><div class="overlay-badge"><span>Your avatar</span></div></div>
+          <img id="avFaceImg" style="display:none;max-width:100%;max-height:460px;border-radius:12px">
+          <div id="avFacePlaceholder" style="opacity:.45;font-size:13px;padding:24px;text-align:center">
+            Upload a photo and press Create
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;min-height:320px;
+             display:flex;align-items:center;justify-content:center;position:relative">
+          <div class="canvas-overlay"><div class="overlay-badge"><span>Full body</span></div></div>
+          <img id="avBodyImg" style="display:none;max-width:100%;max-height:460px;border-radius:12px">
+          <div id="avBodyPlaceholder" style="opacity:.45;font-size:13px;padding:24px;text-align:center">
+            Add measurements to build a body you can dress
+          </div>
+        </div>
+      </div>
+      <div id="avSelection" style="margin-top:12px;font-size:12px;opacity:.7;line-height:1.5"></div>
+    </div>
+
     <div id="twinWrap" style="display:none;width:100%">
       <div id="twinGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:900px" class="twin-grid">
         <div class="canvas-wrap" style="max-width:100%;position:relative;
@@ -2345,10 +2416,11 @@ const LUCY_SESSION_ID = 'sess_' + Math.random().toString(36).slice(2, 10)
 
 // ── Tab switching ──────────────────────────────────────────────────────────────
 function switchTab(t) {
-  ['liveswap','liveportrait','tryon','ar','twin','fit','returns'].forEach((id,i) => {
+  ['liveswap','liveportrait','tryon','ar','twin','fit','returns','myavatar'].forEach((id,i) => {
     document.querySelectorAll('.tab')[i].classList.toggle('active', id===t);
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
+  document.getElementById('myAvatarWrap').style.display = t==='myavatar' ? 'block' : 'none';
   document.getElementById('liveWrap').style.display    = t==='liveswap'     ? 'grid' : 'none';
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
@@ -3591,6 +3663,117 @@ function renderOutfitScore() {
 }
 
 let _osLastFit = null;
+
+// ── My Avatar ────────────────────────────────────────────────────────────────
+// Enrol a person from a selfie, then give them a body from their measurements.
+// Both endpoints live on FACE_API (:7860), not on the :8000 backend that serves
+// this page — so a dead :7860 shows up here as a fetch failure, and the errors
+// below name the port rather than saying "failed to fetch".
+let _avPhotoFile = null, _avAvatarId = null;
+
+function avSetPhoto(input) {
+  _avPhotoFile = input.files[0] || null;
+  const img = document.getElementById('avPhotoPreview');
+  const hint = document.getElementById('avPhotoHint');
+  if (_avPhotoFile) {
+    img.src = URL.createObjectURL(_avPhotoFile);
+    img.style.display = 'block';
+    hint.style.display = 'none';
+  }
+  document.getElementById('avCreateBtn').disabled = !_avPhotoFile;
+}
+
+function _avStatus(id, kind, msg) {
+  const colour = kind === 'error' ? 'var(--red)'
+               : kind === 'success' ? 'var(--green)' : 'var(--accent-hot)';
+  document.getElementById(id).innerHTML = '<span style="color:' + colour + '">' + msg + '</span>';
+}
+
+// The backend puts the real reason in `detail`; surfacing it is the difference
+// between "no face detected, use a front-facing photo" and a bare 422.
+async function _avError(res) {
+  try {
+    const j = await res.json();
+    return j.detail || j.error || ('HTTP ' + res.status);
+  } catch (_) {
+    return 'HTTP ' + res.status;
+  }
+}
+
+async function avCreate() {
+  if (!_avPhotoFile) return;
+  _avStatus('avCreateStatus', 'busy', 'Checking the photo…');
+  const fd = new FormData();
+  fd.append('photo', _avPhotoFile);
+  fd.append('name', document.getElementById('avName').value || 'You');
+
+  let res;
+  try {
+    res = await fetch(FACE_API + '/avatars/create', { method: 'POST', body: fd });
+  } catch (e) {
+    _avStatus('avCreateStatus', 'error',
+      'Could not reach the avatar backend on port 7860. Is it running?');
+    return;
+  }
+  if (!res.ok) { _avStatus('avCreateStatus', 'error', await _avError(res)); return; }
+
+  const data = await res.json();
+  _avAvatarId = data.id;
+
+  const img = document.getElementById('avFaceImg');
+  img.src = FACE_API + data.image_url + '?v=' + Date.now();
+  img.style.display = 'block';
+  document.getElementById('avFacePlaceholder').style.display = 'none';
+  document.getElementById('avBodyCard').style.display = 'block';
+  _avStatus('avCreateStatus', 'success',
+    'Avatar created' + (data.face_validated ? ' — face confirmed' : '') + '.');
+}
+
+async function avBuildBody() {
+  if (!_avAvatarId) return;
+  const chest = document.getElementById('avChest').value;
+  const waist = document.getElementById('avWaist').value;
+  if (!chest || !waist) {
+    _avStatus('avBodyStatus', 'error', 'Chest and waist are needed.');
+    return;
+  }
+  _avStatus('avBodyStatus', 'busy', 'Building your body…');
+
+  const fd = new FormData();
+  fd.append('chest_cm', chest);
+  fd.append('waist_cm', waist);
+  const sh = document.getElementById('avShoulder').value;
+  const ht = document.getElementById('avHeight').value;
+  if (sh) fd.append('shoulder_cm', sh);
+  if (ht) fd.append('height_cm', ht);
+
+  let res;
+  try {
+    res = await fetch(FACE_API + '/avatars/' + _avAvatarId + '/body',
+                      { method: 'POST', body: fd });
+  } catch (e) {
+    _avStatus('avBodyStatus', 'error',
+      'Could not reach the avatar backend on port 7860. Is it running?');
+    return;
+  }
+  if (!res.ok) { _avStatus('avBodyStatus', 'error', await _avError(res)); return; }
+
+  const data = await res.json();
+  const img = document.getElementById('avBodyImg');
+  // Cache-bust, or rebuilding with new measurements shows the previous body.
+  img.src = FACE_API + data.body_image_url + '?v=' + Date.now();
+  img.style.display = 'block';
+  document.getElementById('avBodyPlaceholder').style.display = 'none';
+
+  const s = data.selection || {};
+  // Named as an approximation on purpose: this is the nearest of a fixed set
+  // of figures, not a body measured from this person.
+  document.getElementById('avSelection').textContent =
+    'Closest build: ' + s.size + ' · ' + s.taper +
+    '. Your measurements are stored exactly as entered and are what sizing ' +
+    'advice uses — this figure is the nearest of 18 fixed builds.';
+  _avStatus('avBodyStatus', 'success', 'Body ready.');
+}
 
 /// Live try-on → Returns Guard, the same join Fit Analyser uses:
 /// fit_mismatch_score is what the returns model was trained against, so it is
