@@ -242,7 +242,14 @@ async def tryon_ws(ws: WebSocket):
                         f"fps={1.0/max(total, 1e-3):.2f}"
                     )
 
-                    await send({"type": "result", "image": result_b64})
+                    await send({
+                        "type": "result",
+                        "image": result_b64,
+                        # How the mask for this frame was built. Lets a
+                        # client verify the collar is being drawn without
+                        # anyone reading the server log.
+                        "diag": getattr(tryon_model, "last_mask_diag", None),
+                    })
 
                 finally:
                     processing = False

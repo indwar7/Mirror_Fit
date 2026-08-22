@@ -1464,7 +1464,17 @@ class TryOnModel:
             # Neck line: the shoulder line, not a chin row. Used downstream
             # for the fabric fade so the pattern starts at the collar.
             neck_y = int(np.clip(min(l_sh[1], r_sh[1]) - 0.10 * shoulder_span, 0, h - 1))
-            return region, neck_y
+
+            # Where the neck opening sits, in the wearer's own proportions.
+            # Handing this back means the collar no longer depends on Haar
+            # finding a face -- pose is the more reliable of the two on a
+            # close-up, and it was already running.
+            neck_ellipse = (
+                (int(shoulder_mid[0]), int(shoulder_mid[1])),
+                (int(shoulder_span * 0.20), int(shoulder_span * 0.26)),
+                max(4, int(shoulder_span * 0.055)),
+            )
+            return region, neck_y, neck_ellipse
         except Exception as e:
             log.debug(f"pose torso unavailable: {e}")
             return None
@@ -1740,7 +1750,7 @@ class TryOnModel:
         # roughly the wrong place still beats no mask at all.
         pose_region = self._pose_torso_region(frame_rgb)
         if pose_region is not None:
-            band, pose_neck_y = pose_region
+            band, pose_neck_y, pose_neck_ellipse = pose_region
             face_cutoff_y = int(np.clip(pose_neck_y, h * 0.05, h * 0.90))
         elif face_box is not None:
             # Pose failed, but a face was found. Size a torso from the face.
@@ -1808,16 +1818,29 @@ class TryOnModel:
         #
         # Subtracting a soft ellipse over the throat guarantees that gap
         # regardless of how the polygon came out, in both paths.
-        neck_hole = None          # (centre, axes) of the opening, for the collar
-        if face_box is not None:
+        # Neck opening: (centre, axes, ring thickness).
+        #
+        # Pose first. The face box was the only source before, so on any
+        # frame where Haar missed -- and it misses often on a close-up, or a
+        # turned head -- there was no opening and no collar at all. Pose was
+        # already computed and is steadier here.
+        neck_hole = None
+        if pose_region is not None:
+            neck_hole = pose_neck_ellipse
+        elif face_box is not None:
             fxn, fyn, fwn, fhn = face_box
-            nc = (int(fxn + fwn * 0.5), int(fyn + fhn))   # centred on the chin
-            na = (int(fwn * 0.30), int(fhn * 0.52))       # neck column
+            neck_hole = (
+                (int(fxn + fwn * 0.5), int(fyn + fhn)),   # centred on the chin
+                (int(fwn * 0.30), int(fhn * 0.52)),       # neck column
+                max(4, int(fwn * 0.11)),
+            )
+
+        if neck_hole is not None:
+            nc, na, _ = neck_hole
             throat = np.zeros((h, w), dtype=np.float32)
             cv2.ellipse(throat, nc, na, 0, 0, 360, 1.0, -1)
             throat = cv2.GaussianBlur(throat, (21, 21), 0).clip(0, 1)
             band = (band * (1.0 - throat)).clip(0, 1)
-            neck_hole = (nc, na, fwn)
 
         # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
@@ -1927,8 +1950,7 @@ class TryOnModel:
         # a collar's footprint. _infer_tier3 shades it.
         collar_band = np.zeros((h, w), dtype=np.float32)
         if neck_hole is not None:
-            nc, na, fwn = neck_hole
-            thick = max(4, int(fwn * 0.11))
+            nc, na, thick = neck_hole
             outer = np.zeros((h, w), dtype=np.float32)
             inner = np.zeros((h, w), dtype=np.float32)
             cv2.ellipse(outer, nc, (na[0] + thick, na[1] + thick), 0, 0, 360, 1.0, -1)
@@ -1943,6 +1965,18 @@ class TryOnModel:
         # was never built, or it was built and is too subtle to see -- and
         # they are indistinguishable from the rendered frame. Throttled so
         # it cannot flood the log at frame rate.
+        # Also carried back on the wire with each frame. Reading it from a
+        # log means someone has to be at the machine to look; attached to
+        # the result it can be checked from wherever the client runs, which
+        # is what makes "is the collar being drawn" answerable without a
+        # round trip through the person running the demo.
+        self.last_mask_diag = {
+            "region": ("pose" if pose_region is not None
+                       else ("face" if face_box is not None else "none")),
+            "face": face_box is not None,
+            "collar_px": int((collar_band > 0.05).sum()),
+            "torso_px": int((torso_mask > 0.05).sum()),
+        }
         try:
             now = time.time()
             if now - getattr(self, "_mask_log_t", 0.0) > 1.0:
@@ -2275,7 +2309,11 @@ class TryOnModel:
                 cb = collar_band * blend_mask
                 if cb.max() > 0.05:
                     cb3 = cb[:, :, np.newaxis]
-                    COLLAR_DARKEN = 0.74
+                    # 0.74 was not visible against a busy print. A collar
+                    # is cloth folded back on itself and turned away from
+                    # the light, so it genuinely sits well below the panel
+                    # it borders.
+                    COLLAR_DARKEN = 0.60
                     composed = (
                         composed.astype(np.float32) * (1.0 - cb3)
                         + composed.astype(np.float32) * COLLAR_DARKEN * cb3
