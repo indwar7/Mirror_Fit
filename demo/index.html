@@ -696,6 +696,11 @@ body.landing-active .app { display: none !important; }
    screens) starts at the top and scrolls normally. */
 #liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #placeholder { margin-block: auto; }
 #fitWrap, #returnsWrap { margin-block: 0; width: 100%; }
+/* Every feature pane, present and future. A pane must never introduce its
+   own clip — .main owns the scrolling for this column. */
+#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #fitWrap, #returnsWrap {
+  width: 100%; max-width: 100%; min-height: 0; overflow: visible;
+}
 .main > * { flex-shrink: 0; }
 /* The square is capped by viewport height as well as width. Without the
    cap, two 1:1 panes on a short laptop screen overflow downward and push
@@ -4827,5 +4832,56 @@ window.toggleArAvatar = async function() {
 </script>
 
 
+
+<script>
+/* ── Build stamp + scroll audit ─────────────────────────────────────
+   The stamp exists because "is the fix actually deployed?" cost us
+   several rounds: the box had more than one clone of the repo and the
+   server was reading a copy that pulls never touched. Now the answer is
+   one line in the console.
+
+   The audit walks the shell after load and reports any element whose
+   content is taller than its box while nothing in its ancestor chain can
+   scroll — i.e. content a user cannot reach. It only warns; it does not
+   silently restyle, because a surprise scrollbar is harder to debug than
+   a message saying exactly which node is trapped.
+   ────────────────────────────────────────────────────────────────── */
+(function () {
+  var BUILD = 'build 73860f7+1';
+  document.documentElement.setAttribute('data-build', BUILD);
+  console.log('%c Mirror Fit ' + BUILD, 'background:#14110F;color:#FBF9F6;padding:2px 6px');
+
+  function scrollable(el) {
+    var s = getComputedStyle(el);
+    return /(auto|scroll)/.test(s.overflowY) || el === document.scrollingElement;
+  }
+
+  function audit() {
+    var trapped = [];
+    document.querySelectorAll('.sidebar, .panel.active, .main, .main > div, .landing')
+      .forEach(function (el) {
+        if (!el.offsetParent && el !== document.body) return;      // hidden
+        if (el.scrollHeight - el.clientHeight < 8) return;          // fits
+        var n = el, ok = false;
+        while (n && n !== document.body) {
+          if (scrollable(n) && n.scrollHeight > n.clientHeight + 4) { ok = true; break; }
+          n = n.parentElement;
+        }
+        if (!ok) trapped.push((el.id || el.className || el.tagName) +
+          ' (' + el.scrollHeight + 'px in ' + el.clientHeight + 'px)');
+      });
+    if (trapped.length) {
+      console.warn('[scroll-audit] content unreachable in:', trapped);
+    } else {
+      console.log('[scroll-audit] every pane reachable');
+    }
+  }
+
+  window.mfScrollAudit = audit;
+  window.addEventListener('load', function () { setTimeout(audit, 400); });
+  window.addEventListener('resize', function () { clearTimeout(window.__sa);
+    window.__sa = setTimeout(audit, 250); });
+})();
+</script>
 </body>
 </html>
