@@ -1807,17 +1807,16 @@ class TryOnModel:
         #
         # Subtracting a soft ellipse over the throat guarantees that gap
         # regardless of how the polygon came out, in both paths.
+        neck_hole = None          # (centre, axes) of the opening, for the collar
         if face_box is not None:
             fxn, fyn, fwn, fhn = face_box
+            nc = (int(fxn + fwn * 0.5), int(fyn + fhn))   # centred on the chin
+            na = (int(fwn * 0.30), int(fhn * 0.52))       # neck column
             throat = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(
-                throat,
-                (int(fxn + fwn * 0.5), int(fyn + fhn)),   # centred on the chin
-                (int(fwn * 0.30), int(fhn * 0.52)),       # neck column
-                0, 0, 360, 1.0, -1,
-            )
+            cv2.ellipse(throat, nc, na, 0, 0, 360, 1.0, -1)
             throat = cv2.GaussianBlur(throat, (21, 21), 0).clip(0, 1)
             band = (band * (1.0 - throat)).clip(0, 1)
+            neck_hole = (nc, na, fwn)
 
         # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
@@ -1912,7 +1911,33 @@ class TryOnModel:
         # is safer because it only kills the garment alpha, not the SD
         # paint region.
 
-        return torso_mask, silhouette, face_cutoff_y
+        # Collar ring.
+        #
+        # Every previous attempt cut a neck hole and left the collar to the
+        # diffusion model. It never arrived, and it was never going to: a
+        # collar is the few pixels at the rim of the opening, that rim is
+        # deliberately feathered so SD has something smooth to denoise
+        # into, and six LCM steps will not resolve a ribbed band there
+        # anyway. Tuning the hole's shape cannot fix a detail that is not
+        # being drawn.
+        #
+        # So draw it. The ring between the neck opening and a slightly
+        # larger ellipse, clipped to wherever garment actually ended up, is
+        # a collar's footprint. _infer_tier3 shades it.
+        collar_band = np.zeros((h, w), dtype=np.float32)
+        if neck_hole is not None:
+            nc, na, fwn = neck_hole
+            thick = max(4, int(fwn * 0.11))
+            outer = np.zeros((h, w), dtype=np.float32)
+            inner = np.zeros((h, w), dtype=np.float32)
+            cv2.ellipse(outer, nc, (na[0] + thick, na[1] + thick), 0, 0, 360, 1.0, -1)
+            cv2.ellipse(inner, nc, na, 0, 0, 360, 1.0, -1)
+            ring = cv2.GaussianBlur((outer - inner).clip(0, 1), (5, 5), 0)
+            # Only where garment was actually painted -- otherwise the ring
+            # would be drawn across bare neck below an open collar.
+            collar_band = (ring * torso_mask).clip(0, 1)
+
+        return torso_mask, silhouette, face_cutoff_y, collar_band
 
     # ── Tier 3 live inference ─────────────────────────────────────────────────
 
@@ -1964,7 +1989,8 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
+        torso_mask, body_silhouette, face_cutoff_y, collar_band = \
+            self._build_body_mask(orig_arr)
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -2215,6 +2241,27 @@ class TryOnModel:
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
+            # ── Collar ──────────────────────────────────────────────────
+            # Shade the ring around the neck opening rather than hoping the
+            # sampler renders one. A collar reads as a band of the same
+            # cloth turned back on itself: same hue, less light, with a
+            # defined inner edge. Darkening what is already there gives
+            # exactly that and cannot clash with the garment colour, since
+            # it takes the colour from the render.
+            #
+            # Only inside the mask, so an open neckline stays open.
+            try:
+                cb = collar_band * blend_mask
+                if cb.max() > 0.05:
+                    cb3 = cb[:, :, np.newaxis]
+                    COLLAR_DARKEN = 0.74
+                    composed = (
+                        composed.astype(np.float32) * (1.0 - cb3)
+                        + composed.astype(np.float32) * COLLAR_DARKEN * cb3
+                    ).clip(0, 255).astype(np.uint8)
+            except Exception as e:
+                log.debug(f"collar shading skipped: {e}")
+
             # ── Temporal stability: lock the painted shirt to previous
             # frame, so colour stops flickering every 3 s. Only blend
             # inside the masked region; outside, the live camera passes
@@ -2242,6 +2289,7 @@ class TryOnModel:
         else:
             prompt = (
                 "photo of person wearing jacket on body, shirt on torso, "
+                "ribbed crew neck collar at the neckline, "
                 "photorealistic, detailed fabric texture, well-fitted clothes"
             )
             neg_prompt = (
