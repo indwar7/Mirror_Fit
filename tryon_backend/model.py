@@ -1375,8 +1375,40 @@ class TryOnModel:
                 return centre + (p - centre) * factor
 
             region = np.zeros((h, w), dtype=np.float32)
+            # ── Neckline ────────────────────────────────────────────
+            # A straight edge across the shoulders leaves no collar: the
+            # garment covers the neck flat and the shoulder line reads as
+            # a bar rather than a seam. Cut a notch between the shoulders
+            # so SD has a neck opening to paint a collar around, and push
+            # the shoulder points outward past the joint so the seam sits
+            # on the edge of the body rather than inside it.
+            shoulder_dir = (r_sh - l_sh)
+            span = np.linalg.norm(shoulder_dir)
+            shoulder_dir = shoulder_dir / span if span > 1e-3 else np.array([1.0, 0.0], np.float32)
+            down = hip_mid - shoulder_mid
+            dn = np.linalg.norm(down)
+            down = down / dn if dn > 1e-3 else np.array([0.0, 1.0], np.float32)
+
+            # Wider, shallower for a tee; narrower and higher for a jacket
+            # worn closed. These mirror the per-garment neckline the
+            # face-bbox path used, which is where the collar came from.
+            neck_half_f, neck_dip_f, shoulder_out_f = {
+                "tshirt": (0.26, 0.30, 1.16),
+                "shirt":  (0.20, 0.24, 1.13),
+                "jacket": (0.16, 0.15, 1.18),
+            }.get(gtype, (0.26, 0.30, 1.16))
+
+            neck_l = shoulder_mid - shoulder_dir * (span * neck_half_f)
+            neck_r = shoulder_mid + shoulder_dir * (span * neck_half_f)
+            neck_b = shoulder_mid + down * (span * neck_dip_f)
+
+            def out(p):
+                """Push a shoulder point outward along the shoulder line."""
+                return shoulder_mid + (p - shoulder_mid) * shoulder_out_f
+
             torso = np.array(
-                [widen(l_sh), widen(r_sh), widen(r_hem), widen(l_hem)],
+                [out(l_sh), neck_l, neck_b, neck_r, out(r_sh),
+                 widen(r_hem), widen(l_hem)],
                 dtype=np.int32,
             )
             cv2.fillPoly(region, [torso], 1.0)
