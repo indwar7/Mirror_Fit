@@ -1495,12 +1495,23 @@ class TryOnModel:
                     # (person angled toward camera) gets lower segmentation
                     # confidence on that side, undershooting the true edge
                     # and leaving that shoulder/sleeve uncovered.
-                    bm = (s > 0.2).astype(np.float32)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-                    # 4 dilation iterations (was 2, originally 5) — splits the
-                    # difference: enough margin to cover a foreshortened
-                    # shoulder without overshooting into a visible double edge.
-                    bm = cv2.dilate(bm, kernel, iterations=4)
+                    # Threshold and dilation had been loosened step by step
+                    # to chase uncovered arms and foreshortened shoulders --
+                    # 0.6 -> 0.4 -> 0.25 -> 0.2, and 2 -> 5 -> 4 iterations of
+                    # a 7x7 kernel. Together that grew the person by roughly
+                    # 12 px at model scale, which on a 2k frame is a ~50 px
+                    # apron of garment hanging past the body onto whatever is
+                    # behind it. The garment stopped reading as worn.
+                    #
+                    # Tight edge here instead. Arm and sleeve coverage does
+                    # not need a fat silhouette: the pose path already draws
+                    # sleeves along the shoulder-elbow-wrist chain, and the
+                    # skin-tone pass below extends onto raised hands. Both
+                    # add coverage where the limb actually is, rather than
+                    # everywhere at once.
+                    bm = (s > 0.45).astype(np.float32)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    bm = cv2.dilate(bm, kernel, iterations=1)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
                     # MediaPipe produces per frame. 0.8 new / 0.2 prev (was
