@@ -16,6 +16,7 @@ Env vars (set by run_all.sh after training):
 """
 import logging
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -1936,6 +1937,26 @@ class TryOnModel:
             # Only where garment was actually painted -- otherwise the ring
             # would be drawn across bare neck below an open collar.
             collar_band = (ring * torso_mask).clip(0, 1)
+
+        # One line a second saying which path built this mask. Without it
+        # "the collar is missing" has two very different causes -- the ring
+        # was never built, or it was built and is too subtle to see -- and
+        # they are indistinguishable from the rendered frame. Throttled so
+        # it cannot flood the log at frame rate.
+        try:
+            now = time.time()
+            if now - getattr(self, "_mask_log_t", 0.0) > 1.0:
+                self._mask_log_t = now
+                log.info(
+                    "[mask] region=%s face=%s collar_px=%d torso_px=%d",
+                    "pose" if pose_region is not None
+                    else ("face" if face_box is not None else "none"),
+                    "yes" if face_box is not None else "NO",
+                    int((collar_band > 0.05).sum()),
+                    int((torso_mask > 0.05).sum()),
+                )
+        except Exception:
+            pass
 
         return torso_mask, silhouette, face_cutoff_y, collar_band
 
