@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import faulthandler
 import io
 import json
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -19,6 +21,35 @@ from model import TryOnModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# A CUDA/xformers fault kills the interpreter outright: no traceback, no
+# "Application startup failed", just a shell prompt. That is exactly how this
+# backend failed on the A10G box, and it left nothing to diagnose from.
+# faulthandler installs OS-level signal handlers, so a native crash still
+# prints a Python stack naming the frame it died in.
+faulthandler.enable()
+
+
+def _log_gpu(stage: str) -> None:
+    """Record VRAM around model load.
+
+    Three backends share one 24 GB A10G. When face-swap and Live Portrait are
+    already resident, an allocation failure here reads as an unexplained exit,
+    so the headroom at load time is worth having on the record.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            log.warning(f"[gpu/{stage}] CUDA not available — will load on CPU")
+            return
+        free, total = torch.cuda.mem_get_info()
+        log.info(
+            f"[gpu/{stage}] {torch.cuda.get_device_name(0)} "
+            f"free={free/2**30:.1f}GiB of {total/2**30:.1f}GiB "
+            f"(torch {torch.__version__}, cuda {torch.version.cuda})"
+        )
+    except Exception as e:
+        log.warning(f"[gpu/{stage}] could not read GPU state: {e}")
 
 tryon_model: Optional[TryOnModel] = None
 
@@ -57,8 +88,21 @@ async def run_in_thread(fn, *args):
 async def lifespan(app: FastAPI):
     global tryon_model
     log.info("Loading try-on model...")
+    if not os.environ.get("HF_TOKEN"):
+        # Not fatal — the public weights still resolve — but gated repos will
+        # 401 and silently drop to a lower tier that masks poorly, which looks
+        # like a rendering bug rather than a missing credential.
+        log.warning("HF_TOKEN is not set; gated weights will 401 and fall back.")
+    _log_gpu("before-load")
     tryon_model = TryOnModel()
-    await run_in_thread(tryon_model.load)
+    try:
+        await run_in_thread(tryon_model.load)
+    except Exception:
+        # uvicorn reports startup failure without the cause, and the model
+        # loader is several frames down. Log it here or lose it.
+        log.exception("Model load FAILED — backend cannot serve")
+        raise
+    _log_gpu("after-load")
     log.info("Model ready.")
     yield
     _thread_pool.shutdown(wait=False)

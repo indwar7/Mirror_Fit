@@ -3,46 +3,33 @@ name: Deploy to G5
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: self-hosted
+    env:
+      APP_DIR: C:\virtual-try-on
     steps:
       - name: Pull latest code
-        run: git -C C:\virtual-try-on pull origin main
+        run: git -C $env:APP_DIR pull origin main
 
+      # Restarting is delegated to start_all.ps1 so there is exactly one
+      # definition of how each backend starts. This step used to inline that
+      # logic and had already drifted from it.
+      #
+      # It also used to open with:
+      #     Stop-Process -Name python -Force
+      # which kills EVERY python process on the box — including a backend
+      # someone is mid-way through debugging, and any unrelated script. Two
+      # people share this instance, so a push by one would silently kill the
+      # other's work. start_all.ps1 -Force instead kills only the process
+      # holding each service's port.
       - name: Restart backends
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          Stop-Process -Name python -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-          New-Item -ItemType Directory -Force -Path C:\logs | Out-Null
-          Start-Process -FilePath "C:\miniconda3\python.exe" `
-            -ArgumentList "C:\virtual-try-on\tryon_backend\server.py" `
-            -WorkingDirectory "C:\virtual-try-on\tryon_backend" `
-            -RedirectStandardOutput "C:\logs\tryon.log" `
-            -RedirectStandardError "C:\logs\tryon_err.log"
-          Start-Sleep -Seconds 2
-          Start-Process -FilePath "C:\miniconda3\python.exe" `
-            -ArgumentList "-m uvicorn main:app --host 0.0.0.0 --port 7860 --workers 1" `
-            -WorkingDirectory "C:\virtual-try-on\face_swap_backend" `
-            -RedirectStandardOutput "C:\logs\faceswap.log" `
-            -RedirectStandardError "C:\logs\faceswap_err.log"
-          Start-Sleep -Seconds 2
-          # LivePortrait runs in its own conda env (Python 3.11 + CUDA torch),
-          # so it cannot share the base interpreter the other two use. The
-          # Stop-Process above kills it along with everything else, so it has
-          # to be restarted here or the Live Portrait tab hits a dead port.
-          $lpPython = "C:\miniconda3\envs\liveportrait\python.exe"
-          if (Test-Path $lpPython) {
-            Start-Process -FilePath $lpPython `
-              -ArgumentList "server.py" `
-              -WorkingDirectory "C:\virtual-try-on\liveportrait_backend" `
-              -RedirectStandardOutput "C:\logs\liveportrait.log" `
-              -RedirectStandardError "C:\logs\liveportrait_err.log"
-            Write-Host "LivePortrait backend starting on :7862"
-          } else {
-            Write-Host "SKIP LivePortrait: conda env missing. Run liveportrait_backend\setup.ps1 on this box." -ForegroundColor Yellow
+          if (-not $env:HF_TOKEN) {
+            Write-Host "::warning::HF_TOKEN secret is empty — Try-On will fall back to a tier that masks poorly."
           }
-          Write-Host "Backends restarted. Logs at C:\logs\"
+          & powershell -ExecutionPolicy Bypass -File "$env:APP_DIR\start_all.ps1" -Force
