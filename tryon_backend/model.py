@@ -1398,11 +1398,22 @@ class TryOnModel:
             # Wider, shallower for a tee; narrower and higher for a jacket
             # worn closed. These mirror the per-garment neckline the
             # face-bbox path used, which is where the collar came from.
+            # Fractions of shoulder span. A crew neck opening is about a
+            # third of shoulder span across, so half of it is ~0.18, and it
+            # sits shallow -- roughly 0.14 of span below the shoulder line.
+            # The old 0.26 / 0.30 cut an opening two-thirds as wide as the
+            # chest and deep enough to reach the sternum, which reads as a
+            # scoop-neck vest, not a collar.
+            #
+            # shoulder_out_f pushes the seam outward from the shoulder
+            # joint. At 1.16 the seam hung past the arm and the garment
+            # looked draped over the wearer rather than fitted; 1.06 puts it
+            # just outside the joint, where a real seam sits.
             neck_half_f, neck_dip_f, shoulder_out_f = {
-                "tshirt": (0.26, 0.30, 1.16),
-                "shirt":  (0.20, 0.24, 1.13),
-                "jacket": (0.16, 0.15, 1.18),
-            }.get(gtype, (0.26, 0.30, 1.16))
+                "tshirt": (0.18, 0.14, 1.06),
+                "shirt":  (0.15, 0.12, 1.05),
+                "jacket": (0.13, 0.10, 1.07),
+            }.get(gtype, (0.18, 0.14, 1.06))
 
             neck_l = shoulder_mid - shoulder_dir * (span * neck_half_f)
             neck_r = shoulder_mid + shoulder_dir * (span * neck_half_f)
@@ -1412,8 +1423,13 @@ class TryOnModel:
                 """Push a shoulder point outward along the shoulder line."""
                 return shoulder_mid + (p - shoulder_mid) * shoulder_out_f
 
+            # Drop the outer seam a little below the joint. A shoulder seam
+            # runs from the neck outward and slightly down; a level edge
+            # between neck and arm reads as a bar laid across the chest.
+            seam_drop = down * (span * 0.05)
             torso = np.array(
-                [out(l_sh), neck_l, neck_b, neck_r, out(r_sh),
+                [out(l_sh) + seam_drop, neck_l, neck_b, neck_r,
+                 out(r_sh) + seam_drop,
                  widen(r_hem), widen(l_hem)],
                 dtype=np.int32,
             )
@@ -1746,11 +1762,17 @@ class TryOnModel:
             hem_half = sh_half * 1.12       # hem slightly wider than shoulders
 
             gtype = getattr(self, "_garment_type", "tshirt")
+            # Same proportions as the pose path, re-expressed in face
+            # box dimensions: shoulder span is ~3.1 face widths, so a
+            # 0.18-of-span half-opening is ~0.56 face widths; the dip is
+            # scaled by face height, which Haar returns near-square, so
+            # ~0.43 matches the 0.14-of-span drop. Agreeing means the collar
+            # does not change shape when pose detection drops out.
             neck_half_f, neck_dip_f = {
-                "tshirt": (0.42, 0.45),
-                "shirt":  (0.34, 0.38),
-                "jacket": (0.27, 0.24),
-            }.get(gtype, (0.42, 0.45))
+                "tshirt": (0.56, 0.43),
+                "shirt":  (0.47, 0.36),
+                "jacket": (0.40, 0.30),
+            }.get(gtype, (0.56, 0.43))
             neck_half = fw3 * neck_half_f
             neck_dip  = fh3 * neck_dip_f
 
