@@ -44,3 +44,17 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 .codegraphy/
+
+# Unrelated projects that happen to share this working tree. `git add -A`
+# swept all three into a Mirror Fit commit (7b0a62c) once already; the first
+# two are separate repos with their own remotes, so they landed as broken
+# gitlinks rather than content.
+/transcript-api/
+/transcript-web/
+/ncert-content/
+
+# Local Claude Code settings — machine-specific, not project config.
+/.claude/settings.json
+
+# macOS duplicates Finder leaves behind ("file 2", "file 3").
+* [0-9]
