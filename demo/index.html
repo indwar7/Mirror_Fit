@@ -900,6 +900,68 @@ body.landing-active .app { display: none !important; }
 
 
 /* ══════════════════════════════════════════════════════════════════
+   LIVE TRY-ON — horizontal orientation
+   ══════════════════════════════════════════════════════════════════
+   The vertical sidebar put Start at the bottom of a tall column, so on
+   any short window it sat below the fold. Rather than rely on scrolling
+   to reach the primary action, this mode lays the controls out as a bar
+   across the top with Start pinned to the right, and gives the result
+   the full width beneath. The action is on screen at all times, at any
+   window height — no scrolling required to start a session.
+
+   :has() is Chrome 105+ / Safari 15.4+; older browsers simply keep the
+   vertical layout, which still works.
+   ══════════════════════════════════════════════════════════════════ */
+.app:has(#panel-tryon.active) { flex-direction: column; align-items: stretch; }
+
+.app:has(#panel-tryon.active) .sidebar {
+  width: 100%;
+  position: static; max-height: none; overflow: visible;
+  border-right: none; border-bottom: 1px solid var(--line);
+  padding: 14px 26px;
+}
+.app:has(#panel-tryon.active) .panel.active {
+  flex-direction: row; flex-wrap: wrap;
+  align-items: flex-end; gap: 18px 22px; width: 100%;
+}
+.app:has(#panel-tryon.active) .panel.active > .card {
+  border-top: none; padding: 0;
+  flex: 0 1 auto; min-width: 0;
+}
+.app:has(#panel-tryon.active) .card-label { margin-bottom: 7px; }
+
+/* Compact the uploads so a row of them stays shallow. */
+.app:has(#panel-tryon.active) .upload-zone { min-height: 62px; padding: 10px 14px; width: 172px; }
+.app:has(#panel-tryon.active) .upload-zone img { max-height: 44px; }
+.app:has(#panel-tryon.active) .upload-icon { font-size: 17px; }
+.app:has(#panel-tryon.active) .upload-hint { font-size: 10px; }
+.app:has(#panel-tryon.active) .btn { width: auto; padding: 11px 18px; }
+
+/* Start / Stop pinned to the right of the bar, always on screen. */
+.app:has(#panel-tryon.active) .sticky-action {
+  position: static; margin: 0; padding: 0;
+  border-top: none; box-shadow: none; background: transparent;
+  margin-left: auto; display: flex; align-items: center; gap: 16px;
+}
+.app:has(#panel-tryon.active) .sticky-action .status-row { margin-bottom: 0 !important; }
+.app:has(#panel-tryon.active) .sticky-action .btn { min-width: 170px; }
+
+/* The measurement row stays inline rather than stacking. */
+.app:has(#panel-tryon.active) #panel-tryon .fa-row,
+.app:has(#panel-tryon.active) #panel-tryon [id^="os"] { max-width: 100%; }
+
+/* Result gets the whole width now that nothing sits beside it. */
+.app:has(#panel-tryon.active) .main { padding: 20px 26px 34px; }
+.app:has(#panel-tryon.active) .canvas-wrap { max-width: 760px; }
+.app:has(#panel-tryon.active) #tryonGrid { max-width: 1500px; }
+
+@media (max-width: 900px) {
+  .app:has(#panel-tryon.active) .sidebar { padding: 14px 16px; }
+  .app:has(#panel-tryon.active) .sticky-action { margin-left: 0; width: 100%; }
+  .app:has(#panel-tryon.active) .sticky-action .btn { flex: 1; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
    ══════════════════════════════════════════════════════════════════ */
 @media (max-width: 1080px) {
