@@ -21,6 +21,9 @@ function ctxStub(tag) {
     setTransform(){}, clearRect(){}, save(){}, restore(){},
     scale(s){ this._scale = s; },
     transform(a,b,c,d,e,f){ if (tag === 'display') transforms.push([a,b,c,d,e,f]); },
+    fillRect(){ this._cleared = true; },
+    getImageData(x, y, w, h){ return { data: new Uint8ClampedArray(w * h * 4), width: w, height: h }; },
+    putImageData(){ this._put = true; },
     beginPath(){ this._path = []; }, closePath(){},
     moveTo(x,y){ this._path.push([x,y]); }, lineTo(x,y){ this._path.push([x,y]); },
     fill(){ this._filled = this._path.length; this._fillFilter = this.filter;
@@ -31,7 +34,7 @@ function ctxStub(tag) {
 function canvasStub(id) {
   const c = { _id: id, width: 0, height: 0 };
   const ctx = ctxStub(id === 'liveCanvas' ? 'display' : id);
-  c.getContext = () => ctx;
+  c.getContext = () => ctx;      // options arg (willReadFrequently) ignored
   c._ctx = ctx;
   return c;
 }
@@ -43,6 +46,7 @@ const els = {
   liveCamBtn: { textContent: '', className: '' },
   lsLockMask: { checked: true },
   lsLiveMouth: { checked: true },
+  lsHair: { checked: true },
   lsQuality:  { value: '384' },
   liveStatus: { textContent: '' },
 };
@@ -149,6 +153,7 @@ const api = new Function(block + `
   api.startLiveSwap();
   WS.onopen();
   ok(sent.length === 1 && sent[0].type === 'init', 'init sent on open');
+  ok(sent[0].hair === true, 'init asks the server for hair swap');
   WS.onmessage({ data: JSON.stringify({ type: 'ready', session_id: 'sess_test' }) });
 
   const render = api._startLsRender;
@@ -229,6 +234,26 @@ const api = new Function(block + `
   await new Promise(r => setTimeout(r, 0));
   ok(api.state().result && api.state().result.lm, 'id-less reply still pairs with its capture');
   ok(api.state().inFlight === null, 'id-less reply still frees the wire');
+
+  // ── hair: the reply carries a mask, and the patch waits for it ──────────
+  // Cutting the reply to the face oval would crop the hair straight off, so
+  // when the server sends the pixels it touched, that is what gets composited.
+  api.stopLiveSwap(); api.startLiveSwap(); WS.onopen();
+  WS.onmessage({ data: JSON.stringify({ type: 'ready', hair: true }) });
+  ok(/hair on/.test(els.liveStatus.textContent), 'ready reports hair engaged');
+  const hid = sent.filter(m => m.type === 'frame').pop().id;
+  ok(api.state().result === null, 'fresh session starts with no result');
+  WS.onmessage({ data: JSON.stringify({ type: 'result', id: hid, image: 'QUJD', mask: 'QUJD' }) });
+  ok(api.state().result === null, 'nothing composited until both images decode');
+  await new Promise(r => setTimeout(r, 0));
+  ok(api.state().result && api.state().result.patch, 'patch built once image and mask are both in');
+
+  // ── hair asked for but impossible must say why, not fail silently ───────
+  api.stopLiveSwap(); api.startLiveSwap(); WS.onopen();
+  WS.onmessage({ data: JSON.stringify({ type: 'ready', hair: false,
+    hair_reason: 'face_parser.onnx is not on the server, so hair cannot be segmented' }) });
+  ok(/hair off: face_parser\.onnx/.test(els.liveStatus.textContent),
+     `the reason reaches the user ("${els.liveStatus.textContent.slice(0, 80)}")`);
 
   // ── V2 with no weights on the box must not dead-end the user ────────────
   radios.v1.checked = false; radios.v2.checked = true;

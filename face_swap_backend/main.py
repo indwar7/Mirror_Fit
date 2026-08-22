@@ -11,6 +11,7 @@ import json
 import os
 import time
 import contextlib
+import functools
 import pathlib
 from typing import Optional
 
@@ -1333,6 +1334,35 @@ def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
     return out
 
 
+def _changed_mask(before: np.ndarray, after: np.ndarray,
+                  thresh: int = 12, close_px: int = 9,
+                  feather_px: int = 15) -> np.ndarray:
+    """A soft mask over the pixels the pipeline actually changed.
+
+    The browser composites the reply onto the live camera through a face-oval
+    cut from its own landmarks, which is right for a face-only swap and wrong
+    the moment hair is in play: hair sits above the oval, so it would be
+    cropped away and the feature would look like it had done nothing.
+
+    Rather than have the client guess at a head-and-hair silhouette, the
+    server says exactly which pixels it touched. Differencing output against
+    input costs about a millisecond and needs no cooperation from any stage of
+    the pipeline, so it stays correct if hair, restoration or anything else is
+    added or reordered later.
+
+    The client unions this with its own face oval, which covers the one
+    weakness of a difference: interior pixels a swap happened to reproduce
+    almost exactly would otherwise punch holes in the mask.
+    """
+    d = cv2.absdiff(after, before).max(axis=2)
+    m = ((d > thresh).astype(np.uint8)) * 255
+    k = max(3, close_px | 1)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE,
+                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    f = max(3, feather_px | 1)
+    return cv2.GaussianBlur(m, (f, f), 0)
+
+
 def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
                tgt_face_hint=None,
                src_hair_mask=None, tgt_hair_mask=None,
@@ -2343,7 +2373,11 @@ async def ws_live_swap(ws: WebSocket):
                             )
                         except Exception:
                             src_hair_mask = None
-                    await send({"type":"ready", "session_id": session_id})
+                    v1_hair = bool(_HAIR_SWAP and _face_parser is not None
+                                   and src_hair_mask is not None)
+                    await send({"type":"ready",
+                                "session_id": session_id,
+                                "hair": v1_hair})
 
             elif mtype == "frame":
                 if src_img is None:
@@ -2437,6 +2471,20 @@ async def ws_live_swap(ws: WebSocket):
                         payload = {"type":"result",
                                    "id": msg.get("id"),
                                    "image": base64.b64encode(buf).decode()}
+                        # Hair sits outside the face oval the client cuts,
+                        # so when it ran, tell the client exactly which
+                        # pixels changed. See _changed_mask.
+                        if (_HAIR_SWAP and _face_parser is not None
+                                and src_hair_mask is not None):
+                            try:
+                                chg = await loop.run_in_executor(
+                                    None, _changed_mask, frame, result)
+                                _, mbuf = cv2.imencode(
+                                    ".jpg", chg, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                                payload["mask"] = base64.b64encode(mbuf).decode()
+                            except Exception as e:
+                                print(f"[live-swap] change mask skipped: "
+                                      f"{type(e).__name__}: {e}")
                         if session is not None:
                             payload["audio_t_ms"] = session.get("audio_t_ms", 0)
                         await send(payload)
@@ -2490,6 +2538,20 @@ async def ws_live_swap_v2(ws: WebSocket):
     src_embedding = None
     processing    = False
 
+    # ── Hair transfer state ─────────────────────────────────────────────────
+    # The avatar's frame, kps and hair mask are fixed for the session, so they
+    # are parsed once at init. The user's own hair only feeds the colour match
+    # that puts the avatar's hair under the room's lighting, so a mask a few
+    # frames old is fine — and it has to be, because BiSeNet at 512 is ~30 ms,
+    # most of a frame budget at 6 fps.
+    hair_on       = False
+    src_img_hair  = None
+    src_kps_hair  = None
+    src_hair_mask = None
+    tgt_hair_mask = None
+    tgt_hair_ttl  = 0
+    HAIR_REFRESH  = 4
+
     async def send(obj):
         await ws.send_text(json.dumps(obj))
 
@@ -2536,7 +2598,40 @@ async def ws_live_swap_v2(ws: WebSocket):
                     src_embedding = None
                 else:
                     src_embedding = src_face.normed_embedding.astype(np.float32)
-                    await send({"type": "ready"})
+
+                    # Hair defaults to the server's LUCY_HAIR_SWAP setting but
+                    # the client can ask either way, so it can be toggled from
+                    # the demo without a restart.
+                    want_hair = bool(msg.get("hair", _HAIR_SWAP))
+                    hair_on, hair_why = False, None
+                    src_img_hair = src_kps_hair = src_hair_mask = None
+                    tgt_hair_mask, tgt_hair_ttl = None, 0
+                    if want_hair and _face_parser is None:
+                        hair_why = ("face_parser.onnx is not on the server, "
+                                    "so hair cannot be segmented")
+                    elif want_hair:
+                        try:
+                            src_hair_mask = await loop.run_in_executor(
+                                None, _face_parser.hair_mask, src_img)
+                            # An avatar photographed in a hat, or cropped tight,
+                            # can segment to almost no hair. Warping thirty
+                            # pixels onto someone's head is worse than leaving
+                            # their own hair alone, so say so instead.
+                            if int((src_hair_mask > 128).sum()) < 800:
+                                hair_why = "no hair found in the source image"
+                                src_hair_mask = None
+                            else:
+                                src_img_hair = src_img
+                                src_kps_hair = src_face.kps
+                                hair_on = True
+                        except Exception as e:
+                            hair_why = f"{type(e).__name__}: {e}"
+                            src_hair_mask = None
+                    if want_hair and not hair_on:
+                        print(f"[swap-v2] hair swap off — {hair_why}")
+                    await send({"type": "ready",
+                                "hair": hair_on,
+                                "hair_reason": hair_why})
 
             elif mtype == "frame":
                 if src_embedding is None:
@@ -2559,10 +2654,28 @@ async def ws_live_swap_v2(ws: WebSocket):
                         await send({"type": "no_face", "id": msg.get("id")})
                         continue
 
+                    # The user's own hair, refreshed every few frames. It
+                    # feeds nothing but the colour match, so lag is invisible.
+                    if hair_on and tgt_hair_ttl <= 0:
+                        try:
+                            tgt_hair_mask = await loop.run_in_executor(
+                                None, _face_parser.hair_mask, frame)
+                            tgt_hair_ttl = HAIR_REFRESH
+                        except Exception:
+                            tgt_hair_mask = None
+                    tgt_hair_ttl -= 1
+
                     # Run V2 pipeline
                     result = await loop.run_in_executor(
-                        None, _swap_v2.swap_frame,
-                        src_embedding, frame, tgt_face,
+                        None,
+                        functools.partial(
+                            _swap_v2.swap_frame,
+                            src_embedding, frame, tgt_face,
+                            src_img=src_img_hair,
+                            src_hair_mask=src_hair_mask,
+                            src_kps=src_kps_hair,
+                            tgt_hair_mask=tgt_hair_mask,
+                        ),
                     )
                     if result is None:
                         await send({"type": "no_face", "id": msg.get("id")})
@@ -2572,9 +2685,23 @@ async def ws_live_swap_v2(ws: WebSocket):
                     # produces fine details that benefit from less compression.
                     _, buf = cv2.imencode(".jpg", result,
                                           [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    await send({"type": "result",
-                                "id": msg.get("id"),
-                                "image": base64.b64encode(buf).decode()})
+                    payload = {"type": "result",
+                               "id": msg.get("id"),
+                               "image": base64.b64encode(buf).decode()}
+                    # With hair in play the client can no longer cut the reply
+                    # to a face oval — the hair sits outside it. Ship the
+                    # touched-pixel mask so it composites exactly what changed.
+                    if hair_on:
+                        try:
+                            chg = await loop.run_in_executor(
+                                None, _changed_mask, frame, result)
+                            _, mbuf = cv2.imencode(".jpg", chg,
+                                                   [cv2.IMWRITE_JPEG_QUALITY, 70])
+                            payload["mask"] = base64.b64encode(mbuf).decode()
+                        except Exception as e:
+                            print(f"[swap-v2] change mask skipped: "
+                                  f"{type(e).__name__}: {e}")
+                    await send(payload)
                 finally:
                     processing = False
 

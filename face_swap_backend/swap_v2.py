@@ -186,6 +186,12 @@ class FaceSwapV2:
         target_face,
         enable_gfpgan: bool = True,
         enable_mouth_mask: bool = True,
+        src_img: Optional[np.ndarray] = None,
+        src_hair_mask: Optional[np.ndarray] = None,
+        src_kps: Optional[np.ndarray] = None,
+        tgt_hair_mask: Optional[np.ndarray] = None,
+        hair_feather_px: int = 21,
+        hair_erode_px: int = 7,
     ) -> Optional[np.ndarray]:
         """Run the full V2 pipeline on a single frame.
 
@@ -195,6 +201,14 @@ class FaceSwapV2:
           target_face:      InsightFace Face object detected from target_img
           enable_gfpgan:    set False to skip restoration (faster but softer)
           enable_mouth_mask:set False to use the swap's mouth verbatim
+          src_img/src_hair_mask/src_kps:
+                            the avatar frame, its BiSeNet hair mask and its
+                            5-point kps. Supply all three to transfer the
+                            avatar's hairstyle as well as its face; leave any
+                            of them None and the hair step is skipped.
+          tgt_hair_mask:    the user's own hair, used only to colour-match the
+                            avatar hair to the room's lighting. Safe to pass a
+                            few frames stale, or not at all.
 
         Returns:
           BGR uint8 of the swapped frame, or None if no face usable.
@@ -222,7 +236,40 @@ class FaceSwapV2:
             except Exception:
                 pass  # restoration is best-effort
 
-        # 4. Mouth mask — user's real mouth over the restored face
+        # 4. Hair transfer — the avatar's hairstyle warped onto the user's head.
+        #
+        # After GFPGAN, not before: restoration aligns to the face kps and
+        # pastes back over a region that reaches the hairline, so hair laid
+        # down first would be partly overwritten by it.
+        #
+        # face_parser.transfer_hair does the careful part — pre-masking the
+        # source so no background warps in as a wig outline, LAB-matching the
+        # avatar's hair tone to the user's lighting, and subtracting the face
+        # hull so hair can never paint over the swapped face.
+        if (src_img is not None and src_hair_mask is not None
+                and src_kps is not None):
+            try:
+                from face_parser import transfer_hair
+                face_excl = None
+                if lmk is not None and len(lmk) > 10:
+                    face_excl = np.zeros(target_img.shape[:2], np.uint8)
+                    cv2.fillPoly(face_excl, [cv2.convexHull(lmk.astype(np.int32))], 255)
+                composited = transfer_hair(
+                    src_img, src_hair_mask, src_kps,
+                    composited,
+                    tgt_hair_mask if tgt_hair_mask is not None
+                        else np.zeros(target_img.shape[:2], np.uint8),
+                    target_face.kps,
+                    tgt_face_exclusion_mask=face_excl,
+                    tgt_head_region_mask=None,
+                    feather_px=hair_feather_px,
+                    erode_px=hair_erode_px,
+                )
+            except Exception as e:
+                # Hair is an extra, never a reason to drop the frame.
+                print(f"[swap-v2 hair] skipped: {type(e).__name__}: {e}")
+
+        # 5. Mouth mask — user's real mouth over the restored face
         if enable_mouth_mask and lmk is not None:
             composited = self._apply_mouth_mask(composited, target_img, lmk)
 
