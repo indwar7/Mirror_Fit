@@ -1796,6 +1796,29 @@ class TryOnModel:
             band[face_cutoff_y:int(h * 0.98), int(w * 0.24):int(w * 0.76)] = 1.0
             band = cv2.GaussianBlur(band, (21, 21), 0)
 
+        # Keep the throat clear.
+        #
+        # The neckline notch is cut into the torso polygon, so it protects
+        # the neck only when that polygon is positioned well. Whenever the
+        # geometry rides high -- an odd pose, a mis-sized face box -- paint
+        # climbs to the jaw and the garment reads as a turtleneck
+        # swallowing the chin, with no collar line anywhere. A collar is
+        # only legible if bare neck shows above it.
+        #
+        # Subtracting a soft ellipse over the throat guarantees that gap
+        # regardless of how the polygon came out, in both paths.
+        if face_box is not None:
+            fxn, fyn, fwn, fhn = face_box
+            throat = np.zeros((h, w), dtype=np.float32)
+            cv2.ellipse(
+                throat,
+                (int(fxn + fwn * 0.5), int(fyn + fhn)),   # centred on the chin
+                (int(fwn * 0.30), int(fhn * 0.52)),       # neck column
+                0, 0, 360, 1.0, -1,
+            )
+            throat = cv2.GaussianBlur(throat, (21, 21), 0).clip(0, 1)
+            band = (band * (1.0 - throat)).clip(0, 1)
+
         # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
 
