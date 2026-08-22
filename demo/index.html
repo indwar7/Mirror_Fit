@@ -1970,6 +1970,10 @@ body.landing-active .app { display: none !important; }
 
           <div class="fa-json" id="faJson"></div>
           <div class="fa-handoff" id="faHandoff"></div>
+          <button class="lp-btn lp-btn-solid" id="faSend"
+                  style="margin-top:18px" onclick="faSendToReturns()">
+            Send this score to Returns Guard <span class="lp-arrow">&rarr;</span>
+          </button>
         </div>
 
         <div class="fa-metrics" id="faMetrics"></div>
@@ -2011,6 +2015,7 @@ body.landing-active .app { display: none !important; }
             </div>
           </div>
 
+          <div class="rg-truth" id="rgHandoffIn" style="display:none"></div>
           <div class="rg-truth" id="rgTruth" style="display:none"></div>
 
           <div class="rg-guard">
@@ -2155,6 +2160,37 @@ const _lsCvs = document.createElement('canvas');
 const _lsCtx = _lsCvs.getContext('2d');
 const _toCvs = document.createElement('canvas');
 const _toCtx = _toCvs.getContext('2d');
+
+// ── Camera orientation ─────────────────────────────────────────────────────────
+// One mirror policy per feature, read by BOTH the on-screen preview and the
+// frame that goes to the server. They used to be written out separately at each
+// call site and had drifted apart: Live Portrait drew its preview mirrored
+// (ctx.scale(-1,1)) but sent the frame un-mirrored, so the server's result was
+// composited flipped relative to the live video underneath it. Live Try-On was
+// the only feature whose two paths agreed, which is why it was the only one
+// that looked right.
+//
+// Face features mirror (selfie/magic-mirror convention — you move left, the
+// image moves left). Try-On does NOT: mirroring the person flips the garment
+// with them, so logos and plackets would come back reversed.
+const MIRROR = { ls: true, lp: true, to: false };
+
+// Draw a centre-cropped square of `video` into `ctx` at `sz`, honouring the
+// feature's mirror policy. Every camera draw in this file goes through here so
+// preview and capture cannot diverge again.
+function drawCam(ctx, video, sz, mirror) {
+  const vw = video.videoWidth || sz, vh = video.videoHeight || sz;
+  const side = Math.min(vw, vh);
+  const sx = (vw - side) / 2, sy = (vh - side) / 2;
+  if (mirror) {
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, sx, sy, side, side, -sz, 0, sz, sz);
+    ctx.restore();
+  } else {
+    ctx.drawImage(video, sx, sy, side, side, 0, 0, sz, sz);
+  }
+}
 
 // ── Avatar Picker ──────────────────────────────────────────────────────────────
 let _allAvatars = [], _selectedAvatar = null;
@@ -2555,7 +2591,7 @@ function _startLsRender() {
     // Always draw the live camera as the base — this is your real video at
     // 30fps so movement, head pose, and background are mirror-smooth.
     if(video.readyState>=2){
-      ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+      drawCam(ctx,video,sz,MIRROR.ls);
     }
     // Overlay the latest swap result on top with a soft mask so the face
     // region shows the avatar identity but the rest stays live-fresh.
@@ -2581,7 +2617,7 @@ function sendLiveFrame() {
   // staying under the per-frame budget.
   const sz=Math.min(vw,vh,384);
   if(_lsCvs.width!==sz){_lsCvs.width=sz;_lsCvs.height=sz;}
-  _lsCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  drawCam(_lsCtx,video,sz,MIRROR.ls);
   liveWs.send(JSON.stringify({type:'frame',image:_lsCvs.toDataURL('image/jpeg',0.85).split(',')[1]}));
 }
 
@@ -2669,9 +2705,7 @@ function _startLpRender(){
     if(video.videoWidth>0){
       const vw=video.videoWidth, vh=video.videoHeight, sz=Math.min(vw,vh);
       if(cv.width!==sz){cv.width=sz;cv.height=sz;}
-      ctx.save(); ctx.scale(-1,1);
-      ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,-sz,0,sz,sz);
-      ctx.restore();
+      drawCam(ctx,video,sz,MIRROR.lp);
     }
     if(lpLatestResult){
       ctx.globalAlpha=1.0;
@@ -2687,7 +2721,7 @@ function sendLpFrame(){
   const vw=video.videoWidth||640, vh=video.videoHeight||480;
   const sz=Math.min(vw,vh,384);
   if(_lpCvs.width!==sz){_lpCvs.width=sz;_lpCvs.height=sz;}
-  _lpCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  drawCam(_lpCtx,video,sz,MIRROR.lp);
   lpWs.send(JSON.stringify({type:'frame',image:_lpCvs.toDataURL('image/jpeg',0.70).split(',')[1]}));
 }
 
@@ -2838,7 +2872,7 @@ function _startToRender(){
     const sz=Math.min(vw,vh);
     if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
     if(toLatestResult){ ctx.drawImage(toLatestResult,0,0,sz,sz); }
-    else if(video.readyState>=2){ ctx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz); }
+    else if(video.readyState>=2){ drawCam(ctx,video,sz,MIRROR.to); }
     if(toRunning) toRafId=requestAnimationFrame(render);
   })();
 }
@@ -2849,7 +2883,7 @@ function sendToFrame(){
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
   const sz=Math.min(vw,vh);
   if(_toCvs.width!==sz){_toCvs.width=sz;_toCvs.height=sz;}
-  _toCtx.drawImage(video,(vw-sz)/2,(vh-sz)/2,sz,sz,0,0,sz,sz);
+  drawCam(_toCtx,video,sz,MIRROR.to);
   toProcessing=true; toFrameSentAt=Date.now();
   // Only show spinner if no result yet (first frame) to avoid flash on fast GPU
   if(!toLatestResult) _toSpinner(true);
@@ -3587,6 +3621,27 @@ window.toggleArAvatar = async function() {
     render();
   }
 
+  /* Receive a fit_mismatch_score measured by the Fit Analyser.
+     This is the actual join between the two models: what the mirror
+     measured at purchase becomes an input feature at the returns desk,
+     where a HIGH mismatch makes a "doesn't fit" claim more credible. */
+  window.rgApplyMismatch = function (mismatch, note) {
+    const fit = document.getElementById('rgFit');
+    const tryon = document.getElementById('rgTryon');
+    if (!fit || !tryon) return;
+    tryon.checked = true;                    // the score only exists if they used it
+    fit.value = Math.max(0, Math.min(1, mismatch)).toFixed(2);
+    activePreset = null;
+    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
+    render();
+    const banner = document.getElementById('rgHandoffIn');
+    if (banner) {
+      banner.style.display = 'block';
+      banner.innerHTML = '<b>Received from Fit Analyser.</b> ' + (note || '') +
+        ' fit_mismatch_score <code>' + mismatch.toFixed(3) + '</code> is now an input below.';
+    }
+  };
+
   window.rgReset = function () {
     activePreset = null;
     document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
@@ -3904,6 +3959,21 @@ window.toggleArAvatar = async function() {
     if (btn) btn.classList.add('active');
     render();
   }
+
+  /* Carry the measured mismatch into the returns model and follow it
+     there, so the connection is demonstrable rather than described. */
+  window.faSendToReturns = function () {
+    if (!M) return;
+    const r = readForm();
+    const { probs } = classify(r);
+    const pFit = probs[M.classes.indexOf('fit')] ?? 0;
+    const mismatch = Math.max(0, Math.min(1, 1 - pFit));
+    const note = active
+      ? ('Real rental — actual outcome "' + active.truth + '".')
+      : 'Measured from the values on screen.';
+    if (typeof window.rgApplyMismatch === 'function') window.rgApplyMismatch(mismatch, note);
+    if (typeof window.switchTab === 'function') window.switchTab('returns');
+  };
 
   window.faReset = function () {
     active = null;
