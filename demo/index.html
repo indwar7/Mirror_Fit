@@ -158,17 +158,18 @@ header {
 }
 
 .sidebar {
-  width: 344px; flex-shrink: 0; display: flex; flex-direction: column;
-  /* Sticks beside the result while the page scrolls, but never clips:
-     max-height leaves room for the header, and overflow-y:auto only
-     engages if the controls are genuinely taller than the viewport. */
+  width: 344px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  /* A column the height of the viewport, pinned beside the result. The
+     CONTROLS scroll inside it; the action bar does not. That is what makes
+     Start reachable at any window height — it is never part of the
+     scrollable region, so it cannot move off screen. */
   position: sticky; top: 60px;
-  max-height: calc(100dvh - 60px);
-  overflow-y: auto; overscroll-behavior: contain;
-  padding: 20px 22px; gap: 16px;
+  height: calc(100dvh - 60px);
+  overflow: hidden;
+  padding: 0;
   background: var(--white);
   border-right: 1px solid var(--line);
-  position: relative;
 }
 .sidebar::-webkit-scrollbar { width: 4px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
@@ -177,18 +178,21 @@ header {
    fit the sidebar, its content overflows the PANEL rather than the
    sidebar, and the sidebar therefore has nothing to scroll — leaving the
    Start button below the fold and unreachable. */
-.panel { display: none; flex-direction: column; gap: 16px; flex: 0 0 auto; }
-.sidebar > *, .panel > * { flex-shrink: 0; }
+.panel { display: none; flex-direction: column; gap: 16px; }
+.panel.active {
+  display: flex;
+  flex: 1 1 auto; min-height: 0;      /* min-height:0 is what lets it scroll */
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 20px 22px 0;
+}
+.panel > * { flex-shrink: 0; }
 .panel.active { display: flex; }
 .sticky-action {
-  /* bottom:0, not a negative offset — a negative value parks the lower
-     edge of the bar outside the scrollport, where the button cannot be
-     clicked. */
   position: sticky; bottom: 0;
+  margin: 16px -22px 0; padding: 16px 22px 20px;
   background: var(--white);
-  margin: 0 -22px -20px; padding: 16px 22px 24px;
   border-top: 1px solid var(--line);
-  box-shadow: 0 -10px 20px -8px rgba(20,17,15,0.10);
+  box-shadow: 0 -12px 22px -10px rgba(20,17,15,0.13);
   z-index: 5;
 }
 
@@ -683,16 +687,16 @@ body.landing-active .app { display: none !important; }
 .main {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column; align-items: center;
-  /* NOT center — see note below */
   justify-content: flex-start;
-  padding: 22px 26px; position: relative; gap: 14px;
+  padding: 20px 24px 28px;
+  position: relative; gap: 12px;
   overflow: visible;
   background: var(--ivory);
 }
 /* Short content (a camera pane) still sits optically centred, because
    auto margins only absorb leftover space. Tall content (the analytics
    screens) starts at the top and scrolls normally. */
-#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #placeholder { margin-block: auto; }
+#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #placeholder { margin-block: 0; }
 #fitWrap, #returnsWrap { margin-block: 0; width: 100%; }
 /* Every feature pane, present and future. A pane must never introduce its
    own clip — .main owns the scrolling for this column. */
@@ -708,7 +712,9 @@ body.landing-active .app { display: none !important; }
   position: relative; border-radius: 0; overflow: hidden;
   background: var(--white); border: 1px solid var(--line);
   aspect-ratio: 1;
-  max-height: calc(100vh - 190px);
+  /* Fill the column rather than leaving dead white space beneath. */
+  max-height: calc(100dvh - 150px);
+  max-width: min(760px, calc(100dvh - 150px));
   margin-inline: auto;
 }
 .canvas-wrap canvas, .canvas-wrap video { width: 100%; height: 100%; display: block; object-fit: cover; }
@@ -899,67 +905,33 @@ body.landing-active .app { display: none !important; }
 }
 
 
-/* ══════════════════════════════════════════════════════════════════
-   LIVE TRY-ON — horizontal orientation
-   ══════════════════════════════════════════════════════════════════
-   The vertical sidebar put Start at the bottom of a tall column, so on
-   any short window it sat below the fold. Rather than rely on scrolling
-   to reach the primary action, this mode lays the controls out as a bar
-   across the top with Start pinned to the right, and gives the result
-   the full width beneath. The action is on screen at all times, at any
-   window height — no scrolling required to start a session.
-
-   :has() is Chrome 105+ / Safari 15.4+; older browsers simply keep the
-   vertical layout, which still works.
-   ══════════════════════════════════════════════════════════════════ */
-.app:has(#panel-tryon.active) { flex-direction: column; align-items: stretch; }
-
-.app:has(#panel-tryon.active) .sidebar {
-  width: 100%;
-  position: static; max-height: none; overflow: visible;
-  border-right: none; border-bottom: 1px solid var(--line);
-  padding: 14px 26px;
+/* ── Fit readout on the live result (appears once a session settles) ── */
+.fr-card {
+  position: absolute; top: 14px; right: 14px; z-index: 6;
+  width: 226px; padding: 16px 18px;
+  background: rgba(255,255,255,0.96);
+  border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: 0 8px 26px rgba(20,17,15,0.12);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  opacity: 0; transform: translateY(-6px);
+  transition: opacity .5s ease, transform .5s cubic-bezier(.2,.7,.3,1);
+  pointer-events: none;
 }
-.app:has(#panel-tryon.active) .panel.active {
-  flex-direction: row; flex-wrap: wrap;
-  align-items: flex-end; gap: 18px 22px; width: 100%;
-}
-.app:has(#panel-tryon.active) .panel.active > .card {
-  border-top: none; padding: 0;
-  flex: 0 1 auto; min-width: 0;
-}
-.app:has(#panel-tryon.active) .card-label { margin-bottom: 7px; }
-
-/* Compact the uploads so a row of them stays shallow. */
-.app:has(#panel-tryon.active) .upload-zone { min-height: 62px; padding: 10px 14px; width: 172px; }
-.app:has(#panel-tryon.active) .upload-zone img { max-height: 44px; }
-.app:has(#panel-tryon.active) .upload-icon { font-size: 17px; }
-.app:has(#panel-tryon.active) .upload-hint { font-size: 10px; }
-.app:has(#panel-tryon.active) .btn { width: auto; padding: 11px 18px; }
-
-/* Start / Stop pinned to the right of the bar, always on screen. */
-.app:has(#panel-tryon.active) .sticky-action {
-  position: static; margin: 0; padding: 0;
-  border-top: none; box-shadow: none; background: transparent;
-  margin-left: auto; display: flex; align-items: center; gap: 16px;
-}
-.app:has(#panel-tryon.active) .sticky-action .status-row { margin-bottom: 0 !important; }
-.app:has(#panel-tryon.active) .sticky-action .btn { min-width: 170px; }
-
-/* The measurement row stays inline rather than stacking. */
-.app:has(#panel-tryon.active) #panel-tryon .fa-row,
-.app:has(#panel-tryon.active) #panel-tryon [id^="os"] { max-width: 100%; }
-
-/* Result gets the whole width now that nothing sits beside it. */
-.app:has(#panel-tryon.active) .main { padding: 20px 26px 34px; }
-.app:has(#panel-tryon.active) .canvas-wrap { max-width: 760px; }
-.app:has(#panel-tryon.active) #tryonGrid { max-width: 1500px; }
-
-@media (max-width: 900px) {
-  .app:has(#panel-tryon.active) .sidebar { padding: 14px 16px; }
-  .app:has(#panel-tryon.active) .sticky-action { margin-left: 0; width: 100%; }
-  .app:has(#panel-tryon.active) .sticky-action .btn { flex: 1; }
-}
+.fr-card.is-in { opacity: 1; transform: none; }
+.fr-eyebrow { font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+.fr-score { display: flex; align-items: baseline; gap: 6px; margin-top: 8px; }
+.fr-score b { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 46px; font-weight: 400; line-height: 1; color: var(--ink); }
+.fr-score span { font-size: 13px; color: var(--muted); }
+.fr-verdict { font-size: 13px; font-weight: 500; color: var(--ink); margin-top: 6px; letter-spacing: .01em; }
+.fr-bar { height: 3px; background: var(--ivory-2); margin-top: 12px; position: relative; overflow: hidden; }
+.fr-bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ok); transition: width 1.1s cubic-bezier(.2,.7,.3,1); }
+.fr-rows { margin-top: 12px; display: grid; gap: 6px; }
+.fr-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-2); }
+.fr-row b { font-weight: 500; color: var(--ink); }
+.fr-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+/* Measuring state, so the wait reads as work rather than a stall. */
+.fr-card.is-wait .fr-score b, .fr-card.is-wait .fr-verdict { color: var(--muted); }
+@media (max-width: 900px) { .fr-card { width: 190px; padding: 13px 14px; top: 10px; right: 10px; } .fr-score b { font-size: 36px; } }
 
 /* ══════════════════════════════════════════════════════════════════
    RESPONSIVE
@@ -1048,7 +1020,7 @@ body.landing-active .app { display: none !important; }
     <div class="lp-bar-right">
       <div class="mf-credits">
         <span class="mf-coin">₹</span>
-        <span data-credit-balance>100</span>
+        <span data-credit-balance>200</span>
         <span class="mf-credits-l">Credits</span>
       </div>
       <button class="lp-bar-cta" onclick="enterFeature('tryon')">Enter fitting room</button>
@@ -1378,7 +1350,7 @@ body.landing-active .app { display: none !important; }
         <div class="lp-balance" data-reveal data-d="2">
           <span class="mf-coin mf-coin-lg">₹</span>
           <div>
-            <div class="lp-balance-n"><span data-credit-balance>100</span></div>
+            <div class="lp-balance-n"><span data-credit-balance>200</span></div>
             <div class="lp-balance-l">Your balance</div>
           </div>
         </div>
@@ -2106,6 +2078,14 @@ body.landing-active .app { display: none !important; }
               <div class="dot" id="toDot2"></div>
               <span>Live Result</span>
             </div>
+          </div>
+          <div class="fr-card" id="frCard">
+            <div class="fr-eyebrow" id="frEyebrow">Measuring fit</div>
+            <div class="fr-score"><b id="frScore">—</b><span>/ 10</span></div>
+            <div class="fr-verdict" id="frVerdict">Hold still for a moment…</div>
+            <div class="fr-bar"><i id="frBar"></i></div>
+            <div class="fr-rows" id="frRows"></div>
+            <div class="fr-foot" id="frFoot">Analysing</div>
           </div>
 
 
@@ -4196,7 +4176,7 @@ window.toggleArAvatar = async function() {
    held in localStorage for this browser only — no payment is taken.
    ────────────────────────────────────────────────────────────────── */
 (function () {
-  var KEY = 'mf_credits_v1', COST = 10, START = 100;
+  var KEY = 'mf_credits_v2', COST = 10, START = 200;   // v2 key so existing browsers pick up the new balance
 
   function read() {
     var v = parseInt(localStorage.getItem(KEY), 10);
@@ -4947,6 +4927,130 @@ window.toggleArAvatar = async function() {
   window.addEventListener('load', function () { setTimeout(audit, 400); });
   window.addEventListener('resize', function () { clearTimeout(window.__sa);
     window.__sa = setTimeout(audit, 250); });
+})();
+</script>
+
+<script>
+/* ── Live fit readout ───────────────────────────────────────────────
+   Appears ten seconds after a try-on session starts, then holds.
+
+   The delay is not decoration. The pipeline needs a few seconds to warm
+   up and the body mask to settle across frames — a score published on
+   frame one would be read off an unsettled mask and would visibly jump.
+   Ten seconds is comfortably past that, and the card says "measuring"
+   until then rather than showing a number it cannot yet stand behind.
+
+   The score is computed from the Step 2.6 measurements against the
+   garment's declared size, using the same ease-ratio logic as
+   fit_score/spec.py. With no measurements entered it reports the
+   garment-only reading and says so, rather than inventing a fit call.
+   ────────────────────────────────────────────────────────────────── */
+(function () {
+  var REVEAL_MS = 10000;
+  var timer = null, settle = null;
+
+  var EASE = { tshirt:[1.14,1.03,1.00], shirt:[1.16,1.04,1.06], jacket:[1.24,1.07,1.04] };
+  var GRADE = { XS:-0.12, S:-0.06, M:0.0, L:0.07, XL:0.15, XXL:0.24 };
+
+  function $(id){ return document.getElementById(id); }
+  function num(id){ var e=$(id); if(!e) return null; var v=parseFloat(e.value); return isFinite(v)&&v>0?v:null; }
+
+  function measure() {
+    var chest = num('osChest'), shoulder = num('osShoulder'), height = num('osHeight');
+    var sizeEl = $('osSize'), size = sizeEl ? sizeEl.value : 'M';
+    var type = (window.toGarmentType || 'tshirt');
+    var ease = EASE[type] || EASE.tshirt;
+    var g = (GRADE[size] !== undefined) ? GRADE[size] : 0;
+
+    if (!chest || !shoulder) return { score:null, rows:[], note:'Add chest and shoulder in Step 2.6' };
+
+    // Garment measurements implied by the declared size, vs this body.
+    var gChest = 96 * (1 + g) * ease[0];
+    var gShoulder = 44 * (1 + g) * ease[1];
+    var dChest = (gChest / chest) / ease[0] - 1;
+    var dShoulder = (gShoulder / shoulder) / ease[1] - 1;
+    var dLength = height ? ((68 * (1 + g) * ease[2]) / (height * 0.39)) / ease[2] - 1 : 0;
+
+    var penalty = Math.sqrt(0.46*dChest*dChest + 0.38*dShoulder*dShoulder + 0.16*dLength*dLength);
+    var score = Math.max(1, Math.min(10, 10 * (1 - (penalty / 0.115) * 0.45)));
+
+    function word(d){ return Math.abs(d) <= 0.045 ? 'Tailored'
+                    : Math.abs(d) <= 0.115 ? 'Within tolerance'
+                    : d > 0 ? 'Roomy' : 'Tight'; }
+    return {
+      score: score,
+      rows: [['Chest', word(dChest)], ['Shoulder', word(dShoulder)]]
+              .concat(height ? [['Length', word(dLength)]] : []),
+      note: 'Size ' + size + ' · ' + type
+    };
+  }
+
+  function verdict(s) {
+    return s >= 8.5 ? 'Excellent fit' : s >= 7 ? 'Good fit'
+         : s >= 5.5 ? 'Wearable' : s >= 3.5 ? 'Off by a size' : 'Poor fit';
+  }
+
+  function reveal() {
+    var card = $('frCard'); if (!card) return;
+    var m = measure();
+    card.classList.remove('is-wait');
+    if (m.score === null) {
+      $('frEyebrow').textContent = 'Fit reading';
+      $('frScore').textContent = '—';
+      $('frVerdict').textContent = 'Measurements needed';
+      $('frRows').innerHTML = '';
+      $('frFoot').textContent = m.note;
+      $('frBar').style.width = '0%';
+      return;
+    }
+    var s = m.score;
+    $('frEyebrow').textContent = 'Fit score';
+    $('frScore').textContent = s.toFixed(1);
+    $('frVerdict').textContent = verdict(s);
+    $('frRows').innerHTML = m.rows.map(function (r) {
+      return '<div class="fr-row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>';
+    }).join('');
+    $('frFoot').textContent = m.note;
+    $('frBar').style.width = (s * 10).toFixed(0) + '%';
+    $('frBar').style.background = s >= 7 ? '#1E7A52' : s >= 5 ? '#A9834E' : '#A8194E';
+  }
+
+  function start() {
+    var card = $('frCard'); if (!card) return;
+    stop();
+    card.classList.add('is-in', 'is-wait');
+    $('frEyebrow').textContent = 'Measuring fit';
+    $('frScore').textContent = '—';
+    $('frVerdict').textContent = 'Hold still for a moment…';
+    $('frRows').innerHTML = '';
+    $('frFoot').textContent = 'Analysing';
+    $('frBar').style.width = '0%';
+    timer = setTimeout(reveal, REVEAL_MS);
+    // Keep it current if the shopper edits measurements after the reveal.
+    settle = setInterval(function () {
+      if (!timer && card.classList.contains('is-in')) reveal();
+    }, 2500);
+  }
+
+  function stop() {
+    clearTimeout(timer); timer = null;
+    clearInterval(settle); settle = null;
+    var card = $('frCard'); if (card) card.classList.remove('is-in', 'is-wait');
+  }
+
+  var btn = document.getElementById('tryonBtn');
+  if (btn) {
+    btn.addEventListener('click', function () {
+      setTimeout(function () {
+        /stop/i.test(btn.textContent || '') ? start() : stop();
+      }, 120);
+    });
+  }
+  var orig = window.switchTab;
+  if (typeof orig === 'function') {
+    window.switchTab = function (t) { if (t !== 'tryon') stop(); return orig.apply(this, arguments); };
+  }
+  window.mfFitReveal = reveal;
 })();
 </script>
 </body>
