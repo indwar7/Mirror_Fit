@@ -356,6 +356,16 @@ _TRACK_SMOOTH   = float(os.environ.get("LUCY_TRACK_SMOOTH", "0.7"))
 #           frame), at the cost of a slightly more visible edge in hard light.
 _CLONE_MODE     = os.environ.get("LUCY_CLONE_MODE", "normal").strip().lower()
 
+# ── Hair coverage ───────────────────────────────────────────────────────────
+#   HAIR_EARS  paint the strips beside the face whether or not the avatar's
+#              own hair reaches them. Hair that parts around the avatar's ears
+#              leaves the user's ears showing through, which is the loudest
+#              tell that the hair is pasted on.
+#   HAIR_GROW  pixels to dilate the warped hair by before painting, to close
+#              thin partings the segmentation opened up.
+_HAIR_EARS = os.environ.get("LUCY_HAIR_EARS", "1") == "1"
+_HAIR_GROW = int(os.environ.get("LUCY_HAIR_GROW", "9"))
+
 
 async def _get_session(session_id: str) -> dict:
     """Return (creating if needed) the session struct for `session_id`."""
@@ -1339,6 +1349,35 @@ def _amplify_expression(swapped: np.ndarray, tgt_face) -> np.ndarray:
     return out
 
 
+def _ear_region_mask(tgt_face, shape_hw) -> Optional[np.ndarray]:
+    """The strips just outside the face, at ear height.
+
+    InsightFace has no ear landmarks, so the ears are located geometrically:
+    the band lateral to the face hull between roughly the eye line and the jaw.
+    Widened horizontally only — ears sit beside a face, not above or below it,
+    and growing vertically would push paint onto the forehead and the neck.
+
+    Painting these whether or not the avatar's hair reaches them is the point.
+    A parting in the avatar's hair otherwise leaves the user's own ears poking
+    out from under someone else's hairstyle.
+    """
+    lmk = getattr(tgt_face, "landmark_2d_106", None)
+    if lmk is None or len(lmk) < 10:
+        return None
+    h, w = shape_hw[:2]
+    hull = cv2.convexHull(lmk.astype(np.int32))
+    x, y, bw, bh = cv2.boundingRect(hull)
+    if bw < 8 or bh < 8:
+        return None
+    face = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(face, [hull], 255)
+    grow = max(3, int(bw * 0.30) | 1)
+    wide = cv2.dilate(face, cv2.getStructuringElement(cv2.MORPH_RECT, (grow, 3)))
+    band = np.zeros((h, w), np.uint8)
+    band[max(0, y + int(bh * 0.16)):min(h, y + int(bh * 0.80))] = 255
+    return cv2.bitwise_and(cv2.bitwise_and(wide, cv2.bitwise_not(face)), band)
+
+
 def _changed_mask(before: np.ndarray, after: np.ndarray,
                   thresh: int = 12, close_px: int = 9,
                   feather_px: int = 15) -> np.ndarray:
@@ -1446,6 +1485,9 @@ def _swap_live(src_img: np.ndarray, src_detection, target_img: np.ndarray,
                     tgt_head_region_mask=None,
                     feather_px=21,
                     erode_px=7,
+                    tgt_extra_paint_mask=(_ear_region_mask(tgt_face, result.shape)
+                                          if _HAIR_EARS else None),
+                    grow_px=_HAIR_GROW,
                 )
             except Exception as e:
                 # Hair swap is best-effort. Any error → keep face-only result.
@@ -2682,6 +2724,10 @@ async def ws_live_swap_v2(ws: WebSocket):
     tgt_hair_mask = None
     tgt_hair_ttl  = 0
     HAIR_REFRESH  = 4
+    # Raw per-frame kps wander a couple of pixels even on a still head, and the
+    # hair warp is estimated from them — so untouched, the hairstyle shivers.
+    # V1 has smoothed its detections for a while; V2 had not.
+    last_tgt_face = None
 
     async def send(obj):
         await ws.send_text(json.dumps(obj))
@@ -2782,8 +2828,12 @@ async def ws_live_swap_v2(ws: WebSocket):
                         None, _face_app_fast.get, frame)
                     tgt_face = _largest_face(tgt_faces)
                     if tgt_face is None:
+                        last_tgt_face = None
                         await send({"type": "no_face", "id": msg.get("id")})
                         continue
+                    tgt_face = _smooth_face_kps(last_tgt_face, tgt_face,
+                                                _TRACK_SMOOTH)
+                    last_tgt_face = tgt_face
 
                     # The user's own hair, refreshed every few frames. It
                     # feeds nothing but the colour match, so lag is invisible.
@@ -2797,6 +2847,8 @@ async def ws_live_swap_v2(ws: WebSocket):
                     tgt_hair_ttl -= 1
 
                     # Run V2 pipeline
+                    ears = (_ear_region_mask(tgt_face, frame.shape)
+                            if (hair_on and _HAIR_EARS) else None)
                     result = await loop.run_in_executor(
                         None,
                         functools.partial(
@@ -2806,6 +2858,8 @@ async def ws_live_swap_v2(ws: WebSocket):
                             src_hair_mask=src_hair_mask,
                             src_kps=src_kps_hair,
                             tgt_hair_mask=tgt_hair_mask,
+                            tgt_ear_mask=ears,
+                            hair_grow_px=_HAIR_GROW,
                         ),
                     )
                     if result is None:

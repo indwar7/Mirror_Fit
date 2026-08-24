@@ -114,6 +114,71 @@ class FaceParserONNX:
         return mask
 
 
+def _border_fade(mask: np.ndarray, fade_px: int) -> np.ndarray:
+    """Ramp a mask to zero near the image border.
+
+    Hair almost always runs off the edge of an avatar portrait, so its mask
+    ends in a straight line at the crop. Warp that onto a head and the straight
+    line comes with it — the hard vertical and horizontal seams that read as a
+    rectangle laid over the picture rather than as hair. Fading the mask into
+    the border turns that cut into a gradient the later feather hides.
+    """
+    if fade_px <= 0:
+        return mask
+    h, w = mask.shape[:2]
+    fade = min(int(fade_px), h // 2, w // 2)
+    if fade < 2:
+        return mask
+    edge = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    ry = np.ones(h, np.float32); ry[:fade], ry[-fade:] = edge, edge[::-1]
+    rx = np.ones(w, np.float32); rx[:fade], rx[-fade:] = edge, edge[::-1]
+    return (mask.astype(np.float32) * ry[:, None] * rx[None, :]).astype(np.uint8)
+
+
+def _fill_outward(color: np.ndarray, alpha: np.ndarray,
+                  valid: float = 0.06) -> np.ndarray:
+    """Smear the colour outward into transparent pixels.
+
+    Everything downstream that grows or feathers the paint mask samples pixels
+    just outside the hair — and just outside the hair the warped source is
+    black. That is where the dark rim along the hairline and the black slab
+    under the chin came from, and it is why an ear strip with no avatar hair
+    over it would otherwise be painted pure black.
+
+    Pyramid push-pull: halve the premultiplied colour and its weight until the
+    image is a couple of pixels across, then walk back up filling each level's
+    gaps from the coarser one. Going through the pyramid rather than blurring
+    in place matters — a fixed blur only reaches as far as its radius, so a
+    region further from the hair than that stays at zero weight and divides
+    out to black. Every pixel gets a colour here however far it is.
+
+    Pixels that were already valid come back untouched, so the hair stays sharp.
+    """
+    a = alpha.astype(np.float32) / 255.0
+    if float(a.max()) <= 0.0:
+        return color
+    c = color.astype(np.float32) * a[:, :, np.newaxis]
+
+    pyr_c, pyr_w = [c], [a]
+    while min(pyr_c[-1].shape[:2]) > 2:
+        pyr_c.append(cv2.pyrDown(pyr_c[-1]))
+        pyr_w.append(cv2.pyrDown(pyr_w[-1]))
+
+    up_c, up_w = pyr_c[-1], pyr_w[-1]
+    for i in range(len(pyr_c) - 2, -1, -1):
+        hh, ww = pyr_c[i].shape[:2]
+        up_c = cv2.resize(up_c, (ww, hh), interpolation=cv2.INTER_LINEAR)
+        up_w = cv2.resize(up_w, (ww, hh), interpolation=cv2.INTER_LINEAR)
+        gap  = 1.0 - np.minimum(pyr_w[i], 1.0)
+        up_c = pyr_c[i] + up_c * gap[:, :, np.newaxis]
+        up_w = pyr_w[i] + up_w * gap
+
+    filled = up_c / np.maximum(up_w, 1e-6)[:, :, np.newaxis]
+    keep   = (a > valid)[:, :, np.newaxis]
+    return np.clip(np.where(keep, color.astype(np.float32), filled),
+                   0, 255).astype(np.uint8)
+
+
 def transfer_hair(
     src_bgr: np.ndarray,
     src_hair_mask: np.ndarray,
@@ -125,6 +190,9 @@ def transfer_hair(
     tgt_head_region_mask:    Optional[np.ndarray] = None,
     feather_px: int = 21,
     erode_px:   int = 7,
+    tgt_extra_paint_mask: Optional[np.ndarray] = None,
+    border_fade_px: int = 24,
+    grow_px: int = 0,
 ) -> np.ndarray:
     """Warp avatar hair onto the target image. Clean version, no wig artifacts.
 
@@ -143,6 +211,11 @@ def transfer_hair(
       5. LAB colour-match warps the avatar hair tone toward the user's
          scene lighting so it blends instead of looking pasted.
       6. Wide Gaussian (41 px) feather, no alpha boost. Soft natural edge.
+
+    `tgt_extra_paint_mask` is painted whether or not the warped avatar hair
+    covers it — used for the ear strips, since hair that parts around the
+    avatar's own ears otherwise leaves the user's ears showing through.
+    `grow_px` dilates the warped hair before painting, to close small gaps.
     """
     th, tw = tgt_bgr.shape[:2]
 
@@ -153,23 +226,48 @@ def transfer_hair(
     if M is None:
         return tgt_bgr
 
-    # 1. Pre-mask source so warp produces no background.
-    src_alpha     = (src_hair_mask.astype(np.float32) / 255.0)[:, :, np.newaxis]
-    src_hair_only = (src_bgr.astype(np.float32) * src_alpha).astype(np.uint8)
+    # 1. Fade the mask into the source border, then warp colour and mask
+    #    together as a premultiplied pair so warpAffine cannot drag background
+    #    in along the edges.
+    src_mask_f = _border_fade(src_hair_mask, border_fade_px)
+    src_alpha  = (src_mask_f.astype(np.float32) / 255.0)[:, :, np.newaxis]
+    src_premul = (src_bgr.astype(np.float32) * src_alpha).astype(np.uint8)
 
     src_warp = cv2.warpAffine(
-        src_hair_only, M, (tw, th),
+        src_premul, M, (tw, th),
         flags=cv2.INTER_CUBIC,
         borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
     mask_warp = cv2.warpAffine(
-        src_hair_mask, M, (tw, th),
+        src_mask_f, M, (tw, th),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT, borderValue=0,
     )
 
-    # 2. Paint = warped avatar hair only.
+    # 1b. Divide the alpha back out. Premultiplying is what keeps the warp
+    #     clean, but the colour has to be un-premultiplied afterwards or the
+    #     blend at the end multiplies by alpha a SECOND time. That double
+    #     multiply is what darkened every soft hair edge towards black — the
+    #     rim around the hairline and the black slab under the chin — because
+    #     hair_mask() Gaussian-blurs its output, so the whole hair silhouette
+    #     is soft-edged, not binary.
+    aw = (mask_warp.astype(np.float32) / 255.0)[:, :, np.newaxis]
+    src_warp = np.clip(src_warp.astype(np.float32) / np.maximum(aw, 0.06),
+                       0, 255).astype(np.uint8)
+    src_warp = _fill_outward(src_warp, mask_warp)
+
+    # 2. Paint = warped avatar hair, grown a little, plus anything the caller
+    #    insists on covering (the ear strips).
     paint = mask_warp.copy()
+    if tgt_extra_paint_mask is not None:
+        extra = tgt_extra_paint_mask
+        if extra.shape[:2] != (th, tw):
+            extra = cv2.resize(extra, (tw, th), interpolation=cv2.INTER_NEAREST)
+        paint = cv2.max(paint, extra)
+    if grow_px > 0:
+        k = max(3, int(grow_px) | 1)
+        paint = cv2.dilate(paint,
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
 
     # 3. Clip to a head-region mask if supplied.
     if tgt_head_region_mask is not None:

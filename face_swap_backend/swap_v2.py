@@ -190,8 +190,10 @@ class FaceSwapV2:
         src_hair_mask: Optional[np.ndarray] = None,
         src_kps: Optional[np.ndarray] = None,
         tgt_hair_mask: Optional[np.ndarray] = None,
+        tgt_ear_mask: Optional[np.ndarray] = None,
         hair_feather_px: int = 21,
         hair_erode_px: int = 7,
+        hair_grow_px: int = 9,
     ) -> Optional[np.ndarray]:
         """Run the full V2 pipeline on a single frame.
 
@@ -209,6 +211,9 @@ class FaceSwapV2:
           tgt_hair_mask:    the user's own hair, used only to colour-match the
                             avatar hair to the room's lighting. Safe to pass a
                             few frames stale, or not at all.
+          tgt_ear_mask:     strips beside the face to paint whether or not the
+                            avatar's hair reaches them, so the user's ears
+                            cannot show through a parting in it.
 
         Returns:
           BGR uint8 of the swapped frame, or None if no face usable.
@@ -264,6 +269,8 @@ class FaceSwapV2:
                     tgt_head_region_mask=None,
                     feather_px=hair_feather_px,
                     erode_px=hair_erode_px,
+                    tgt_extra_paint_mask=tgt_ear_mask,
+                    grow_px=hair_grow_px,
                 )
             except Exception as e:
                 # Hair is an extra, never a reason to drop the frame.
