@@ -1384,6 +1384,8 @@ body.landing-active .app { display: none !important; }
         </button>
         -->
 
+        <!-- AI Twin is hidden for now. Reverse this commit to bring it back:
+             nothing was deleted and panel-twin / twinWrap are untouched.
         <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('twin')">
           <div class="lp-mode-top">
             <span class="lp-mode-icon">
@@ -1404,6 +1406,7 @@ body.landing-active .app { display: none !important; }
             <span class="lp-mode-port">Port 7863</span>
           </div>
         </button>
+        -->
 
         <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('fit')">
           <div class="lp-mode-top">
@@ -1635,7 +1638,11 @@ body.landing-active .app { display: none !important; }
          shift every later tab onto the wrong panel. -->
     <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
             onclick="switchTab('ar')">AR Avatar</button>
-    <button class="tab" onclick="switchTab('twin')">AI Twin</button>
+    <!-- AI Twin is hidden. Hidden rather than removed: switchTab() pairs its
+         id list with .tab by position, so dropping the node shifts every tab
+         after it onto the wrong panel. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('twin')">AI Twin</button>
     <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
     <button class="tab" onclick="switchTab('returns')">Returns Guard</button>
     <!-- Appended, never inserted: switchTab indexes .tab positionally, so a
@@ -2560,6 +2567,8 @@ function switchTab(t) {
 function enterFeature(name) {
   // AR Avatar is hidden. Reverse this commit to bring it back -- nothing was deleted and panel-ar is untouched.
   if (name === 'ar') return;
+  // AI Twin is hidden for now; same deal, nothing deleted.
+  if (name === 'twin') return;
   document.body.classList.remove('landing-active');
   const landing = document.getElementById('landing');
   if (landing) landing.classList.add('hide');
