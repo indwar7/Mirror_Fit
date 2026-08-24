@@ -4607,7 +4607,11 @@ window.toggleArAvatar = async function() {
    held in localStorage for this browser only — no payment is taken.
    ────────────────────────────────────────────────────────────────── */
 (function () {
-  var KEY = 'mf_credits_v2', COST = 10, START = 200;   // v2 key so existing browsers pick up the new balance
+  // Bumping the key is how a new starting balance actually reaches people:
+  // read() only falls back to START when the key is ABSENT, so anyone who has
+  // used the demo before keeps their old (often empty) balance until the key
+  // changes. v3 = 1000 credits, enough to demo everything without topping up.
+  var KEY = 'mf_credits_v3', COST = 10, START = 1000;
 
   function read() {
     var v = parseInt(localStorage.getItem(KEY), 10);
