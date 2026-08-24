@@ -16,7 +16,6 @@ Env vars (set by run_all.sh after training):
 """
 import logging
 import os
-import time
 from pathlib import Path
 
 import cv2
@@ -64,16 +63,6 @@ _MP_HANDS_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/latest/hand_landmarker.task"
 )
-_MP_POSE_URL = (
-    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
-)
-
-# Pose landmark indices we care about (MediaPipe's 33-point topology).
-POSE_L_SHOULDER, POSE_R_SHOULDER = 11, 12
-POSE_L_ELBOW, POSE_R_ELBOW = 13, 14
-POSE_L_WRIST, POSE_R_WRIST = 15, 16
-POSE_L_HIP, POSE_R_HIP = 23, 24
 
 
 def _mp_download(url: str, dest: Path):
@@ -88,29 +77,20 @@ def _mp_download(url: str, dest: Path):
 
 
 def _load_mediapipe_tasks():
-    """Returns (segmenter, hand_landmarker, pose_landmarker) via the Tasks
-    API — works on Windows, Linux and Mac (unlike the legacy `solutions`
-    API).
-
-    The pose landmarker is what makes garment placement independent of
-    posture: shoulders and hips locate the torso wherever the body happens
-    to be, instead of assuming it sits directly below the chin.
-    """
+    """Returns (segmenter, hand_landmarker) using the Tasks API — works on
+    Windows, Linux and Mac (unlike the legacy `solutions` API)."""
     import mediapipe as mp
     from mediapipe.tasks.python import BaseOptions
     from mediapipe.tasks.python.vision import (
         ImageSegmenter, ImageSegmenterOptions,
         HandLandmarker, HandLandmarkerOptions,
-        PoseLandmarker, PoseLandmarkerOptions,
         RunningMode,
     )
 
     seg_path = _MP_MODELS_DIR / "selfie_segmenter.tflite"
     hands_path = _MP_MODELS_DIR / "hand_landmarker.task"
-    pose_path = _MP_MODELS_DIR / "pose_landmarker_lite.task"
     _mp_download(_MP_SEG_URL, seg_path)
     _mp_download(_MP_HANDS_URL, hands_path)
-    _mp_download(_MP_POSE_URL, pose_path)
 
     segmenter = ImageSegmenter.create_from_options(ImageSegmenterOptions(
         base_options=BaseOptions(model_asset_path=str(seg_path)),
@@ -126,16 +106,7 @@ def _load_mediapipe_tasks():
         min_hand_presence_confidence=0.4,
         min_tracking_confidence=0.4,
     ))
-    pose_landmarker = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=str(pose_path)),
-        running_mode=RunningMode.IMAGE,
-        num_poses=1,
-        min_pose_detection_confidence=0.4,
-        min_pose_presence_confidence=0.4,
-        min_tracking_confidence=0.4,
-        output_segmentation_masks=False,
-    ))
-    return segmenter, hand_landmarker, pose_landmarker
+    return segmenter, hand_landmarker
 
 
 # ── Tier 1: TensorRT + CUDA graph ────────────────────────────────────────────
@@ -223,12 +194,11 @@ class TryOnModel:
         # (`mediapipe.tasks`) is available there. Using Tasks API unconditionally
         # so this works the same on Windows, Linux and Mac.
         try:
-            self._mp_seg, self._mp_hands, self._mp_pose = _load_mediapipe_tasks()
-            log.info("MediaPipe loaded (seg + hands + pose, Tasks API).")
+            self._mp_seg, self._mp_hands = _load_mediapipe_tasks()
+            log.info("MediaPipe loaded (seg + hands, Tasks API).")
         except Exception as e:
             self._mp_seg   = None
             self._mp_hands = None
-            self._mp_pose  = None
             log.warning(f"MediaPipe not available, using fallback: {e}")
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
@@ -1303,182 +1273,6 @@ class TryOnModel:
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
 
-    def _pose_torso_region(self, frame_rgb: np.ndarray):
-        """Locate the torso from body landmarks instead of from the chin.
-
-        Returns (region, neck_y) where `region` is a soft HxW mask covering
-        torso + sleeves, or None when pose is unavailable or too uncertain.
-
-        Why this exists: the fallback geometry defines the torso as "the
-        horizontal band below the detected chin", which silently assumes the
-        wearer is upright. Someone reclining, leaning far over, or lying
-        down has a torso that is beside or behind their head in image space,
-        not below it — and the garment lands on their face. Shoulders and
-        hips locate the torso whatever the posture, so the mask follows the
-        body rather than the frame.
-        """
-        if self._mp_pose is None:
-            return None
-        try:
-            import mediapipe as mp
-
-            h, w = frame_rgb.shape[:2]
-            image = mp.Image(
-                image_format=mp.ImageFormat.SRGB,
-                data=np.ascontiguousarray(frame_rgb),
-            )
-            result = self._mp_pose.detect(image)
-            if not result.pose_landmarks:
-                return None
-            marks = result.pose_landmarks[0]
-
-            def point(index: int):
-                lm = marks[index]
-                return (
-                    np.array([lm.x * w, lm.y * h], dtype=np.float32),
-                    float(getattr(lm, "visibility", 1.0)),
-                )
-
-            l_sh, v_lsh = point(POSE_L_SHOULDER)
-            r_sh, v_rsh = point(POSE_R_SHOULDER)
-            l_hip, v_lhip = point(POSE_L_HIP)
-            r_hip, v_rhip = point(POSE_R_HIP)
-
-            # Both shoulders must be credible; hips may be out of frame on a
-            # head-and-shoulders crop, so they are allowed to be inferred.
-            # MediaPipe drops `visibility` for landmarks at or past the
-            # frame border, so a close-up head-and-shoulders shot -- the
-            # framing people actually use -- was scoring under the old 0.5
-            # gate and falling through to the band. The predicted positions
-            # are still good there; the span check below is what actually
-            # rejects a bad detection.
-            if min(v_lsh, v_rsh) < 0.30:
-                return None
-
-            shoulder_span = float(np.linalg.norm(l_sh - r_sh))
-            if shoulder_span < 0.06 * w:      # implausibly small — bad detection
-                return None
-
-            shoulder_mid = (l_sh + r_sh) / 2.0
-            if min(v_lhip, v_rhip) < 0.35:
-                # Hips not visible: project a torso length down the body axis.
-                axis = shoulder_mid - (point(0)[0])       # nose -> shoulders
-                norm = np.linalg.norm(axis)
-                axis = axis / norm if norm > 1e-3 else np.array([0.0, 1.0], np.float32)
-                hip_mid = shoulder_mid + axis * (1.55 * shoulder_span)
-                offset = (l_sh - r_sh) * 0.42
-                l_hip, r_hip = hip_mid + offset, hip_mid - offset
-            hip_mid = (l_hip + r_hip) / 2.0
-
-            gtype = getattr(self, "_garment_type", "tshirt")
-            hem_extend = {"tshirt": 0.10, "shirt": 0.24, "jacket": 0.34}.get(gtype, 0.10)
-            body_axis = hip_mid - shoulder_mid
-            l_hem = l_hip + body_axis * hem_extend
-            r_hem = r_hip + body_axis * hem_extend
-
-            # Widen away from the body centre so the garment has bulk.
-            centre = (shoulder_mid + hip_mid) / 2.0
-            def widen(p, factor=1.20):
-                return centre + (p - centre) * factor
-
-            region = np.zeros((h, w), dtype=np.float32)
-            # ── Neckline ────────────────────────────────────────────
-            # A straight edge across the shoulders leaves no collar: the
-            # garment covers the neck flat and the shoulder line reads as
-            # a bar rather than a seam. Cut a notch between the shoulders
-            # so SD has a neck opening to paint a collar around, and push
-            # the shoulder points outward past the joint so the seam sits
-            # on the edge of the body rather than inside it.
-            shoulder_dir = (r_sh - l_sh)
-            span = np.linalg.norm(shoulder_dir)
-            shoulder_dir = shoulder_dir / span if span > 1e-3 else np.array([1.0, 0.0], np.float32)
-            down = hip_mid - shoulder_mid
-            dn = np.linalg.norm(down)
-            down = down / dn if dn > 1e-3 else np.array([0.0, 1.0], np.float32)
-
-            # Wider, shallower for a tee; narrower and higher for a jacket
-            # worn closed. These mirror the per-garment neckline the
-            # face-bbox path used, which is where the collar came from.
-            # Fractions of shoulder span. A crew neck opening is about a
-            # third of shoulder span across, so half of it is ~0.18, and it
-            # sits shallow -- roughly 0.14 of span below the shoulder line.
-            # The old 0.26 / 0.30 cut an opening two-thirds as wide as the
-            # chest and deep enough to reach the sternum, which reads as a
-            # scoop-neck vest, not a collar.
-            #
-            # shoulder_out_f pushes the seam outward from the shoulder
-            # joint. At 1.16 the seam hung past the arm and the garment
-            # looked draped over the wearer rather than fitted; 1.06 puts it
-            # just outside the joint, where a real seam sits.
-            neck_half_f, neck_dip_f, shoulder_out_f = {
-                "tshirt": (0.18, 0.14, 1.06),
-                "shirt":  (0.15, 0.12, 1.05),
-                "jacket": (0.13, 0.10, 1.07),
-            }.get(gtype, (0.18, 0.14, 1.06))
-
-            neck_l = shoulder_mid - shoulder_dir * (span * neck_half_f)
-            neck_r = shoulder_mid + shoulder_dir * (span * neck_half_f)
-            neck_b = shoulder_mid + down * (span * neck_dip_f)
-
-            def out(p):
-                """Push a shoulder point outward along the shoulder line."""
-                return shoulder_mid + (p - shoulder_mid) * shoulder_out_f
-
-            # Drop the outer seam a little below the joint. A shoulder seam
-            # runs from the neck outward and slightly down; a level edge
-            # between neck and arm reads as a bar laid across the chest.
-            seam_drop = down * (span * 0.05)
-            torso = np.array(
-                [out(l_sh) + seam_drop, neck_l, neck_b, neck_r,
-                 out(r_sh) + seam_drop,
-                 widen(r_hem), widen(l_hem)],
-                dtype=np.int32,
-            )
-            cv2.fillPoly(region, [torso], 1.0)
-
-            # Sleeves follow the arm chain. A tee stops at the upper arm; a
-            # shirt or jacket runs to the wrist.
-            sleeve_thickness = max(6, int(shoulder_span * 0.36))
-            for shoulder_i, elbow_i, wrist_i in (
-                (POSE_L_SHOULDER, POSE_L_ELBOW, POSE_L_WRIST),
-                (POSE_R_SHOULDER, POSE_R_ELBOW, POSE_R_WRIST),
-            ):
-                shoulder, v_s = point(shoulder_i)
-                elbow, v_e = point(elbow_i)
-                if min(v_s, v_e) < 0.4:
-                    continue
-                if gtype == "tshirt":
-                    end = shoulder + (elbow - shoulder) * 0.62
-                    cv2.line(region, tuple(shoulder.astype(int)), tuple(end.astype(int)),
-                             1.0, sleeve_thickness)
-                else:
-                    cv2.line(region, tuple(shoulder.astype(int)), tuple(elbow.astype(int)),
-                             1.0, sleeve_thickness)
-                    wrist, v_w = point(wrist_i)
-                    if v_w >= 0.4:
-                        cv2.line(region, tuple(elbow.astype(int)), tuple(wrist.astype(int)),
-                                 1.0, int(sleeve_thickness * 0.82))
-
-            region = cv2.GaussianBlur(region, (31, 31), 0).clip(0, 1)
-
-            # Neck line: the shoulder line, not a chin row. Used downstream
-            # for the fabric fade so the pattern starts at the collar.
-            neck_y = int(np.clip(min(l_sh[1], r_sh[1]) - 0.10 * shoulder_span, 0, h - 1))
-
-            # Where the neck opening sits, in the wearer's own proportions.
-            # Handing this back means the collar no longer depends on Haar
-            # finding a face -- pose is the more reliable of the two on a
-            # close-up, and it was already running.
-            neck_ellipse = (
-                (int(shoulder_mid[0]), int(shoulder_mid[1])),
-                (int(shoulder_span * 0.20), int(shoulder_span * 0.26)),
-                max(4, int(shoulder_span * 0.055)),
-            )
-            return region, neck_y, neck_ellipse
-        except Exception as e:
-            log.debug(f"pose torso unavailable: {e}")
-            return None
-
     def _build_body_mask(self, frame_rgb: np.ndarray):
         """
         Build three masks from a 512x512 RGB person frame:
@@ -1522,23 +1316,12 @@ class TryOnModel:
                     # (person angled toward camera) gets lower segmentation
                     # confidence on that side, undershooting the true edge
                     # and leaving that shoulder/sleeve uncovered.
-                    # Threshold and dilation had been loosened step by step
-                    # to chase uncovered arms and foreshortened shoulders --
-                    # 0.6 -> 0.4 -> 0.25 -> 0.2, and 2 -> 5 -> 4 iterations of
-                    # a 7x7 kernel. Together that grew the person by roughly
-                    # 12 px at model scale, which on a 2k frame is a ~50 px
-                    # apron of garment hanging past the body onto whatever is
-                    # behind it. The garment stopped reading as worn.
-                    #
-                    # Tight edge here instead. Arm and sleeve coverage does
-                    # not need a fat silhouette: the pose path already draws
-                    # sleeves along the shoulder-elbow-wrist chain, and the
-                    # skin-tone pass below extends onto raised hands. Both
-                    # add coverage where the limb actually is, rather than
-                    # everywhere at once.
-                    bm = (s > 0.45).astype(np.float32)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    bm = cv2.dilate(bm, kernel, iterations=1)
+                    bm = (s > 0.2).astype(np.float32)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                    # 4 dilation iterations (was 2, originally 5) — splits the
+                    # difference: enough margin to cover a foreshortened
+                    # shoulder without overshooting into a visible double edge.
+                    bm = cv2.dilate(bm, kernel, iterations=4)
                     bm = cv2.GaussianBlur(bm, (5, 5), 0).clip(0, 1)
                     # Per-pixel temporal EMA: damps the 1-2 px shimmer
                     # MediaPipe produces per frame. 0.8 new / 0.2 prev (was
@@ -1720,7 +1503,6 @@ class TryOnModel:
 
         # 2. Face cutoff — chin row. Everything above is preserved.
         face_cutoff_y = int(h * 0.35)
-        face_box = None
         try:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             faces = self._haar.detectMultiScale(
@@ -1734,115 +1516,17 @@ class TryOnModel:
                 # right at the chin — collar sits at the neck naturally.
                 face_cutoff_y = int(np.clip(fy + fh,
                                             h * 0.20, h * 0.48))
-                face_box = (int(fx), int(fy), int(fw), int(fh))
         except Exception:
             pass
 
-        # 3. Torso region.
-        #
-        # Preferred: a polygon built from the wearer's own shoulders and
-        # hips, which is correct at any posture.
-        #
-        # Fallback: the horizontal band below the chin. That band is only
-        # right for an upright wearer — reclined or leaning, the region
-        # below the chin is the wearer's face and the garment lands there.
-        # It is kept solely because pose detection can fail, and a mask in
-        # roughly the wrong place still beats no mask at all.
-        pose_region = self._pose_torso_region(frame_rgb)
-        if pose_region is not None:
-            band, pose_neck_y, pose_neck_ellipse = pose_region
-            face_cutoff_y = int(np.clip(pose_neck_y, h * 0.05, h * 0.90))
-        elif face_box is not None:
-            # Pose failed, but a face was found. Size a torso from the face.
-            #
-            # This used to be `band[face_cutoff_y:, :] = 1.0` — the full
-            # width of the frame. On a head-and-shoulders crop, where pose
-            # most often fails, that paints garment across the entire lower
-            # frame including the wall and furniture behind the wearer, with
-            # a straight edge under the chin and no collar. GrabCut is meant
-            # to trim it back to the body and cannot reliably do so against a
-            # busy background.
-            #
-            # A face is a dependable ruler: shoulder span runs about 3x face
-            # width, so the body can be bounded without any pose landmarks.
-            fx3, fy3, fw3, fh3 = face_box
-            cx = fx3 + fw3 * 0.5
-            sh_half = fw3 * 1.55            # shoulder span ~= 3.1 face widths
-            sh_y    = face_cutoff_y + fh3 * 0.22
-            hem_y   = float(h) * 0.99
-            hem_half = sh_half * 1.12       # hem slightly wider than shoulders
+        # 3. Torso band — restrict mask vertically. Extended bottom to
+        # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
+        # rather than cutting off at mid-thigh leaving a visible hem oval.
+        band = np.zeros((h, w), dtype=np.float32)
+        band[face_cutoff_y:int(h * 0.98), :] = 1.0
+        band = cv2.GaussianBlur(band, (15, 15), 0)
 
-            gtype = getattr(self, "_garment_type", "tshirt")
-            # Same proportions as the pose path, re-expressed in face
-            # box dimensions: shoulder span is ~3.1 face widths, so a
-            # 0.18-of-span half-opening is ~0.56 face widths; the dip is
-            # scaled by face height, which Haar returns near-square, so
-            # ~0.43 matches the 0.14-of-span drop. Agreeing means the collar
-            # does not change shape when pose detection drops out.
-            neck_half_f, neck_dip_f = {
-                "tshirt": (0.56, 0.43),
-                "shirt":  (0.47, 0.36),
-                "jacket": (0.40, 0.30),
-            }.get(gtype, (0.56, 0.43))
-            neck_half = fw3 * neck_half_f
-            neck_dip  = fh3 * neck_dip_f
-
-            band = np.zeros((h, w), dtype=np.float32)
-            torso_poly = np.array([
-                [cx - sh_half,  sh_y],                    # left shoulder
-                [cx - neck_half, sh_y],                   # neckline left
-                [cx,            sh_y + neck_dip],         # neckline dip
-                [cx + neck_half, sh_y],                   # neckline right
-                [cx + sh_half,  sh_y],                    # right shoulder
-                [cx + hem_half, hem_y],                   # right hem
-                [cx - hem_half, hem_y],                   # left hem
-            ], dtype=np.int32)
-            cv2.fillPoly(band, [torso_poly], 1.0)
-            band = cv2.GaussianBlur(band, (31, 31), 0).clip(0, 1)
-        else:
-            # No pose and no face: nothing reliable to aim at. Keep the old
-            # band so a frame still renders, but hold it to the middle half
-            # of the frame rather than edge to edge.
-            band = np.zeros((h, w), dtype=np.float32)
-            band[face_cutoff_y:int(h * 0.98), int(w * 0.24):int(w * 0.76)] = 1.0
-            band = cv2.GaussianBlur(band, (21, 21), 0)
-
-        # Keep the throat clear.
-        #
-        # The neckline notch is cut into the torso polygon, so it protects
-        # the neck only when that polygon is positioned well. Whenever the
-        # geometry rides high -- an odd pose, a mis-sized face box -- paint
-        # climbs to the jaw and the garment reads as a turtleneck
-        # swallowing the chin, with no collar line anywhere. A collar is
-        # only legible if bare neck shows above it.
-        #
-        # Subtracting a soft ellipse over the throat guarantees that gap
-        # regardless of how the polygon came out, in both paths.
-        # Neck opening: (centre, axes, ring thickness).
-        #
-        # Pose first. The face box was the only source before, so on any
-        # frame where Haar missed -- and it misses often on a close-up, or a
-        # turned head -- there was no opening and no collar at all. Pose was
-        # already computed and is steadier here.
-        neck_hole = None
-        if pose_region is not None:
-            neck_hole = pose_neck_ellipse
-        elif face_box is not None:
-            fxn, fyn, fwn, fhn = face_box
-            neck_hole = (
-                (int(fxn + fwn * 0.5), int(fyn + fhn)),   # centred on the chin
-                (int(fwn * 0.30), int(fhn * 0.52)),       # neck column
-                max(4, int(fwn * 0.11)),
-            )
-
-        if neck_hole is not None:
-            nc, na, _ = neck_hole
-            throat = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(throat, nc, na, 0, 0, 360, 1.0, -1)
-            throat = cv2.GaussianBlur(throat, (21, 21), 0).clip(0, 1)
-            band = (band * (1.0 - throat)).clip(0, 1)
-
-        # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
+        # 4. torso_mask = silhouette ∩ band  (only body pixels, only torso band)
         torso_mask = (silhouette * band).clip(0, 1)
 
         # ── GrabCut body extraction: garment ONLY on body, not behind ───
@@ -1935,64 +1619,7 @@ class TryOnModel:
         # is safer because it only kills the garment alpha, not the SD
         # paint region.
 
-        # Collar ring.
-        #
-        # Every previous attempt cut a neck hole and left the collar to the
-        # diffusion model. It never arrived, and it was never going to: a
-        # collar is the few pixels at the rim of the opening, that rim is
-        # deliberately feathered so SD has something smooth to denoise
-        # into, and six LCM steps will not resolve a ribbed band there
-        # anyway. Tuning the hole's shape cannot fix a detail that is not
-        # being drawn.
-        #
-        # So draw it. The ring between the neck opening and a slightly
-        # larger ellipse, clipped to wherever garment actually ended up, is
-        # a collar's footprint. _infer_tier3 shades it.
-        collar_band = np.zeros((h, w), dtype=np.float32)
-        if neck_hole is not None:
-            nc, na, thick = neck_hole
-            outer = np.zeros((h, w), dtype=np.float32)
-            inner = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(outer, nc, (na[0] + thick, na[1] + thick), 0, 0, 360, 1.0, -1)
-            cv2.ellipse(inner, nc, na, 0, 0, 360, 1.0, -1)
-            ring = cv2.GaussianBlur((outer - inner).clip(0, 1), (5, 5), 0)
-            # Only where garment was actually painted -- otherwise the ring
-            # would be drawn across bare neck below an open collar.
-            collar_band = (ring * torso_mask).clip(0, 1)
-
-        # One line a second saying which path built this mask. Without it
-        # "the collar is missing" has two very different causes -- the ring
-        # was never built, or it was built and is too subtle to see -- and
-        # they are indistinguishable from the rendered frame. Throttled so
-        # it cannot flood the log at frame rate.
-        # Also carried back on the wire with each frame. Reading it from a
-        # log means someone has to be at the machine to look; attached to
-        # the result it can be checked from wherever the client runs, which
-        # is what makes "is the collar being drawn" answerable without a
-        # round trip through the person running the demo.
-        self.last_mask_diag = {
-            "region": ("pose" if pose_region is not None
-                       else ("face" if face_box is not None else "none")),
-            "face": face_box is not None,
-            "collar_px": int((collar_band > 0.05).sum()),
-            "torso_px": int((torso_mask > 0.05).sum()),
-        }
-        try:
-            now = time.time()
-            if now - getattr(self, "_mask_log_t", 0.0) > 1.0:
-                self._mask_log_t = now
-                log.info(
-                    "[mask] region=%s face=%s collar_px=%d torso_px=%d",
-                    "pose" if pose_region is not None
-                    else ("face" if face_box is not None else "none"),
-                    "yes" if face_box is not None else "NO",
-                    int((collar_band > 0.05).sum()),
-                    int((torso_mask > 0.05).sum()),
-                )
-        except Exception:
-            pass
-
-        return torso_mask, silhouette, face_cutoff_y, collar_band
+        return torso_mask, silhouette, face_cutoff_y
 
     # ── Tier 3 live inference ─────────────────────────────────────────────────
 
@@ -2044,8 +1671,7 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y, collar_band = \
-            self._build_body_mask(orig_arr)
+        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -2082,31 +1708,20 @@ class TryOnModel:
             # raw garment image so diffusers re-encodes with the right
             # CFG-shape (negative + positive concatenated).
             ip_kw = {"ip_adapter_image": garment}
-            gtype_p = getattr(self, "_garment_type", "tshirt")
             color = self._garment_color_name or "matching"
-            garment_word = {"tshirt": "t-shirt", "shirt": "button-up shirt",
-                            "jacket": "jacket"}.get(gtype_p, "shirt")
             prompt = (
-                f"photograph of a person wearing a {color} {garment_word}, "
-                f"the fabric drapes over the chest and follows the shoulders, "
-                f"soft fabric folds gathering at the waist and under the arms, "
-                f"visible seams at the shoulder and a defined collar at the neck, "
-                f"cloth catching the light from above with soft shadows in the creases, "
-                f"woven fabric texture, natural cloth weight, "
-                f"solid {color} colour, sharp focus, photorealistic, studio lighting"
+                f"photo of a person wearing a fitted {color} button-up shirt, "
+                f"solid {color} fabric, neutral {color} colour, "
+                f"the shirt fits naturally on the body, visible collar around the neck, "
+                f"long sleeves following the arms down to the wrists, "
+                f"realistic fabric folds, detailed texture, sharp focus, photorealistic"
             )
             neg = (
-                # Colour drift
-                "wrong color, brown, beige, tan, purple, violet, mauve, "
-                "oversaturated, faded, washed out, "
-                # The failure mode that makes it look pasted rather than worn
-                "flat shading, uniform flat colour, no folds, no wrinkles, "
-                "sticker, cutout, pasted on, decal, printed on skin, 2d overlay, "
-                "rigid fabric, cardboard, plastic sheen, "
-                # Structure
-                "bare chest, naked, sleeveless, floating clothes, garment on "
-                "background, garment outline, deformed body, extra limbs, "
-                "blurry, low quality, painting, cartoon, illustration"
+                "wrong color, brown, dark brown, beige, tan, purple, violet, mauve, "
+                "saturated, oversaturated, tinted, faded, washed out, "
+                "bare arms, t-shirt, tank top, sleeveless, naked, "
+                "floating clothes, shirt on background, shirt outline, "
+                "deformed body, extra limbs, blurry, low quality, painting, cartoon"
             )
             # CFG 2.5: stronger than the bare minimum (1.5) needed to keep
             # diffusers happy. With LCM, 2.5 still converges in 6 steps
@@ -2128,13 +1743,8 @@ class TryOnModel:
                     negative_prompt=neg,
                     image=person,
                     mask_image=mask_pil,
-                    # 6 steps, not 4. Four is enough to get the colour and
-                    # silhouette right, but fold structure and seam detail
-                    # are still forming at that point and the cloth reads
-                    # flat. Six costs roughly 250ms more per frame and is
-                    # where the drape starts to look like fabric.
-                    num_inference_steps=6,
-                    guidance_scale=2.8,
+                    num_inference_steps=4,
+                    guidance_scale=2.5,
                     generator=generator,
                     **ip_kw,
                 ).images[0]
@@ -2193,50 +1803,6 @@ class TryOnModel:
             # camera frame — so the jacket genuinely appears "worn on" you.
             result_arr = np.array(result).astype(np.float32)
             orig_f     = orig_arr.astype(np.float32)
-
-            # ── Body shading transfer ────────────────────────────────────
-            # This is what separates "a garment painted on" from "a garment
-            # being worn". SD renders cloth with its own invented lighting,
-            # which does not match the room the shopper is standing in, so
-            # the result reads as a flat cutout however good the colour is.
-            #
-            # The camera frame already contains the correct lighting: where
-            # the chest catches light, where the arm casts shade, where the
-            # body curves away. Dividing the frame's luminance by a heavily
-            # blurred copy of itself isolates exactly that — local shading
-            # and fold structure — while discarding absolute brightness,
-            # which belongs to whatever the shopper was already wearing.
-            #
-            # Multiplying the generated cloth by that ratio grounds it in
-            # the real scene: it picks up the body's contours and the room's
-            # light without inheriting the old garment's colour.
-            try:
-                lum = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
-                base = cv2.GaussianBlur(lum, (0, 0), sigmaX=21)
-                ratio = lum / np.maximum(base, 1.0)
-                # Clamp hard: beyond this, sensor noise and the old
-                # garment's own pattern start printing through the new one.
-                ratio = np.clip(ratio, 0.78, 1.28)
-                # Low-pass the shading map before applying it. Body form is
-                # mid-frequency; the weave of whatever the shopper is
-                # already wearing is high-frequency. Without this blur the
-                # two are transferred together and the old garment's
-                # texture prints through the new one. Measured on a
-                # synthetic torso, sigma 5 raises the form-to-texture ratio
-                # from 0.56 to 2.98 — which is what makes it safe to run a
-                # stronger effect and get deeper folds rather than a
-                # louder copy of the old shirt.
-                ratio = cv2.GaussianBlur(ratio, (0, 0), sigmaX=5)
-                SHADING_STRENGTH = 0.90
-                shading = 1.0 + (ratio - 1.0) * SHADING_STRENGTH
-                # Only where the garment was actually painted, feathered so
-                # the effect fades out with the mask rather than ending on
-                # a hard line.
-                sm = cv2.GaussianBlur(torso_mask, (0, 0), sigmaX=3).clip(0, 1)
-                shading = 1.0 + (shading - 1.0) * sm
-                result_arr = np.clip(result_arr * shading[:, :, np.newaxis], 0, 255)
-            except Exception as e:
-                log.debug(f"shading transfer skipped: {e}")
             # Compose ONLY inside the torso_mask (the same region SD was
             # actually told to paint). Using body_silhouette here was
             # letting the inpaint bleed out below the chest band, leaving
@@ -2249,22 +1815,6 @@ class TryOnModel:
             # smearing the chin row by 7 px and making the collar look
             # half-transparent.
             blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
-
-            # Saturate the interior before anything else touches the alpha.
-            #
-            # torso_mask is a product of three soft masks -- silhouette (0.85
-            # where it came from the safety rect, 0.80 from skin), the torso
-            # band, and the GrabCut body -- each blurred. Multiplying them
-            # leaves the middle of the chest around 0.75, not 1.0, so a
-            # quarter of the bare body is blended back in over the whole
-            # garment. That is what makes the shirt read as a translucent
-            # projection you can see through rather than cloth.
-            #
-            # Map 0.28 -> 0 and 0.62 -> 1: anything that is clearly inside
-            # becomes fully opaque, and the soft ramp survives only across
-            # the boundary, where feathering is actually wanted.
-            blend_mask = np.clip((blend_mask - 0.28) / 0.34, 0.0, 1.0)
-
             # Soft fade above the cutoff instead of a hard 0.0 cut.
             # The hard cut produced a visible horizontal line on the
             # chin (user: "face p chin ko ek line cut kr rhi hai").
@@ -2296,31 +1846,6 @@ class TryOnModel:
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
-            # ── Collar ──────────────────────────────────────────────────
-            # Shade the ring around the neck opening rather than hoping the
-            # sampler renders one. A collar reads as a band of the same
-            # cloth turned back on itself: same hue, less light, with a
-            # defined inner edge. Darkening what is already there gives
-            # exactly that and cannot clash with the garment colour, since
-            # it takes the colour from the render.
-            #
-            # Only inside the mask, so an open neckline stays open.
-            try:
-                cb = collar_band * blend_mask
-                if cb.max() > 0.05:
-                    cb3 = cb[:, :, np.newaxis]
-                    # 0.74 was not visible against a busy print. A collar
-                    # is cloth folded back on itself and turned away from
-                    # the light, so it genuinely sits well below the panel
-                    # it borders.
-                    COLLAR_DARKEN = 0.60
-                    composed = (
-                        composed.astype(np.float32) * (1.0 - cb3)
-                        + composed.astype(np.float32) * COLLAR_DARKEN * cb3
-                    ).clip(0, 255).astype(np.uint8)
-            except Exception as e:
-                log.debug(f"collar shading skipped: {e}")
-
             # ── Temporal stability: lock the painted shirt to previous
             # frame, so colour stops flickering every 3 s. Only blend
             # inside the masked region; outside, the live camera passes
@@ -2348,7 +1873,6 @@ class TryOnModel:
         else:
             prompt = (
                 "photo of person wearing jacket on body, shirt on torso, "
-                "ribbed crew neck collar at the neckline, "
                 "photorealistic, detailed fabric texture, well-fitted clothes"
             )
             neg_prompt = (
