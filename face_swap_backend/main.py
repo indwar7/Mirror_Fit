@@ -52,6 +52,11 @@ _AVATAR_CACHE.mkdir(exist_ok=True)
 _BODY_CACHE = _HERE / "bodies_cache"
 _BODY_CACHE.mkdir(exist_ok=True)
 
+# InstantID lives in its own service and conda env (see instantid_backend/).
+# It is the only piece that can hold identity and style at once, so the cartoon
+# avatar is generated there and proxied back through here.
+_INSTANTID_URL = os.environ.get("LUCY_INSTANTID_URL", "http://127.0.0.1:7861")
+
 _INSWAPPER_PATH = str(_HERE / "models" / "models" / "inswapper_128.onnx")
 _CASCADE_PATH   = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
@@ -1767,6 +1772,8 @@ async def list_avatars():
             # Reserved stages, surfaced so the client can show enrolment
             # progress rather than having to probe for them.
             "has_body":     bool(r.get("body_image")),
+            "has_style":    bool(r.get("style_image")),
+            "style":        r.get("style"),
             "measurements": r.get("measurements"),
         }
         for r in user_avatars.load(_AVATAR_CACHE)
@@ -1868,6 +1875,96 @@ async def create_avatar(
         "enrolled":       True,
         "face_validated": face_validated,
     }
+
+
+@app.post("/avatars/{avatar_id}/stylize")
+async def stylize_avatar(avatar_id: str, style: str = Form("bitmoji")):
+    """Turn an enrolled person into a cartoon of themselves.
+
+    The generation itself happens in instantid_backend (:7861), which is the
+    only piece here that can hold identity and style at the same time — a face
+    swap onto a cartoon head produces a real face on a drawn body, and plain
+    text-to-image produces a stranger. This endpoint exists so the result is
+    stored against the avatar rather than being a one-off image the client has
+    to keep hold of.
+
+    Kept as a SEPARATE image from the enrolled face. The photo is still what
+    the body pass swaps onto — pasting a cartoon face onto a photoreal figure
+    would look wrong — so both are held and the client picks.
+    """
+    record = _avatar_record(avatar_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    if not avatar_id.startswith(user_avatars.ID_PREFIX):
+        raise HTTPException(
+            status_code=400, detail="Only enrolled avatars can be stylised."
+        )
+
+    face_path = _avatar_image_path(avatar_id)
+    if not face_path.exists():
+        raise HTTPException(status_code=404, detail="Enrolled face image is missing")
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{_INSTANTID_URL}/stylize",
+                files={"photo": (f"{avatar_id}.jpg", face_path.read_bytes(), "image/jpeg")},
+                data={"style": style},
+            )
+    except httpx.RequestError:
+        # Naming the port matters: this is a different service on a different
+        # env, and "connection refused" alone sends people debugging the wrong
+        # backend.
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not reach the InstantID backend at {_INSTANTID_URL}. "
+                   f"Start it with instantid_backend/start.ps1.",
+        )
+
+    if resp.status_code != 200:
+        detail = "Stylise failed"
+        with contextlib.suppress(Exception):
+            detail = resp.json().get("detail", detail)
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+
+    filename = f"{avatar_id}_style.jpg"
+    try:
+        (_AVATAR_CACHE / filename).write_bytes(resp.content)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save avatar: {e}")
+
+    updated = user_avatars.update(_AVATAR_CACHE, avatar_id, {
+        "style_image": filename,
+        "style": style,
+    })
+    if updated is None:
+        with contextlib.suppress(OSError):
+            (_AVATAR_CACHE / filename).unlink()
+        raise HTTPException(status_code=404, detail="Avatar disappeared during update")
+
+    return {
+        "id": avatar_id,
+        "style": style,
+        "style_image_url": f"/avatars/{avatar_id}/style-image",
+    }
+
+
+@app.get("/avatars/{avatar_id}/style-image")
+async def get_avatar_style_image(avatar_id: str):
+    """Serve the cartoon version of an enrolled avatar."""
+    record = _avatar_record(avatar_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    filename = record.get("style_image")
+    if not filename:
+        raise HTTPException(
+            status_code=404,
+            detail="This avatar has no cartoon yet. POST /avatars/{id}/stylize first.",
+        )
+    path = _AVATAR_CACHE / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Cartoon image file is missing")
+    return FileResponse(str(path), media_type="image/jpeg")
 
 
 @app.post("/avatars/{avatar_id}/body")

@@ -203,6 +203,12 @@ class InstantIDEngine:
 
         self._sessions: Dict[str, dict] = {}
         self._lock = threading.Lock()
+        # Style prompts are chosen per request, so they are encoded lazily and
+        # kept. Seeded with the pre-encoded photoreal prompt above so the
+        # per-frame path and a "photoreal" stylise request share one entry.
+        self._prompt_cache: Dict[tuple, tuple] = {
+            (self._prompt, self._neg_prompt): (self._pe, self._ne, self._pp, self._np),
+        }
         log.info("[InstantID] engine ready")
 
     # ── Avatar registration ────────────────────────────────────────────────
@@ -234,6 +240,132 @@ class InstantIDEngine:
 
     def drop_session(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
+
+    # ── Stylised one-shot portrait ─────────────────────────────────────────
+    #
+    # Wording lifted verbatim from generate_avatars.py's AI_POSITIVE_TEMPLATE,
+    # so a stylised person lands in the same visual family as the preset AI
+    # avatars (Toby, Lily, Kabir, Tara) rather than looking like a different
+    # product bolted on.
+    STYLES = {
+        "bitmoji": {
+            "prompt": (
+                "high quality 3d animated character portrait of a person, "
+                "pixar style, disney style, bitmoji style, "
+                "head and shoulders framing, looking directly at camera, "
+                "soft warm lighting, expressive features, friendly look, "
+                "detailed CGI render, octane render, stylized character art, "
+                "smooth subsurface skin, clean plain background, "
+                "highly detailed, masterpiece"
+            ),
+            "negative": (
+                "photograph, photo, photorealistic, real person, real face, "
+                "raw photo, dslr, skin pores, low quality, blurry, distorted, "
+                "deformed, asymmetric, watermark, text, extra limbs, "
+                "multiple faces, disfigured, ugly"
+            ),
+            # Lower than the photoreal defaults on purpose. Identity strength
+            # and style are in direct tension here: at 0.8 the adapter drags
+            # the render back toward the actual photograph and the cartoon
+            # never forms. These leave enough identity to be recognisable
+            # while letting the style win.
+            "ip_scale": 0.55,
+            "controlnet_scale": 0.55,
+        },
+        "photoreal": {
+            "prompt": "portrait photo of a person, sharp, natural skin, even lighting",
+            "negative": "low quality, blurry, deformed, plastic, oversaturated, painting, sketch",
+            "ip_scale": IP_ADAPTER_SCALE,
+            "controlnet_scale": CONTROLNET_SCALE,
+        },
+    }
+
+    def _encode(self, prompt: str, negative: str):
+        """Encode a prompt, caching by text.
+
+        The constructor pre-encodes one prompt because the per-frame path
+        cannot afford the text encoder. Styles are chosen per request, so they
+        are encoded on demand and kept — there are only a handful of them, and
+        re-encoding the same style on every avatar would waste ~80 ms each time.
+        """
+        key = (prompt, negative)
+        cached = self._prompt_cache.get(key)
+        if cached is not None:
+            return cached
+        with self._torch.no_grad():
+            encoded = self.pipe.encode_prompt(
+                prompt=prompt,
+                negative_prompt=negative,
+                device="cuda",
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True,
+            )
+        self._prompt_cache[key] = encoded
+        return encoded
+
+    def stylize(self, photo_bgr: np.ndarray, style: str = "bitmoji") -> Optional[np.ndarray]:
+        """One photo in, one stylised portrait of that same person out.
+
+        Different from transfer() in the two ways that matter: the identity
+        comes from THIS photo rather than a cached avatar, and the whole
+        generated image is returned rather than the face oval being composited
+        back over the original. A cartoon avatar is meant to replace the
+        photograph, not to sit inside it.
+
+        Returns None when no face is found.
+        """
+        cfg = self.STYLES.get(style) or self.STYLES["bitmoji"]
+
+        faces = self.face_app.get(photo_bgr)
+        if not faces:
+            return None
+        face = sorted(
+            faces,
+            key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]),
+        )[-1]
+
+        emb = self._torch.from_numpy(face.normed_embedding).unsqueeze(0).half().cuda()
+
+        # Square-crop around the centre so the keypoints stay in frame, exactly
+        # as transfer() does — SDXL wants a square and an off-centre crop moves
+        # the face away from where the keypoint image says it is.
+        h0, w0 = photo_bgr.shape[:2]
+        side = min(h0, w0)
+        x_off, y_off = (w0 - side) // 2, (h0 - side) // 2
+        kps = face.kps.copy()
+        kps[:, 0] -= x_off
+        kps[:, 1] -= y_off
+        kps *= INFERENCE_RESOLUTION / float(side)
+
+        from PIL import Image
+        kps_img = _draw_kps(
+            Image.new("RGB", (INFERENCE_RESOLUTION, INFERENCE_RESOLUTION), 0), kps
+        )
+
+        pe, ne, pp, np_ = self._encode(cfg["prompt"], cfg["negative"])
+
+        with self._lock, self._torch.no_grad():
+            self.pipe.set_ip_adapter_scale(cfg["ip_scale"])
+            out = self.pipe(
+                prompt_embeds=pe,
+                negative_prompt_embeds=ne,
+                pooled_prompt_embeds=pp,
+                negative_pooled_prompt_embeds=np_,
+                image_embeds=emb,
+                image=kps_img,
+                controlnet_conditioning_scale=cfg["controlnet_scale"],
+                num_inference_steps=NUM_INFERENCE_STEPS,
+                guidance_scale=GUIDANCE_SCALE,
+                width=INFERENCE_RESOLUTION,
+                height=INFERENCE_RESOLUTION,
+                output_type="np",
+            ).images[0]
+            # Restore the per-frame scale: the live WS path reads this same
+            # pipeline object and would otherwise inherit the cartoon setting.
+            self.pipe.set_ip_adapter_scale(IP_ADAPTER_SCALE)
+
+        out_rgb = (np.clip(out, 0, 1) * 255).astype(np.uint8)
+        return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
 
     # ── Per-frame inference ────────────────────────────────────────────────
     def transfer(self, session_id: str, frame_bgr: np.ndarray) -> Optional[np.ndarray]:

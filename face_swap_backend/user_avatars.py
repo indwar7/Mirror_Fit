@@ -108,6 +108,8 @@ def make_record(
         # ── Reserved: see module docstring ──
         "body_image": None,        # SD full-body figure + enrolled face
         "measurements": None,      # {"chest_cm", "waist_cm", "shoulder_cm", ...}
+        "style_image": None,       # InstantID cartoon of this person
+        "style": None,             # which style produced style_image
     }
 
 
@@ -180,7 +182,7 @@ def remove(cache_dir: pathlib.Path, avatar_id: str) -> bool:
             return False
         _write(cache_dir, [r for r in records if r.get("id") != avatar_id])
 
-    for key in ("face_image", "body_image"):
+    for key in ("face_image", "body_image", "style_image"):
         filename = target.get(key)
         if filename:
             with contextlib.suppress(OSError):

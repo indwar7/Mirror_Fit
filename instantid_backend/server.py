@@ -32,7 +32,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -73,6 +73,60 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok", "engine_loaded": _engine is not None}
+
+
+@app.post("/stylize")
+async def stylize(
+    photo: UploadFile = File(...),
+    style: str = Form("bitmoji"),
+):
+    """One photo in, one stylised portrait of that same person out.
+
+    This is the Snapchat-style avatar: a cartoon that is recognisably the
+    person, not a photograph of them and not a generic character. InstantID
+    supplies the identity through IP-Adapter while the prompt supplies the
+    style, which is the only way to get both — a face swap onto a cartoon head
+    gives a real face on a drawn body, and a plain text-to-image gives a
+    stranger.
+
+    Synchronous on purpose: this is a handful of seconds, once per avatar, not
+    a per-frame path. Runs in a thread so the WS traffic on this same process
+    keeps flowing.
+    """
+    raw = await photo.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty photo upload")
+
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+
+    engine = _get_engine()
+    if engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="InstantID engine not loaded — check the model weights in "
+                   "instantid_backend/models/.",
+        )
+
+    try:
+        out = await asyncio.get_event_loop().run_in_executor(
+            None, engine.stylize, img, style
+        )
+    except Exception as e:
+        log.exception("[InstantID] stylize failed")
+        raise HTTPException(status_code=500, detail=f"Stylise failed: {e}")
+
+    if out is None:
+        raise HTTPException(
+            status_code=422,
+            detail="No face detected. Use a clear, front-facing photo.",
+        )
+
+    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok:
+        raise HTTPException(status_code=500, detail="JPEG encode failed")
+    return Response(content=buf.tobytes(), media_type="image/jpeg")
 
 
 @app.on_event("startup")
