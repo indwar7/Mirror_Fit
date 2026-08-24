@@ -916,7 +916,7 @@ body.landing-active .app { display: none !important; }
   transition: max-height .45s ease, opacity .35s ease,
               padding-top .45s ease, padding-bottom .45s ease;
 }
-.fr-card.is-in { max-height: 340px; opacity: 1; padding-top: 14px; padding-bottom: 14px; }
+.fr-card.is-in { max-height: 440px; opacity: 1; padding-top: 14px; padding-bottom: 14px; }
 .fr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .fr-eyebrow { font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
 .fr-verdict { font-size: 13px; font-weight: 500; color: var(--ink); margin-top: 5px; }
@@ -930,7 +930,146 @@ body.landing-active .app { display: none !important; }
 .fr-row b { font-weight: 500; color: var(--ink); }
 .fr-foot { margin-top: 9px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 .fr-card.is-wait .fr-score b, .fr-card.is-wait .fr-verdict { color: var(--muted); }
-.fr-card #frSend:disabled { opacity: .45; cursor: not-allowed; }
+.fr-card #frSend:disabled, .fr-card #frWhy:disabled { opacity: .45; cursor: not-allowed; }
+
+
+/* ══════════════════════════════════════════════════════════════════
+   FIT REPORT — the answer-first surface shared by Fit Analyser and
+   Returns Guard.
+
+   Both screens used to open on a form. They now open on a finding: a
+   verdict, then the three places a garment is actually felt — chest,
+   shoulder, neck — each with the one sentence that explains it. Every
+   number that produced the finding still exists; it lives inside
+   <details class="fx-tech"> so a reviewer can open it and a shopper
+   never has to.
+   ══════════════════════════════════════════════════════════════════ */
+.fx-wrap { width: 100%; max-width: 1040px; margin: 0 auto; padding-bottom: 28px; }
+.fx-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
+.fx-card + .fx-card { margin-top: 20px; }
+
+.fx-eyebrow { font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); }
+.fx-h { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+
+/* ── Verdict head ── */
+.fx-top { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; }
+.fx-verdict { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 42px; line-height: 1.05; color: var(--ink); margin-top: 8px; }
+.fx-sub { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); font-weight: 300; max-width: 52ch; margin-top: 12px; }
+.fx-sub b { font-weight: 500; color: var(--ink); }
+.fx-dial { position: relative; width: 132px; height: 132px; flex-shrink: 0; }
+.fx-dial svg { transform: rotate(-90deg); display: block; }
+.fx-dial-num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.fx-dial-num b { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 40px; font-weight: 400; line-height: 1; }
+.fx-dial-num span { font-size: 8.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin-top: 5px; }
+
+/* ── The three core areas ── */
+.fx-areas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
+            border: 1px solid var(--line); margin-top: 28px; }
+.fx-area { background: var(--white); padding: 20px 20px 22px; }
+.fx-area-h { display: flex; align-items: center; gap: 8px; }
+.fx-area-l { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+.fx-mark { width: 17px; height: 17px; border-radius: 50%; flex: 0 0 auto; display: grid; place-items: center;
+           font-size: 10px; line-height: 1; color: var(--white); font-weight: 500; }
+.fx-mark.is-good  { background: var(--ok); }
+.fx-mark.is-watch { background: var(--gold-ink); }
+.fx-mark.is-off   { background: var(--berry); }
+.fx-area-v { font-size: 17px; font-weight: 500; color: var(--ink); margin-top: 11px; letter-spacing: -.01em; }
+.fx-area-v.is-good  { color: var(--ok); }
+.fx-area-v.is-watch { color: var(--gold-ink); }
+.fx-area-v.is-off   { color: var(--berry); }
+.fx-area-line { font-size: 12.5px; line-height: 1.62; color: var(--ink-2); font-weight: 300; margin-top: 8px; }
+.fx-area-note { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-top: 12px; }
+
+/* ── Secondary rows (length, sleeve) ── */
+.fx-rows { margin-top: 22px; border-top: 1px solid var(--line); }
+.fx-row { display: grid; grid-template-columns: 92px 108px 1fr; align-items: baseline; gap: 14px;
+          padding: 13px 0; border-bottom: 1px solid var(--line); }
+.fx-row:last-child { border-bottom: none; }
+.fx-row-l { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.fx-row-v { font-size: 13px; font-weight: 500; color: var(--ink); }
+.fx-row-v.is-good  { color: var(--ok); }
+.fx-row-v.is-watch { color: var(--gold-ink); }
+.fx-row-v.is-off   { color: var(--berry); }
+.fx-row-line { font-size: 12.5px; line-height: 1.6; color: var(--ink-2); font-weight: 300; }
+
+/* ── Findings: plain sentences, not reason codes ── */
+.fx-finds { display: grid; gap: 12px; }
+.fx-find { display: grid; grid-template-columns: 17px 1fr; gap: 12px; align-items: start; }
+.fx-find-t { font-size: 13.5px; line-height: 1.65; color: var(--ink-2); font-weight: 300; }
+.fx-find-t b { font-weight: 500; color: var(--ink); }
+
+/* ── Answer blocks in the returns report ── */
+.fx-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
+            border: 1px solid var(--line); margin-top: 4px; }
+.fx-fact { background: var(--white); padding: 18px 18px 20px; }
+.fx-fact-l { font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+.fx-fact-v { font-size: 16px; font-weight: 500; color: var(--ink); margin-top: 9px; line-height: 1.35; }
+.fx-fact-n { font-size: 12px; line-height: 1.6; color: var(--ink-2); font-weight: 300; margin-top: 7px; }
+
+/* ── Case header ── */
+.fx-case { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.fx-case-id { font-family: ui-monospace, Menlo, monospace; font-size: 13px; letter-spacing: .06em; color: var(--berry); }
+.fx-case-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 32px; line-height: 1.1; color: var(--ink); margin-top: 7px; }
+.fx-case-meta { font-size: 12.5px; color: var(--muted); font-weight: 300; margin-top: 9px; line-height: 1.6; }
+.fx-decision { padding: 10px 18px; font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+               border-radius: var(--r); white-space: nowrap; }
+.fx-decision.is-review  { background: var(--berry); color: var(--white); }
+.fx-decision.is-approve { background: transparent; color: var(--ok); border: 1px solid rgba(30,122,82,0.45); }
+
+/* ── Said / found contrast ── */
+.fx-quote { margin-top: 4px; padding: 16px 20px; border-left: 2px solid var(--line-2);
+            background: var(--ivory-2); font-size: 14px; line-height: 1.65; color: var(--ink); font-weight: 300; }
+.fx-quote span { display: block; font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
+                 color: var(--muted); margin-bottom: 7px; }
+.fx-answer { margin-top: 22px; padding: 18px 20px; border-left: 2px solid var(--gold);
+             background: var(--gold-tint); font-size: 14px; line-height: 1.75; color: var(--ink-2); font-weight: 300; }
+.fx-answer b { font-weight: 500; color: var(--ink); }
+
+/* ── The numbers, folded away ── */
+.fx-tech { margin-top: 20px; border: 1px solid var(--line); background: var(--white); }
+.fx-tech > summary { padding: 15px 20px; cursor: pointer; font-size: 10px; letter-spacing: .18em;
+                     text-transform: uppercase; color: var(--muted); list-style: none; user-select: none; }
+.fx-tech > summary::-webkit-details-marker { display: none; }
+.fx-tech > summary::before { content: '+ '; color: var(--berry); }
+.fx-tech[open] > summary::before { content: '– '; }
+.fx-tech > summary:hover { color: var(--ink); }
+.fx-tech-body { padding: 4px 20px 24px; border-top: 1px solid var(--line); }
+.fx-tech-body > * + * { margin-top: 20px; }
+
+/* ── Sidebar: lookup + session card ── */
+.fx-lookup { display: flex; gap: 7px; }
+.fx-lookup input {
+  flex: 1; min-width: 0; padding: 10px 11px; font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px; letter-spacing: .05em; color: var(--ink); background: var(--white);
+  border: 1px solid var(--line-2); border-radius: var(--r); text-transform: uppercase;
+}
+.fx-lookup input:focus { outline: none; border-color: var(--berry); }
+.fx-lookup button {
+  padding: 10px 15px; font-family: 'Jost', sans-serif; font-size: 11px; letter-spacing: .12em;
+  text-transform: uppercase; background: var(--ink); color: var(--ivory);
+  border: 1px solid var(--ink); border-radius: var(--r); cursor: pointer;
+}
+.fx-lookup button:hover { background: var(--berry); border-color: var(--berry); color: var(--white); }
+.fx-hint { font-size: 11px; line-height: 1.6; color: var(--muted); font-weight: 300; margin-top: 10px; }
+.fx-list { display: grid; gap: 6px; }
+.fx-item {
+  display: block; width: 100%; text-align: left; padding: 11px 12px; cursor: pointer;
+  background: var(--white); border: 1px solid var(--line-2); border-radius: var(--r);
+  font-family: 'Jost', sans-serif; color: var(--ink);
+}
+.fx-item:hover { border-color: var(--ink); }
+.fx-item.active { border-color: var(--berry); box-shadow: inset 2px 0 0 var(--berry); }
+.fx-item-id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: .05em; color: var(--berry); }
+.fx-item-t { font-size: 12.5px; margin-top: 4px; }
+.fx-item-s { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+.fx-empty { font-size: 13px; line-height: 1.7; color: var(--muted); font-weight: 300; }
+
+@media (max-width: 900px) {
+  .fx-areas, .fx-facts { grid-template-columns: 1fr; }
+  .fx-card { padding: 22px 20px; }
+  .fx-verdict { font-size: 34px; }
+  .fx-row { grid-template-columns: 78px 96px 1fr; gap: 10px; }
+}
 
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1780,8 +1919,15 @@ body.landing-active .app { display: none !important; }
           </div>
           <div class="fr-bar"><i id="frBar"></i></div>
           <div class="fr-rows" id="frRows"></div>
-          <button class="btn btn-ghost" id="frSend" onclick="frSendToReturns()"
+          <!-- The score alone was the complaint: it said 8.4 and nothing
+               about why. This opens the Fit Analyser on this exact session
+               — no re-entering anything, no form. -->
+          <button class="btn btn-primary" id="frWhy" onclick="frExplain()"
                   style="margin-top:12px;font-size:10px;padding:10px 12px" disabled>
+            Why this score
+          </button>
+          <button class="btn btn-ghost" id="frSend" onclick="frSendToReturns()"
+                  style="margin-top:6px;font-size:10px;padding:10px 12px" disabled>
             Send score to Returns Guard
           </button>
           <div class="fr-foot" id="frFoot">Analysing</div>
@@ -1904,168 +2050,72 @@ body.landing-active .app { display: none !important; }
 
 
 
-    <!-- FIT ANALYSER — garment vs body geometry -->
+    <!-- FIT ANALYSER — explains a score, does not collect one.
+
+         This panel used to be five cards of numbers: height, weight, band,
+         cup, age, body type, and four history sliders. A shopper who has
+         just been handed "8.4" does not want a form; they want to know why
+         it was not 10, and where. So the sidebar is now a picker — which
+         session or garment do you want explained — and the answer lives on
+         the right. Nothing here asks for a body measurement. -->
     <div class="panel" id="panel-fit">
       <div class="card">
-        <div class="card-label">Step 1 · Load a real rental</div>
-        <div class="rg-presets" id="faPresets"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-label">Step 2 · The shopper</div>
-        <div class="fa-row"><label>Height (in)</label><input type="number" id="faHeight" value="65" step="1"></div>
-        <div class="fa-row"><label>Weight (lb)</label><input type="number" id="faWeight" value="137" step="1"></div>
-        <div class="fa-row"><label>Bust band</label><input type="number" id="faBand" value="34" step="1"></div>
-        <div class="rg-field" style="margin-top:12px">
-          <div class="rg-label">Cup <b id="faCupVal">D</b></div>
-          <input type="range" id="faCup" min="0" max="8" step="1" value="4">
-        </div>
-        <div class="fa-row"><label>Age</label><input type="number" id="faAge" value="32" step="1"></div>
-        <div class="rg-field" style="margin-top:12px">
-          <div class="rg-label">Body type</div>
-          <select id="faBody"></select>
+        <div class="card-label">Step 1 · What to explain</div>
+        <button class="btn btn-primary" id="faUseLive" onclick="faExplainLive()" disabled>
+          Explain my live try-on
+        </button>
+        <div class="fx-hint" id="faLiveHint">
+          Run a live try-on and the score it gives you opens here, broken down
+          by where the garment actually sat.
         </div>
       </div>
 
       <div class="card">
-        <div class="card-label">Step 3 · The rental</div>
-        <div class="rg-field">
-          <div class="rg-label">Category</div>
-          <select id="faCat"></select>
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">Rented for</div>
-          <select id="faFor"></select>
-        </div>
-        <div class="fa-row"><label>Size taken</label><input type="number" id="faSize" value="12" step="1"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-label">Step 4 · How you like it to sit</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">
-          Fit is partly taste. A roomy cut is only "too large" if you did not
-          want it roomy — so your preference changes the advice, not the model.
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">Preferred cut</div>
-          <select id="faPref">
-            <option value="fitted">Fitted — close to the body</option>
-            <option value="regular" selected>Regular — as designed</option>
-            <option value="relaxed">Relaxed — room to move</option>
-          </select>
-        </div>
-        <div class="rg-field">
-          <label class="rg-check">
-            <input type="checkbox" id="faLayer"> I usually layer underneath
-          </label>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-label">Step 5 · What history says</div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:12px">
-          The strongest signal in the data. Body measurements barely predict fit —
-          what an item did for previous renters does.
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">This item ran small for <b id="faItemSmallVal">55%</b></div>
-          <input type="range" id="faItemSmall" min="0" max="0.9" step="0.01" value="0.55">
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">This item ran large for <b id="faItemLargeVal">8%</b></div>
-          <input type="range" id="faItemLarge" min="0" max="0.9" step="0.01" value="0.08">
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">Shopper reports small <b id="faUserSmallVal">13%</b></div>
-          <input type="range" id="faUserSmall" min="0" max="0.9" step="0.01" value="0.13">
-        </div>
-        <div class="rg-field">
-          <div class="rg-label">Shopper reports large <b id="faUserLargeVal">13%</b></div>
-          <input type="range" id="faUserLarge" min="0" max="0.9" step="0.01" value="0.13">
-        </div>
+        <div class="card-label">Step 2 · Or open a garment</div>
+        <div class="fx-list" id="faGarments"></div>
       </div>
 
       <div class="sticky-action">
         <div class="status-row" style="margin-bottom:10px">
           <div class="dot on" id="faDot"></div>
-          <span id="faStatusText">Real data · scored on device</span>
+          <span id="faStatusText">Reads the session · asks you nothing</span>
         </div>
-        <button class="btn btn-ghost" onclick="faReset()">Reset</button>
       </div>
     </div>
 
-    <!-- RETURNS GUARD — cost-sensitive return-fraud triage -->
+    <!-- RETURNS GUARD — a case file, not a calculator.
+
+         The person on this screen is an operations engineer holding a
+         garment that came back. They have an ID on the return label and one
+         question: this shopper says it did not fit — so what did we already
+         know? Every input this panel used to ask for (fit slider, order
+         value, account age, discount, prior orders) is a field the system
+         already holds against that ID. Asking a human to retype them was the
+         demo showing its working, not the product. -->
     <div class="panel" id="panel-returns">
       <div class="card">
-        <div class="card-label">Step 1 · Load a case</div>
-        <div class="rg-presets" id="rgPresets"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-label">Step 2 · The return</div>
-
-        <div class="rg-field">
-          <label class="rg-check">
-            <input type="checkbox" id="rgTryon" checked> Used virtual try-on at purchase
-          </label>
+        <div class="card-label">Step 1 · Look up a return</div>
+        <div class="fx-lookup">
+          <input id="rgQuery" placeholder="MF-SHR-4471" spellcheck="false"
+                 autocomplete="off" aria-label="Garment ID">
+          <button onclick="rgFind()">Find</button>
         </div>
-
-        <div class="rg-field" id="rgFitField">
-          <div class="rg-label">Fit mismatch at purchase <b id="rgFitVal">0.30</b></div>
-          <input type="range" id="rgFit" min="0" max="1" step="0.01" value="0.30">
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Garment</div>
-          <select id="rgGarment"></select>
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Return reason</div>
-          <select id="rgReason"></select>
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Days since purchase <b id="rgDaysVal">8</b></div>
-          <input type="range" id="rgDays" min="1" max="60" step="1" value="8">
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Order value (₹)</div>
-          <input type="number" id="rgValue" value="1800" min="299" max="40000" step="50">
+        <div class="fx-hint">
+          The garment ID printed on the return label. Any ID opens a case —
+          unknown ones are generated for the demo and say so on the report.
         </div>
       </div>
 
       <div class="card">
-        <div class="card-label">Step 3 · The customer</div>
-
-        <div class="rg-field">
-          <div class="rg-label">Orders (12 mo)</div>
-          <input type="number" id="rgOrders" value="5" min="0" max="60" step="1">
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Returns (12 mo) <b id="rgRateVal">—</b></div>
-          <input type="number" id="rgReturns" value="1" min="0" max="60" step="1">
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Account age (days)</div>
-          <input type="number" id="rgAge" value="540" min="1" max="3000" step="1">
-        </div>
-
-        <div class="rg-field">
-          <div class="rg-label">Discount taken <b id="rgDiscVal">12%</b></div>
-          <input type="range" id="rgDisc" min="0" max="70" step="0.5" value="12">
-        </div>
+        <div class="card-label">Step 2 · Open cases</div>
+        <div class="fx-list" id="rgCases"></div>
       </div>
 
       <div class="sticky-action">
         <div class="status-row" style="margin-bottom:10px">
           <div class="dot on" id="rgDot"></div>
-          <span id="rgStatusText">Scoring live · on device</span>
+          <span id="rgStatusText">Scored on device · no data leaves the browser</span>
         </div>
-        <button class="btn btn-ghost" onclick="rgReset()">Reset to a typical return</button>
       </div>
     </div>
   </div>
@@ -2260,92 +2310,167 @@ body.landing-active .app { display: none !important; }
 
 
 
-    <!-- FIT ANALYSER — result -->
+    <!-- FIT ANALYSER — result.
+
+         Answer first: the verdict, then the three places a garment is felt.
+         The distribution bars, the raw JSON and the gate economics have not
+         been deleted — they moved into the folded panel at the bottom,
+         because a shopper reading "why was it 8.4" is not helped by a
+         softmax and a reviewer looking for one knows where to click. -->
     <div id="fitWrap" style="display:none;width:100%">
-      <div class="fa-wrap">
-        <div class="fa-card">
-          <div class="fa-top">
-            <div>
-              <div class="fa-verdict-name" id="faVerdict">—</div>
-              <div class="fa-verdict-note" id="faNote"></div>
-              <div class="fa-conf" id="faConf"></div>
+      <div class="fx-wrap">
+
+        <div class="fx-card">
+          <div class="fx-top">
+            <div style="flex:1;min-width:260px">
+              <div class="fx-eyebrow" id="faWhat">No session yet</div>
+              <div class="fx-verdict" id="faVerdict">Nothing to explain</div>
+              <div class="fx-sub" id="faHeadline">
+                Run a live try-on, or pick a garment on the left, and this
+                screen says exactly why the score came out where it did.
+              </div>
             </div>
-            <div class="fa-dial">
+            <div class="fx-dial">
               <svg width="132" height="132" viewBox="0 0 132 132" aria-hidden="true">
                 <circle cx="66" cy="66" r="58" fill="none" stroke="#E8E4DD" stroke-width="9"/>
                 <circle cx="66" cy="66" r="58" fill="none" stroke="#A8194E" stroke-width="9"
                         stroke-linecap="butt" id="faDialArc"
                         stroke-dasharray="364.4" stroke-dashoffset="364.4"/>
               </svg>
-              <div class="fa-dial-num"><b id="faScore">0</b><span>Fit score</span></div>
+              <div class="fa-dial-num fx-dial-num"><b id="faScore">—</b><span>Fit score</span></div>
             </div>
           </div>
 
-          <div class="fa-devs" id="faDevs"></div>
+          <div class="fx-h" style="margin-top:34px">
+            Where it sat on you
+          </div>
+          <div class="fx-areas" id="faAreas"></div>
+          <div class="fx-rows" id="faRows"></div>
 
-          <div class="fa-json" id="faJson"></div>
-          <div class="fa-handoff" id="faHandoff"></div>
+          <div class="fx-answer" id="faAnswer"></div>
+
           <button class="lp-btn lp-btn-solid" id="faSend"
-                  style="margin-top:18px" onclick="faSendToReturns()">
-            Send this score to Returns Guard <span class="lp-arrow">&rarr;</span>
+                  style="margin-top:20px;display:none" onclick="faSendToReturns()">
+            Send this fit to Returns Guard <span class="lp-arrow">&rarr;</span>
           </button>
         </div>
 
-        <div class="fa-metrics" id="faMetrics"></div>
-        <div class="fa-cap" id="faCap"></div>
+        <details class="fx-tech" id="faTech" style="display:none">
+          <summary>The numbers behind this</summary>
+          <div class="fx-tech-body">
+            <div>
+              <div class="fx-h">Deviation from the cut, per point</div>
+              <div class="fa-devs" id="faDevs" style="margin-top:0;padding-top:0;border-top:none"></div>
+            </div>
+            <div class="fa-json" id="faJson" style="margin-top:0"></div>
+            <div class="fa-handoff" id="faHandoff" style="margin-top:0"></div>
+            <div class="fa-metrics" id="faMetrics" style="margin-top:0"></div>
+            <div class="fa-cap" id="faCap"></div>
+          </div>
+        </details>
+
       </div>
     </div>
 
-    <!-- RETURNS GUARD — result -->
+    <!-- RETURNS GUARD — result.
+
+         Written as a case file an engineer can read top to bottom: what came
+         back, what the shopper said, what we already knew, and the one
+         paragraph that reconciles the two. The probability, the reason
+         codes, the threshold table and the cost matrix are all still here —
+         folded away at the bottom, where they belong for the reviewer who
+         wants to audit the call rather than act on it. -->
     <div id="returnsWrap" style="display:none;width:100%">
-      <div class="rg-wrap">
-        <div class="rg-card">
-          <div class="rg-top">
-            <div>
-              <div class="rg-score" id="rgScore">0.000</div>
-              <div class="rg-score-l">Probability of fraud</div>
-            </div>
-            <div class="rg-verdict is-approve" id="rgVerdict">Approve refund</div>
-          </div>
+      <div class="fx-wrap">
 
-          <div class="rg-bar-wrap">
-            <div class="rg-bar">
-              <div class="rg-bar-fill" id="rgFill" style="width:0%"></div>
-              <div class="rg-bar-mark" id="rgMark" style="left:78.7%"></div>
-            </div>
-            <div class="rg-bar-ends">
-              <span>0 · certainly genuine</span>
-              <span>certainly fraud · 1</span>
-            </div>
-          </div>
-
-          <div class="rg-split">
-            <div>
-              <div class="rg-h">Returned payload</div>
-              <div class="rg-json" id="rgJson"></div>
-            </div>
-            <div>
-              <div class="rg-h">Reason codes for the reviewer</div>
-              <div class="rg-codes" id="rgCodes"></div>
-            </div>
-          </div>
-
-          <div class="rg-truth" id="rgHandoffIn" style="display:none"></div>
-          <div class="rg-truth" id="rgTruth" style="display:none"></div>
-
-          <div class="rg-guard">
-            <b>This screen cannot deny a refund.</b> The only two outcomes are
-            <em>approve&nbsp;refund</em> and <em>route&nbsp;to&nbsp;review</em>, so a wrongly
-            flagged customer loses time, never their money. The threshold is set where
-            flagging costs less than not flagging, given a false positive is treated as
-            5× worse than a false negative.
+        <div class="fx-card" id="rgEmptyCard">
+          <div class="fx-eyebrow">Returns Guard</div>
+          <div class="fx-verdict" style="font-size:34px">Open a return</div>
+          <div class="fx-sub">
+            Type a garment ID on the left, or pick one of the open cases. The
+            report answers a single question: this garment came back — given
+            what the mirror already measured and what condition it arrived in,
+            does the reason hold up?
           </div>
         </div>
 
-        <div class="rg-metrics" id="rgMetrics"></div>
+        <div id="rgReport" style="display:none">
 
-        <table class="rg-table" id="rgCandidates"></table>
-        <div class="rg-cap" id="rgCap"></div>
+          <div class="fx-card">
+            <div class="fx-case">
+              <div style="flex:1;min-width:260px">
+                <div class="fx-case-id" id="rgCaseId"></div>
+                <div class="fx-case-name" id="rgCaseName"></div>
+                <div class="fx-case-meta" id="rgCaseMeta"></div>
+              </div>
+              <div class="fx-decision is-approve" id="rgDecision">—</div>
+            </div>
+
+            <div class="fx-quote" id="rgSaid" style="margin-top:22px"></div>
+            <div class="fx-answer" id="rgAnswer"></div>
+          </div>
+
+          <div class="fx-card">
+            <div class="fx-h" id="rgFitH">What the mirror measured at purchase</div>
+            <div class="fx-facts" id="rgFacts"></div>
+            <div class="fx-areas" id="rgAreas" style="margin-top:20px"></div>
+            <div class="fx-rows" id="rgRows"></div>
+          </div>
+
+          <div class="fx-card">
+            <div class="fx-h">What stands out on this return</div>
+            <div class="fx-finds" id="rgFinds"></div>
+          </div>
+
+          <details class="fx-tech" id="rgTech">
+            <summary>The numbers behind this decision</summary>
+            <div class="fx-tech-body">
+              <div>
+                <div class="fx-h">Probability of fraud</div>
+                <div class="rg-top" style="align-items:center">
+                  <div class="rg-score" id="rgScore">0.000</div>
+                  <div class="rg-verdict is-approve" id="rgVerdict">Approve refund</div>
+                </div>
+                <div class="rg-bar-wrap">
+                  <div class="rg-bar">
+                    <div class="rg-bar-fill" id="rgFill" style="width:0%"></div>
+                    <div class="rg-bar-mark" id="rgMark" style="left:78.7%"></div>
+                  </div>
+                  <div class="rg-bar-ends">
+                    <span>0 · certainly genuine</span>
+                    <span>certainly fraud · 1</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rg-split" style="margin-top:26px;padding-top:24px">
+                <div>
+                  <div class="rg-h">Returned payload</div>
+                  <div class="rg-json" id="rgJson"></div>
+                </div>
+                <div>
+                  <div class="rg-h">Reason codes for the reviewer</div>
+                  <div class="rg-codes" id="rgCodes"></div>
+                </div>
+              </div>
+
+              <div class="rg-truth" id="rgTruth" style="display:none"></div>
+
+              <div class="rg-guard">
+                <b>This screen cannot deny a refund.</b> The only two outcomes are
+                <em>approve&nbsp;refund</em> and <em>route&nbsp;to&nbsp;review</em>, so a wrongly
+                flagged customer loses time, never their money. The threshold is set where
+                flagging costs less than not flagging, given a false positive is treated as
+                5× worse than a false negative.
+              </div>
+
+              <div class="rg-metrics" id="rgMetrics"></div>
+              <table class="rg-table" id="rgCandidates"></table>
+              <div class="rg-cap" id="rgCap"></div>
+            </div>
+          </details>
+
+        </div>
       </div>
     </div>
 
@@ -2362,6 +2487,11 @@ body.landing-active .app { display: none !important; }
 <!-- Outfit rating for live try-on. Loaded before the inline script below so
      OutfitScore is defined when that parses. -->
 <script src="outfit-score.js"></script>
+<!-- Turns a fit score into the reason for that score: chest, shoulder and
+     neck, in one sentence each. Shared by the Fit Analyser screen, the live
+     try-on readout and the Returns Guard case file so all three tell the
+     same story about the same garment. -->
+<script src="fit-report.js"></script>
 
 <script>
 // Backend host. This page is served by tryon_backend itself (it mounts
@@ -3592,6 +3722,18 @@ OutfitScore.load()
   .then(renderOutfitScore)
   .catch(err => console.warn('[outfit] fit_model.json not loaded —', err.message));
 
+// Everything that sizes a garment — the Fit Analyser, the Returns Guard case
+// files, the live readout — needs the size charts that arrive with
+// fit_model.json. They poll for it rather than racing it, but the poll gives
+// up after ~6s and calls onFail, so a missing model surfaces as a named
+// failure instead of a screen that never finishes loading.
+function whenOutfitScoreReady(onReady, onFail, waited) {
+  waited = waited || 0;
+  if (typeof OutfitScore !== 'undefined' && OutfitScore.model) return onReady();
+  if (waited >= 6000) return onFail && onFail();
+  setTimeout(() => whenOutfitScoreReady(onReady, onFail, waited + 120), 120);
+}
+
 function _osNum(id) {
   const v = parseFloat(document.getElementById(id).value);
   return Number.isFinite(v) ? v : 0;
@@ -3779,14 +3921,21 @@ async function avCreate() {
 /// the number itself, and a low-confidence class is still a real measurement.
 function sendTryOnToReturns() {
   if (!_osLastFit) return;
-  const note = 'Measured in live try-on — ' +
-    (_osLastFit.confident
-      ? _osLastFit.label.toLowerCase()
-      : 'no confident fit call, geometry only') +
-    ' (fit score ' + Math.round(_osLastFit.score100) + '/100).';
-  if (typeof window.rgApplyMismatch === 'function') {
-    window.rgApplyMismatch(_osLastFit.mismatch, note);
-  }
+  // Returns Guard now opens a case rather than taking a loose number, so the
+  // measured geometry is turned into the same reading shape the Fit Analyser
+  // and the case files use. That keeps one story per garment: the chest,
+  // shoulder and neck the returns desk reads are the ones measured here.
+  const reading = FitReport.fromMeasurements({
+    garmentType: toGarmentType || 'tshirt',
+    size: document.getElementById('osSize').value,
+    body: {
+      chest_cm: _osNum('osChest'),
+      shoulder_cm: _osNum('osShoulder'),
+      height_cm: _osNum('osHeight'),
+    },
+  });
+  if (!reading || typeof window.rgOpenFromFit !== 'function') return;
+  window.rgOpenFromFit(reading, { garment: 'Live try-on garment' });
   if (typeof window.switchTab === 'function') window.switchTab('returns');
 }
 
@@ -4618,30 +4767,39 @@ window.toggleArAvatar = async function() {
 </script>
 <script>
 /* ── Returns Guard ─────────────────────────────────────────────────
-   Cost-sensitive return-fraud triage, scored in the browser.
+   A case file for the person holding the garment that came back.
 
-   The shipped model is logistic regression, so inference is a dot
-   product and a sigmoid. Running it client-side means this screen has
-   no dependency on the GPU box — it keeps working whether or not the
-   try-on backend is up. The weights and the fitted preprocessing
-   constants come from returns_model.json, exported by
-   `python -m returns_risk.export_model`.
+   What changed, and why
+   ---------------------
+   This screen used to be eleven controls: a fit slider, garment, reason,
+   days, order value, prior orders, prior returns, account age, discount,
+   a try-on checkbox and four presets. Every one of those is a field the
+   system already holds against the garment ID on the return label.
+   Asking an operations engineer to retype them was the demo showing its
+   working — it made the model inspectable and the product unusable.
 
-   Verified against scikit-learn: identical to 2.2e-16 on every preset.
+   So the input is now one field: the ID. Everything else is looked up,
+   and the screen spends itself on the answer — what the shopper said,
+   what the mirror measured at purchase, what condition it arrived in,
+   and the paragraph that reconciles those three.
 
-   The model was trained on SYNTHETIC data. It demonstrates the decision
-   architecture, not real-world accuracy.
+   The model did not change
+   ------------------------
+   The same logistic regression from returns_model.json takes the same
+   decision on the same features, in the browser, verified against
+   scikit-learn to 2.2e-16. It was trained on SYNTHETIC data and
+   demonstrates the decision architecture, not real-world accuracy. The
+   probability, the reason codes, the threshold sweep and the cost
+   matrix are all still on the page, folded into the panel at the
+   bottom, because the reviewer auditing a call needs them and the
+   engineer acting on one does not.
    ────────────────────────────────────────────────────────────────── */
 (function () {
-  let M = null, activePreset = null;
-
+  let M = null, current = null;
   const $ = (id) => document.getElementById(id);
-  const NUM_IDS = {
-    fit_mismatch_score: 'rgFit', days_since_purchase: 'rgDays',
-    order_value_inr: 'rgValue', prior_orders_12m: 'rgOrders',
-    prior_returns_12m: 'rgReturns', account_age_days: 'rgAge',
-    discount_pct: 'rgDisc',
-  };
+
+  function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  const inr = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
 
   /* ── Inference — mirrors the sklearn Pipeline exactly ── */
   function score(values) {
@@ -4690,134 +4848,303 @@ window.toggleArAvatar = async function() {
     return codes;
   }
 
-  /* ── Read the form ── */
-  function readForm() {
-    const usedTryon = $('rgTryon').checked;
-    const orders = Math.max(0, parseInt($('rgOrders').value || '0', 10));
-    let returns = Math.max(0, parseInt($('rgReturns').value || '0', 10));
-    if (returns > orders) { returns = orders; $('rgReturns').value = String(returns); }
+  /* A reason code is a lookup key. An engineer reading a case wants the
+     sentence, so each code carries one — and the exculpatory ones read as
+     exculpatory rather than being one more grey chip in a row. */
+  const FINDING = {
+    FIT_CLAIM_CONTRADICTS_TRYON: [false,
+      'The mirror said it fitted.',
+      'This came back as a size problem, but the fit measured at purchase was well inside tolerance. The two do not agree.'],
+    FIT_CLAIM_WITHOUT_TRYON: [false,
+      'No try-on to check it against.',
+      'A size complaint with nothing measured at purchase. Not suspicious on its own — most shoppers never open the mirror — but there is nothing here to confirm or contradict.'],
+    FIT_CLAIM_SUPPORTED_BY_TRYON: [true,
+      'The mirror agrees with the shopper.',
+      'The fit measured at purchase was already outside tolerance. The size complaint is exactly what that reading predicted, which makes this return genuine and the sale the mistake.'],
+    HIGH_PRIOR_RETURN_RATE: [false,
+      'Returns most of what they order.',
+      'Half or more of this account\'s orders in the last twelve months came back.'],
+    LATE_IN_RETURN_WINDOW: [false,
+      'Returned late in the window.',
+      'Past twenty-eight days, near the edge of the policy.'],
+    HIGH_VALUE_ORDER: [false,
+      'High-value order.',
+      'Above ₹6,000, where the cost of getting this wrong is highest in both directions.'],
+    NEW_ACCOUNT: [false,
+      'New account.',
+      'Opened within the last sixty days, so there is little history to weigh.'],
+    REASON_NOT_AS_DESCRIBED: [false,
+      'Claimed the listing was wrong.',
+      'A description complaint, not a fit one — fit measurements cannot settle it either way.'],
+    REASON_DAMAGED: [false,
+      'Reported as damaged.',
+      'Goes to intake for physical inspection regardless of what this score says.'],
+  };
 
+  /* ── Case → model features ──────────────────────────────────────── */
+  function featuresFor(c, reading) {
+    const rate = c.orders > 0 ? c.returns / c.orders : 0;
     return {
-      fit_mismatch_score: usedTryon ? parseFloat($('rgFit').value) : null,
-      days_since_purchase: parseFloat($('rgDays').value),
-      order_value_inr: parseFloat($('rgValue').value || '0'),
-      prior_orders_12m: orders,
-      prior_returns_12m: returns,
-      prior_return_rate: orders > 0 ? returns / orders : 0,
-      account_age_days: parseFloat($('rgAge').value || '0'),
-      discount_pct: parseFloat($('rgDisc').value),
-      garment_type: $('rgGarment').value,
-      return_reason: $('rgReason').value,
-      used_tryon: usedTryon,
+      fit_mismatch_score: reading ? reading.mismatch : null,
+      days_since_purchase: c.days,
+      order_value_inr: c.value,
+      prior_orders_12m: c.orders,
+      prior_returns_12m: c.returns,
+      prior_return_rate: rate,
+      account_age_days: c.accountAge,
+      discount_pct: c.discount,
+      garment_type: M.preprocess.categories.garment_type.includes(c.garmentType)
+        ? c.garmentType : 'tshirt',
+      return_reason: c.reason,
+      used_tryon: !!reading,
     };
   }
 
-  function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  /* ── The paragraph that reconciles claim and evidence ─────────────
+     The one thing the engineer came here for: the shopper said X, the
+     mirror said Y, the garment arrived in state Z — which of those wins?
 
-  /* ── Render ── */
-  function render() {
+     It is written against the SAME facts the reason codes are built from,
+     so the paragraph and the findings below it cannot disagree. That was
+     the first thing this screen got wrong when it was a form: the summary
+     read off the worst deviation while the codes read off the mismatch
+     score, and on a good-score case the two said opposite things. */
+  function claimRow(c, reading) {
+    if (c.claimArea) {
+      const r = reading.rows.find(x => x.key === c.claimArea);
+      if (r) return r;
+    }
+    return reading.worst;
+  }
+
+  function answerFor(c, reading, p, flagged) {
+    const said = c.reason === 'doesnt_fit' ? 'a size problem'
+               : c.reason === 'not_as_described' ? 'the listing being wrong'
+               : c.reason === 'damaged' ? 'damage'
+               : c.reason === 'wrong_item' ? 'the wrong item arriving'
+               : 'a change of mind';
+    const quality = conditionPhrase(c);
+    const cm = (r) => (r.cm < 1 ? r.cm.toFixed(1) : Math.round(r.cm)) + ' cm';
+
+    if (c.reason !== 'doesnt_fit') {
+      const irrelevant = c.reason === 'damaged'
+        ? 'a garment can be cut perfectly and still arrive broken'
+        : c.reason === 'wrong_item'
+          ? 'the fit of the item we sent says nothing about the item they ordered'
+          : c.reason === 'not_as_described'
+            ? 'a good fit and a wrong description sit happily together'
+            : 'nobody has to keep something that fits';
+      return '<b>Fit is not the question here.</b> This came back over ' + said +
+        ', and ' + quality + '. The mirror scored it <b>' + reading.score10.toFixed(1) +
+        '/10</b> at purchase, which neither supports nor undercuts the claim — ' +
+        irrelevant + '. ' +
+        (flagged
+          ? 'It is routed to review on this account\'s history, not on the fit.'
+          : 'Nothing else about the return stands out, so the refund is approved.');
+    }
+
+    const row = claimRow(c, reading);
+    const where = 'the ' + row.label.toLowerCase();
+    const claimedTight = c.claimDir !== 'loose';
+    const measuredTight = row.dev < 0;
+    const agrees = row.tone !== 'good' && measuredTight === claimedTight;
+
+    if (agrees) {
+      // The mirror already knew. Whether the score showed it is the
+      // interesting part — an unscored point can be wrong at 8.4/10.
+      const hidden = !row.scored
+        ? ' The score could not have carried that on its own: <b>' +
+          reading.score10.toFixed(1) + '/10</b> weighs chest, shoulder, length and ' +
+          'sleeve, and the collar is measured but deliberately never scored. The ' +
+          'number was not wrong; it was never the whole answer.'
+        : reading.score10 >= 7.5
+          ? ' The headline <b>' + reading.score10.toFixed(1) + '/10</b> averaged it ' +
+            'away — one point outside tolerance does not move a weighted score far, ' +
+            'which is exactly why this screen shows the points and not just the total.'
+          : ' The score said so too, at <b>' + reading.score10.toFixed(1) + '/10</b>.';
+      const claimed = c.claimArea
+        ? 'They came back saying ' + where + ' was too ' +
+          (claimedTight ? 'tight' : 'loose') + ', and that is what the mirror ' +
+          'measured at purchase — '
+        : 'They came back saying it ran ' + (claimedTight ? 'small' : 'large') +
+          ', and ' + where + ' is where the mirror had already measured that worst — ';
+      return '<b>The shopper is right, and we sold it anyway.</b> ' + claimed +
+        row.word.toLowerCase() + ' by about ' + cm(row) + '.' + hidden + ' ' +
+        Cap(quality) + ', so this is a genuine return, and the failure was at the ' +
+        'point of sale.';
+    }
+
+    // The claim and the measurement point different ways.
+    const measured = row.tone === 'good'
+      ? where.charAt(0).toUpperCase() + where.slice(1) + ' was one of the points ' +
+        'the mirror measured as accurate — inside ' + cm(row) + ' of where this cut sits'
+      : where.charAt(0).toUpperCase() + where.slice(1) + ' did drift, but the other ' +
+        'way: ' + row.word.toLowerCase() + ' by about ' + cm(row);
+    return '<b>The claim and the measurement do not line up.</b> This came back as ' +
+      said + (c.claimArea
+        ? ' — specifically that ' + where + ' was too ' + (claimedTight ? 'tight' : 'loose')
+        : ', running ' + (claimedTight ? 'small' : 'large')) + '. ' +
+      measured + ', on a garment that ' +
+      'scored <b>' + reading.score10.toFixed(1) + '/10</b> overall. And ' + quality +
+      ', so there is no defect to explain it either. ' +
+      (flagged
+        ? 'That contradiction, on top of this account\'s history, is why it goes to a human rather than straight through.'
+        : 'On its own that is not enough to hold a refund — a shopper is allowed to dislike a garment that fits — so it is approved.');
+  }
+
+  function Cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  /* Condition arrives as "<tone> — <detail>". Match on the tone alone: an
+     earlier version tested the whole string, so "Good — no damage" reported
+     the garment as damaged and the report argued with itself. */
+  function conditionTone(c) {
+    const head = String(c.condition || '').split('—')[0].trim().toLowerCase();
+    return head.startsWith('damag') ? 'off' : head.startsWith('fair') ? 'watch' : 'good';
+  }
+  function conditionPhrase(c) {
+    const t = conditionTone(c);
+    return t === 'off' ? 'the garment arrived damaged'
+         : t === 'watch' ? 'the garment came back with light wear'
+         : 'the garment came back in good condition';
+  }
+
+  /* ── Render ─────────────────────────────────────────────────────── */
+  function render(c, reading) {
     if (!M) return;
-    const v = readForm();
+    current = { c, reading };
+
+    const v = featuresFor(c, reading);
     const p = score(v);
-    const threshold = M.decision.threshold;
-    const flagged = p >= threshold;
-    const action = flagged ? 'route_to_review' : 'approve_refund';
+    const flagged = p >= M.decision.threshold;
 
-    // Live echoes on the sliders
-    $('rgFitVal').textContent = v.used_tryon ? v.fit_mismatch_score.toFixed(2) : 'n/a';
-    $('rgDaysVal').textContent = v.days_since_purchase;
-    $('rgDiscVal').textContent = v.discount_pct + '%';
-    $('rgRateVal').textContent = 'rate ' + (v.prior_return_rate * 100).toFixed(0) + '%';
-    $('rgFitField').classList.toggle('is-off', !v.used_tryon);
+    $('rgEmptyCard').style.display = 'none';
+    $('rgReport').style.display = 'block';
 
+    $('rgCaseId').textContent = c.id + (c.generated ? '  ·  generated for the demo' : '');
+    $('rgCaseName').textContent = c.garment + ' · size ' + c.size;
+    $('rgCaseMeta').textContent =
+      c.customer + ' · ' + inr(c.value) + ' · returned ' + c.days +
+      (c.days === 1 ? ' day' : ' days') + ' after purchase';
+
+    const dec = $('rgDecision');
+    dec.textContent = flagged ? 'Route to review' : 'Approve refund';
+    dec.className = 'fx-decision ' + (flagged ? 'is-review' : 'is-approve');
+
+    $('rgSaid').innerHTML = '<span>What the shopper said</span>' + esc(c.reasonSaid);
+
+    /* The three answers, in the order the question gets asked: what did
+       the fit model say, what condition did it come back in, and is this
+       account behaving normally. No sliders, no arithmetic on screen. */
+    const rate = c.orders > 0 ? Math.round(c.returns / c.orders * 100) : 0;
+    const condTone = conditionTone(c);
+    const behTone  = rate >= 50 ? 'off' : rate >= 30 ? 'watch' : 'good';
+    $('rgFacts').innerHTML = [
+      ['Fit Analyser at purchase', reading.score10.toFixed(1) + ' / 10 — ' + reading.verdict,
+       reading.headline,
+       reading.offCount ? 'off' : reading.watchCount ? 'watch' : 'good'],
+      ['Condition on return', Cap(c.condition.split('—')[0].trim()),
+       c.condition.includes('—') ? Cap(c.condition.split('—')[1].trim()) + '.' : '',
+       condTone],
+      ['This account', c.returns + ' of ' + c.orders + ' orders returned',
+       rate >= 50 ? 'Returns most of what they order — the strongest single signal on this screen.'
+       : rate >= 30 ? 'Returns more than most, but within the range of an ordinary shopper.'
+       : 'Returns about as often as anyone else. Nothing unusual.',
+       behTone],
+    ].map(([l, val, note, tone]) =>
+      '<div class="fx-fact">' +
+        '<div class="fx-fact-l">' + esc(l) + '</div>' +
+        '<div class="fx-fact-v is-' + tone + '" style="color:' +
+          (tone === 'off' ? 'var(--berry)' : tone === 'watch' ? 'var(--gold-ink)' : 'var(--ok)') +
+          '">' + esc(val) + '</div>' +
+        (note ? '<div class="fx-fact-n">' + esc(note) + '</div>' : '') +
+      '</div>').join('');
+
+    $('rgFitH').textContent = 'What the mirror measured at purchase — ' +
+      reading.score10.toFixed(1) + '/10';
+    $('rgAreas').innerHTML = reading.core.map(window.fxAreaCard).join('');
+    $('rgRows').innerHTML = reading.secondary.map(window.fxSecondaryRow).join('');
+
+    $('rgAnswer').innerHTML = answerFor(c, reading, p, flagged);
+
+    /* Findings: the reason codes, as sentences. */
+    const codes = explain(v);
+    $('rgFinds').innerHTML = codes.length
+      ? codes.map(([code, clear]) => {
+          const f = FINDING[code] || [clear, code, ''];
+          return '<div class="fx-find">' +
+            '<span class="fx-mark is-' + (f[0] ? 'good' : 'watch') + '">' +
+              (f[0] ? '✓' : '!') + '</span>' +
+            '<div class="fx-find-t"><b>' + esc(f[1]) + '</b> ' + esc(f[2]) + '</div>' +
+          '</div>';
+        }).join('')
+      : '<div class="fx-find"><span class="fx-mark is-good">✓</span>' +
+        '<div class="fx-find-t"><b>Nothing unusual about this return.</b> ' +
+        'No signal on this case crossed the line where it would be worth a ' +
+        'reviewer\'s time.</div></div>';
+
+    /* ── The folded evidence ── */
     $('rgScore').textContent = p.toFixed(3);
     const verdict = $('rgVerdict');
     verdict.textContent = flagged ? 'Route to review' : 'Approve refund';
     verdict.className = 'rg-verdict ' + (flagged ? 'is-review' : 'is-approve');
-
     const fill = $('rgFill');
     fill.style.width = (p * 100).toFixed(2) + '%';
     fill.className = 'rg-bar-fill' + (flagged ? ' is-review' : '');
-    $('rgMark').style.left = (threshold * 100).toFixed(2) + '%';
+    $('rgMark').style.left = (M.decision.threshold * 100).toFixed(2) + '%';
 
     $('rgJson').innerHTML =
-      '{\n  <span class="k">"flagged"</span>: <span class="n">' + flagged + '</span>,\n' +
+      '{\n  <span class="k">"garment_id"</span>: <span class="s">"' + esc(c.id) + '"</span>,\n' +
+      '  <span class="k">"fit_mismatch_score"</span>: <span class="n">' +
+        (v.fit_mismatch_score === null ? 'null' : v.fit_mismatch_score.toFixed(4)) + '</span>,\n' +
+      '  <span class="k">"flagged"</span>: <span class="n">' + flagged + '</span>,\n' +
       '  <span class="k">"confidence"</span>: <span class="n">' + p.toFixed(4) + '</span>,\n' +
-      '  <span class="k">"action"</span>: <span class="s">"' + action + '"</span>\n}';
+      '  <span class="k">"action"</span>: <span class="s">"' +
+        (flagged ? 'route_to_review' : 'approve_refund') + '"</span>\n}';
 
-    const codes = explain(v);
     $('rgCodes').innerHTML = codes.length
-      ? codes.map(([c, clear]) =>
-          '<span class="rg-code' + (clear ? ' is-clear' : '') + '">' + esc(c) + '</span>').join('')
+      ? codes.map(([code, clear]) =>
+          '<span class="rg-code' + (clear ? ' is-clear' : '') + '">' + esc(code) + '</span>').join('')
       : '<span class="rg-none">Nothing unusual about this return.</span>';
 
-    // Ground truth, when a real test-set case is loaded
-    const truth = $('rgTruth');
-    if (activePreset) {
-      const isFraud = activePreset.truth === 1;
-      const correct = (flagged === isFraud);
-      truth.style.display = 'block';
-      truth.className = 'rg-truth' + (correct ? '' : ' is-wrong');
-      truth.innerHTML =
-        '<b>' + esc(activePreset.label) + '</b> — held-out test case. ' +
-        'Ground truth: <b>' + (isFraud ? 'FRAUDULENT' : 'GENUINE') + '</b>. ' +
-        'The model is <b>' + (correct ? 'right' : 'wrong') + '</b> here. ' +
-        esc(activePreset.note);
-    } else {
-      truth.style.display = 'none';
-    }
+    $('rgTruth').style.display = 'none';
+    $('rgStatusText').textContent = 'Case ' + c.id + ' · scored on device';
   }
 
-  /* ── Presets ── */
-  function applyPreset(preset, button) {
-    const v = preset.values;
-    $('rgTryon').checked = !!v.used_tryon;
-    if (v.fit_mismatch_score !== null && v.fit_mismatch_score !== undefined)
-      $('rgFit').value = v.fit_mismatch_score;
-    $('rgDays').value = Math.round(v.days_since_purchase);
-    $('rgValue').value = Math.round(v.order_value_inr);
-    $('rgOrders').value = v.prior_orders_12m;
-    $('rgReturns').value = v.prior_returns_12m;
-    $('rgAge').value = Math.round(v.account_age_days);
-    $('rgDisc').value = v.discount_pct;
-    $('rgGarment').value = v.garment_type;
-    $('rgReason').value = v.return_reason;
-    activePreset = preset;
-    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
-    if (button) button.classList.add('active');
-    render();
+  /* ── Lookup ─────────────────────────────────────────────────────── */
+  function open(c, btn) {
+    document.querySelectorAll('#rgCases .fx-item').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    render(c, FitReport.readingForCase(c));
   }
 
-  /* Receive a fit_mismatch_score measured by the Fit Analyser.
-     This is the actual join between the two models: what the mirror
-     measured at purchase becomes an input feature at the returns desk,
-     where a HIGH mismatch makes a "doesn't fit" claim more credible. */
-  window.rgApplyMismatch = function (mismatch, note) {
-    const fit = document.getElementById('rgFit');
-    const tryon = document.getElementById('rgTryon');
-    if (!fit || !tryon) return;
-    tryon.checked = true;                    // the score only exists if they used it
-    fit.value = Math.max(0, Math.min(1, mismatch)).toFixed(2);
-    activePreset = null;
-    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
-    render();
-    const banner = document.getElementById('rgHandoffIn');
-    if (banner) {
-      banner.style.display = 'block';
-      banner.innerHTML = '<b>Received from Fit Analyser.</b> ' + (note || '') +
-        ' fit_mismatch_score <code>' + mismatch.toFixed(3) + '</code> is now an input below.';
-    }
+  window.rgFind = function () {
+    const q = $('rgQuery').value.trim();
+    if (!q) return;
+    const c = FitReport.lookup(q);
+    if (!c) return;
+    const known = FitReport.cases.findIndex(x => x.id === c.id);
+    const btn = known >= 0 ? document.querySelectorAll('#rgCases .fx-item')[known] : null;
+    open(c, btn);
   };
 
-  window.rgReset = function () {
-    activePreset = null;
-    document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
-    $('rgTryon').checked = true;
-    $('rgFit').value = 0.30; $('rgDays').value = 8; $('rgValue').value = 1800;
-    $('rgOrders').value = 5; $('rgReturns').value = 1; $('rgAge').value = 540;
-    $('rgDisc').value = 12;
-    $('rgGarment').value = 'tshirt'; $('rgReason').value = 'doesnt_fit';
-    render();
+  /* Arriving from the Fit Analyser: the score the mirror just produced
+     becomes the fit evidence on a hypothetical return of that garment.
+     This is the join between the two models made walkable rather than
+     described — the number does not get retyped, it travels. */
+  window.rgOpenFromFit = function (reading, ctx) {
+    const c = {
+      id: 'MF-LIVE-' + String(FitReport.seedFrom(ctx.garment + reading.score10)).slice(0, 4),
+      generated: true,
+      garment: ctx.garment, garmentType: reading.garmentType, size: reading.size,
+      customer: 'This session', reason: 'doesnt_fit',
+      reasonSaid: 'Hypothetical: this garment comes back as a size problem',
+      condition: 'Good — as sent',
+      value: 2200, days: 7, orders: 5, returns: 1, accountAge: 540, discount: 0,
+      score10: reading.score10,
+    };
+    document.querySelectorAll('#rgCases .fx-item').forEach(b => b.classList.remove('active'));
+    $('rgQuery').value = c.id;
+    render(c, reading);
   };
 
   /* ── Static panels ── */
@@ -4854,46 +5181,44 @@ window.toggleArAvatar = async function() {
       'this demonstrates the decision architecture, not real-world accuracy.';
   }
 
-  function fillSelects() {
-    const label = (s) => s.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    $('rgGarment').innerHTML = M.preprocess.categories.garment_type
-      .map(g => '<option value="' + g + '">' + label(g) + '</option>').join('');
-    $('rgReason').innerHTML = M.preprocess.categories.return_reason
-      .map(r => '<option value="' + r + '">' + label(r) + '</option>').join('');
-    $('rgPresets').innerHTML = M.presets
-      .map((p, i) => '<button class="rg-preset" data-i="' + i + '">' + esc(p.label) + '</button>')
-      .join('');
-    document.querySelectorAll('.rg-preset').forEach((b) => {
-      b.addEventListener('click', () => applyPreset(M.presets[+b.dataset.i], b));
-    });
-  }
+  /* The model's enum, spelled the way a person writes it — title-casing the
+     raw value gave "Doesnt Fit" in the case list. */
+  const REASON_LABEL = {
+    doesnt_fit: "Doesn't fit", not_as_described: 'Not as described',
+    damaged: 'Damaged', wrong_item: 'Wrong item', changed_mind: 'Changed mind',
+  };
 
-  function bind() {
-    Object.values(NUM_IDS).forEach((id) => {
-      const el = $(id);
-      if (el) el.addEventListener('input', () => { activePreset = null;
-        document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
-        render(); });
+  function fillCases() {
+    const label = (s) => REASON_LABEL[s] ||
+      s.replace(/_/g, ' ').replace(/\b\w/, c => c.toUpperCase());
+    $('rgCases').innerHTML = FitReport.cases.map((c, i) =>
+      '<button class="fx-item" data-i="' + i + '">' +
+        '<div class="fx-item-id">' + esc(c.id) + '</div>' +
+        '<div class="fx-item-t">' + esc(c.garment) + '</div>' +
+        '<div class="fx-item-s">' + esc(label(c.reason)) + ' · ' + inr(c.value) + '</div>' +
+      '</button>').join('');
+    document.querySelectorAll('#rgCases .fx-item').forEach((b) => {
+      b.addEventListener('click', () => open(FitReport.cases[+b.dataset.i], b));
     });
-    ['rgTryon', 'rgGarment', 'rgReason'].forEach((id) => {
-      const el = $(id);
-      if (el) el.addEventListener('change', () => { activePreset = null;
-        document.querySelectorAll('.rg-preset').forEach(b => b.classList.remove('active'));
-        render(); });
-    });
+    const q = $('rgQuery');
+    if (q) q.addEventListener('keydown', (e) => { if (e.key === 'Enter') window.rgFind(); });
   }
 
   fetch('returns_model.json')
     .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then((json) => {
       M = json;
-      fillSelects();
+      fillCases();
       paintStatics();
-      bind();
-      // Open on the false positive: it is the case worth showing.
-      const fp = M.presets.find(p => p.label === 'False positive');
-      if (fp) applyPreset(fp, document.querySelector('.rg-preset'));
-      else render();
+      // Open on the size-complaint case: it is the one the whole screen
+      // exists to answer — a good fit score and a "too small" return.
+      whenOutfitScoreReady(
+        () => open(FitReport.cases[0], document.querySelector('#rgCases .fx-item')),
+        () => {
+          $('rgDot').classList.remove('on');
+          $('rgStatusText').textContent = 'fit_model.json not found — cases cannot be scored';
+        }
+      );
     })
     .catch((err) => {
       const dot = $('rgDot'), txt = $('rgStatusText');
@@ -4903,340 +5228,278 @@ window.toggleArAvatar = async function() {
     });
 })();
 </script>
+
 <script>
-/* ── Fit Analyser — REAL DATA ──────────────────────────────────────
-   Predicts whether an item will run small, true to size, or large for
-   a given shopper.
+/* ── Fit Analyser ──────────────────────────────────────────────────
+   Answers one question: you were given a score — why that score?
 
-   Trained on 192,544 real RentTheRunway rentals (Misra, Wan & McAuley,
-   RecSys 2018 — UCSD). Labels are what the renter actually reported
-   after wearing the garment, so they carry genuine human disagreement
-   about what "fits" means.
+   What changed, and why
+   ---------------------
+   This screen used to be a form. Height, weight, bust band, cup, age,
+   body type, category, rented-for, size, preferred cut, and four
+   history sliders — thirteen inputs before it would say anything. That
+   is a modelling console, and it was the right screen for whoever was
+   tuning the model. It is the wrong screen for the person who has just
+   been handed "8.4" and wants to know what the missing 1.6 was.
 
-   Multinomial logistic regression with class_weight='balanced', scored
-   in the browser. Weights from fit_model_real.json, exported by
-   `python -m fit_score.real_model --export`.
+   So the inputs are gone. The score now arrives from the session the
+   shopper just had, and the screen spends its whole surface on the
+   reason: chest, shoulder, neck — accurate, or not, and by how much.
+   Length and sleeve sit underneath as secondary rows.
 
-   Honest framing, stated on screen: 73.8% of the data is labelled "fit",
-   so always answering "fit" scores 73.8% accuracy while never warning
-   anyone. This model trades accuracy (66.5%) for macro F1 (0.471 vs a
-   0.284 baseline) — it is deliberately willing to be wrong in order to
-   be useful.
+   Where the reason comes from
+   ---------------------------
+   fit-report.js. Two paths, and the screen always names the one it
+   used: a measured reading when chest and shoulder are on file, and
+   otherwise a reconstruction that inverts fitScore() so the rows add
+   back up to the number shown. A reconstruction is not a measurement
+   and the footer says so — the same honesty the live readout already
+   carries.
+
+   The real-outcome model (fit_model_real.json, 192,544 RentTheRunway
+   rentals) is still loaded, but only for the evidence panel at the
+   bottom. Its features are bust cup, age and collaborative item rates —
+   none of which exist for someone pointing a webcam at themselves, and
+   none of which answer "was the collar right". It is honest about its
+   own limits; putting its form in front of a shopper was not.
    ────────────────────────────────────────────────────────────────── */
 (function () {
-  let M = null, active = null;
   const $ = (id) => document.getElementById(id);
-  const CUPS = ['AA','A','B','C','D','DD','DDD','G','H'];
-  const PRIOR = { small: 0.134, large: 0.128 };
-
-  const COPY = {
-    small: ['Runs small', 'Expect this to be tighter than the label suggests. Most shoppers with this profile would size up.'],
-    fit:   ['True to size', 'The size taken should wear as labelled for this shopper.'],
-    large: ['Runs large', 'Expect extra room. Most shoppers with this profile would size down.'],
-  };
-
-  const n = (id, d) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : d; };
-  /* Empty field == unknown. Returning null lets the imputer handle it the
-     same way scikit-learn did at training time, instead of inventing a
-     value that quietly moves the prediction. */
-  const nOrNull = (id) => {
-    const raw = $(id).value;
-    if (raw === '' || raw === null || raw === undefined) return null;
-    const v = parseFloat(raw);
-    return Number.isFinite(v) ? v : null;
-  };
-
-  /* Model inputs the form has no control for. A loaded rental supplies its
-     real values; otherwise 0 means "typical for this item", which is the
-     honest neutral rather than an accidental missing value. */
-  function carried() {
-    const v = (active && active.values) || {};
-    // A loaded rental keeps its gaps: if the source row had no value, the
-    // model must see "missing" and fire its indicator, exactly as at
-    // training time. Only when nothing is loaded do we fall back to the
-    // neutral default.
-    const pick = (k, d) => {
-      if (!(k in v)) return d;
-      return (v[k] === null || v[k] === undefined) ? null : v[k];
-    };
-    return {
-      size_vs_user: pick('size_vs_user', 0),
-      size_vs_item: pick('size_vs_item', 0),
-      user_size_std: pick('user_size_std', null),
-      item_n: pick('item_n', 40),
-      user_n: pick('user_n', 8),
-      bmi_vs_item: pick('bmi_vs_item', 0),
-      weight_vs_item: pick('weight_vs_item', 0),
-      height_vs_item: pick('height_vs_item', 0),
-      bust_vs_item: pick('bust_vs_item', 0),
-      item_size_std: pick('item_size_std', null),
-    };
-  }
-
-  function readForm() {
-    const h = nOrNull('faHeight'), w = nOrNull('faWeight');
-    return {
-      height_in: h, weight_lb: w,
-      bmi: (h && w && h > 0) ? 703 * w / (h * h) : null,
-      bust_band: nOrNull('faBand'), bust_cup: nOrNull('faCup'),
-      size: n('faSize', 12), age: nOrNull('faAge'),
-      // Features the form does not expose. When a real rental is loaded we
-      // carry its actual values; when the user is freestyling we use the
-      // neutral 0 — "this shopper is typical for this item" — rather than
-      // letting them fall to undefined and be silently imputed.
-      // The four history sliders — the strongest signals in the model.
-      item_small_rate: n('faItemSmall', 0.134),
-      item_large_rate: n('faItemLarge', 0.128),
-      user_small_rate: n('faUserSmall', 0.134),
-      user_large_rate: n('faUserLarge', 0.128),
-      ...carried(),
-      body_type: $('faBody').value, category: $('faCat').value,
-      rented_for: $('faFor').value,
-    };
-  }
-
-  /* Mirrors the sklearn Pipeline: impute -> indicator -> scale -> one-hot. */
-  function classify(v) {
-    const P = M.preprocess, F = M.features;
-    const num = [];
-    F.numeric.forEach((name, i) => {
-      const x = v[name];
-      const missing = (x === null || x === undefined || Number.isNaN(x));
-      num.push(missing ? P.impute_medians[i] : Number(x));
-    });
-    P.indicator_features.forEach((name) => {
-      const x = v[name];
-      num.push((x === null || x === undefined || Number.isNaN(x)) ? 1 : 0);
-    });
-    const row = num.map((x, i) => (x - P.scaler_mean[i]) / P.scaler_scale[i]);
-
-    // OneHotEncoder(min_frequency=30) appends an "infrequent" column per
-    // categorical when rare levels were collapsed during fit.
-    F.categorical.forEach((col) => {
-      const levels = P.categories[col];
-      const rare = (P.infrequent && P.infrequent[col]) || [];
-      const kept = levels.filter(l => !rare.includes(l));
-      kept.forEach(l => row.push(v[col] === l ? 1 : 0));
-      if (rare.length) row.push(rare.includes(v[col]) ? 1 : 0);
-    });
-
-    const logits = M.model.coef.map((c, k) =>
-      c.reduce((s, w, i) => s + w * (row[i] || 0), M.model.intercept[k]));
-    const top = Math.max(...logits);
-    const exp = logits.map(z => Math.exp(z - top));
-    const sum = exp.reduce((a, b) => a + b, 0);
-    const probs = exp.map(z => z / sum);
-    const best = probs.indexOf(Math.max(...probs));
-    return { cls: M.classes[best], confidence: probs[best], probs };
-  }
+  let REAL = null;          // fit_model_real.json — evidence panel only
+  let reading = null;       // the current explanation
+  let context = null;       // {label, garment, source}
 
   function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
-  function render() {
-    if (!M) return;
-    const v = readForm();
-    const { cls, confidence, probs } = classify(v);
+  const MARK = { good: '✓', watch: '!', off: '✕' };
 
-    $('faCupVal').textContent = CUPS[Math.round(n('faCup', 4))] || 'D';
-    [['faItemSmall','faItemSmallVal'],['faItemLarge','faItemLargeVal'],
-     ['faUserSmall','faUserSmallVal'],['faUserLarge','faUserLargeVal']]
-      .forEach(([a,b]) => { $(b).textContent = Math.round(n(a,0)*100) + '%'; });
+  function areaCard(row) {
+    return '<div class="fx-area">' +
+      '<div class="fx-area-h">' +
+        '<span class="fx-mark is-' + row.tone + '">' + MARK[row.tone] + '</span>' +
+        '<span class="fx-area-l">' + esc(row.label) + '</span>' +
+      '</div>' +
+      '<div class="fx-area-v is-' + row.tone + '">' + esc(row.word) + '</div>' +
+      '<div class="fx-area-line">' + esc(row.line) + '</div>' +
+      (row.scored ? '' : '<div class="fx-area-note">Measured, not scored</div>') +
+    '</div>';
+  }
 
-    // Confidence gate — mirrors real_model.gate(). Below the threshold we
-    // stay silent rather than move the shopper to a worse size.
-    const gateT = (M.gate && M.gate.min_confidence) || 0;
-    let gated = (cls !== 'fit' && confidence < gateT) ? 'fit' : cls;
-    const suppressed = (gated !== cls);
+  function secondaryRow(row) {
+    return '<div class="fx-row">' +
+      '<div class="fx-row-l">' + esc(row.label) + '</div>' +
+      '<div class="fx-row-v is-' + row.tone + '">' + esc(row.word) + '</div>' +
+      '<div class="fx-row-line">' + esc(row.line) + '</div>' +
+    '</div>';
+  }
 
-    // Preference layer, applied AFTER the model and never inside it. The
-    // classifier answers a factual question — will this run large? The
-    // shopper's preference answers a different one — do they mind? Folding
-    // taste into the model would corrupt its probabilities; layering it on
-    // top keeps both answers separately inspectable.
-    const pref = ($('faPref') || {}).value || 'regular';
-    const layers = !!(($('faLayer') || {}).checked);
-    let prefNote = '';
-    if (gated === 'large' && (pref === 'relaxed' || layers)) {
-      gated = 'fit';
-      prefNote = layers && pref !== 'relaxed'
-        ? 'Runs large, but you layer underneath — that room is useful.'
-        : 'Runs large, and you prefer a relaxed cut — so this suits you.';
-    } else if (gated === 'small' && pref === 'fitted') {
-      prefNote = 'Runs small, though you prefer a close fit — you may still want it.';
-    } else if (gated === 'fit' && pref === 'relaxed' && cls === 'fit') {
-      prefNote = 'True to size, which will read closer than a relaxed cut.';
-    } else if (gated === 'fit' && pref === 'fitted' && cls === 'fit') {
-      prefNote = 'True to size, which will sit looser than a fitted cut.';
+  window.fxAreaCard = areaCard;
+  window.fxSecondaryRow = secondaryRow;
+
+  /* The closing paragraph: what the shopper should actually do about it. */
+  function advice(r) {
+    const worst = r.worst;
+    if (worst.tone === 'good') {
+      return '<b>Nothing to change.</b> Every point this cut is drawn around ' +
+        'landed inside tolerance on you, so a different size would move you ' +
+        'away from the fit, not towards it.';
     }
+    const tight = worst.dev < 0;
+    if (worst.key === 'neck') {
+      return '<b>The size is right; the collar is not.</b> Neck sits outside ' +
+        'the range this cut expects, and it is the one place a size change ' +
+        'will not fix — the next size up moves the chest and shoulder too. ' +
+        'Look for the same size in a cut with a ' + (tight ? 'wider' : 'closer') +
+        ' collar.';
+    }
+    if (worst.tone === 'watch') {
+      return '<b>Wearable as it is.</b> The ' + worst.label.toLowerCase() +
+        ' is the only point that drifted, and not far enough to be worth ' +
+        'a size change — moving up or down would trade this for a worse ' +
+        'problem somewhere else.';
+    }
+    return '<b>Try one size ' + (tight ? 'up' : 'down') + '.</b> The ' +
+      worst.label.toLowerCase() + ' is far enough outside the range that it ' +
+      'will show, and it is the point a size change moves most.';
+  }
 
-    const copy = COPY[gated] || [gated, ''];
-    $('faVerdict').textContent = suppressed ? 'No advice' : copy[0];
-    $('faNote').textContent = suppressed
-      ? ('The model leans "' + (COPY[cls] ? COPY[cls][0] : cls) + '" but only at ' +
-         (confidence*100).toFixed(0) + '% confidence, under the ' +
-         (gateT*100).toFixed(0) + '% bar. Staying quiet: bad sizing advice moves a ' +
-         'shopper to a worse size and causes the return it meant to prevent.')
-      : (prefNote || copy[1]);
-    $('faConf').textContent = (confidence * 100).toFixed(1) + '% confidence'
-      + (active ? '  ·  real rental, actual outcome: ' + active.truth : '');
+  function show(r, ctx) {
+    reading = r; context = ctx;
+    if (!r) return;
 
-    // "Fit score" here is P(fit) — the only honest score this data supports.
-    const pFit = probs[M.classes.indexOf('fit')] ?? 0;
-    void suppressed;
-    const score = pFit * 100;
-    $('faScore').textContent = Math.round(score);
+    $('faWhat').textContent = ctx.label;
+    $('faVerdict').textContent = r.verdict;
+    $('faHeadline').textContent = r.headline;
+
+    $('faScore').textContent = r.score10.toFixed(1);
     const circ = 2 * Math.PI * 58;
-    $('faDialArc').setAttribute('stroke-dashoffset', String(circ * (1 - score / 100)));
-    $('faDialArc').setAttribute('stroke',
-      cls === 'fit' ? '#1E7A52' : '#A8194E');
+    const frac = Math.max(0, Math.min(1, r.score10 / 10));
+    $('faDialArc').setAttribute('stroke-dashoffset', String(circ * (1 - frac)));
+    $('faDialArc').setAttribute('stroke', r.offCount ? '#A8194E' : r.watchCount ? '#8A6737' : '#1E7A52');
 
-    // Full distribution — with three classes, the runner-up matters.
-    $('faDevs').innerHTML = M.classes.map((c, i) => {
-      const pct = probs[i] * 100;
-      const on = c === cls;
+    $('faAreas').innerHTML = r.core.map(areaCard).join('');
+    $('faRows').innerHTML = r.secondary.map(secondaryRow).join('');
+    $('faAnswer').innerHTML = advice(r);
+
+    $('faSend').style.display = 'block';
+    $('faTech').style.display = 'block';
+    paintTech(r, ctx);
+
+    $('faStatusText').textContent = r.source === 'measured'
+      ? 'Measured against the size chart'
+      : 'Reconstructed from the session score';
+  }
+
+  /* ── Evidence panel ──────────────────────────────────────────────
+     Deliberately the last thing on the page, and folded shut. It holds
+     the per-point deviations, the payload the returns desk receives,
+     and the honest read on how good this family of models actually is. */
+  function paintTech(r, ctx) {
+    $('faDevs').innerHTML = r.rows.map((row) => {
+      const pct = Math.min(100, Math.abs(row.dev) / 0.20 * 50);
+      const left = row.dev < 0 ? (50 - pct) : 50;
       return '<div class="fa-dev">' +
-        '<div class="fa-dev-l">' + esc(COPY[c] ? COPY[c][0] : c) + '</div>' +
+        '<div class="fa-dev-l">' + esc(row.label) + '</div>' +
         '<div class="fa-dev-track">' +
-          '<div class="fa-dev-bar' + (on ? '' : ' ') + '" style="left:0;width:' +
-            pct.toFixed(1) + '%;' + (on ? '' : 'background:#B9B3AA') + '"></div>' +
+          '<div class="fa-dev-mid"></div>' +
+          '<div class="fa-dev-bar' + (row.tone === 'good' ? '' : ' is-out') +
+            '" style="left:' + left.toFixed(1) + '%;width:' + pct.toFixed(1) + '%"></div>' +
         '</div>' +
-        '<div class="fa-dev-v' + (on ? ' is-out' : '') + '">' + pct.toFixed(1) + '%</div>' +
+        '<div class="fa-dev-v' + (row.tone === 'good' ? '' : ' is-out') + '">' +
+          (row.dev >= 0 ? '+' : '−') + (Math.abs(row.dev) * 100).toFixed(1) + '%' +
+        '</div>' +
       '</div>';
     }).join('');
 
-    const mismatch = Math.max(0, Math.min(1, 1 - pFit));
     $('faJson').innerHTML =
-      '{\n  <span class="k">"fit_prediction"</span>: <span class="s">"' + gated + '"</span>,\n' +
-      '  <span class="k">"raw_prediction"</span>: <span class="s">"' + cls + '"</span>,\n' +
-      '  <span class="k">"advice_shown"</span>: <span class="n">' + (!suppressed && gated !== 'fit') + '</span>,\n' +
-      '  <span class="k">"confidence"</span>: <span class="n">' + confidence.toFixed(4) + '</span>,\n' +
-      '  <span class="k">"p_fit"</span>: <span class="n">' + pFit.toFixed(4) + '</span>,\n' +
-      '  <span class="k">"fit_mismatch_score"</span>: <span class="n">' + mismatch.toFixed(3) + '</span>\n}';
+      '{\n  <span class="k">"garment"</span>: <span class="s">"' + esc(ctx.garment) + '"</span>,\n' +
+      '  <span class="k">"size"</span>: <span class="s">"' + esc(r.size) + '"</span>,\n' +
+      '  <span class="k">"fit_score"</span>: <span class="n">' + r.score10.toFixed(1) + '</span>,\n' +
+      '  <span class="k">"fit_mismatch_score"</span>: <span class="n">' + r.mismatch.toFixed(3) + '</span>,\n' +
+      '  <span class="k">"reading"</span>: <span class="s">"' + r.source + '"</span>,\n' +
+      r.rows.map(row => '  <span class="k">"dev_' + row.key + '"</span>: <span class="n">' +
+        row.dev.toFixed(4) + '</span>').join(',\n') + '\n}';
 
-    const g = M.gate || {};
-    const imp = g.impact || {}, un = g.ungated || {};
-    $('faHandoff').innerHTML =
-      '<b>Why this only speaks when it is sure.</b> A warning moves the shopper to a ' +
-      'different size: right, and the return never happens; wrong, and we caused one. ' +
-      'Across ' + (M.test_metrics.n || 0).toLocaleString() + ' held-out rentals, warning on ' +
-      'every prediction nets <b>' + (un.net || 0).toLocaleString() + '</b> returns — it causes ' +
-      'more than it prevents. Warning only above ' + ((g.min_confidence||0)*100).toFixed(0) +
-      '% confidence nets <b>+' + (imp.net || 0).toLocaleString() + '</b> ' +
-      '(' + (imp.prevented||0).toLocaleString() + ' prevented, ' +
-      (imp.caused||0).toLocaleString() + ' caused, precision ' +
-      ((imp.warn_precision||0)*100).toFixed(0) + '%). ' +
-      'Every prevented return is also a refund that never reaches the payment rail.';
+    $('faHandoff').innerHTML = r.source === 'measured'
+      ? '<b>Measured.</b> Chest and shoulder came from the session; length and ' +
+        'sleeve are estimated from height, which is why they carry the smallest ' +
+        'weight in the score. The collar is real geometry but sits outside the ' +
+        'score — <code>fit_score</code> weights chest, shoulder, length and sleeve, ' +
+        'and adding a fifth term would mean claiming a model nobody trained.'
+      : '<b>Reconstructed, not measured.</b> No chest or shoulder was recorded for ' +
+        'this session, so the per-point figures are the deviations that reproduce ' +
+        'the stored score exactly through <code>fit_score()</code>. They are ' +
+        'internally consistent with the number above and with each other, and they ' +
+        'are the right shape for the reading — but they are an explanation of a ' +
+        'score, not a measurement of a body. Feed the mirror a chest and shoulder ' +
+        'and this same panel becomes measured.';
+
+    if (!REAL) return;
+    const m = REAL.test_metrics, g = REAL.gate || {}, i0 = g.impact || {}, u0 = g.ungated || {};
+    $('faMetrics').innerHTML = [
+      ['+' + (i0.net || 0).toLocaleString(), 'Net returns prevented'],
+      [((i0.warn_precision || 0) * 100).toFixed(0) + '%', 'Warning precision'],
+      [(u0.net || 0).toLocaleString(), 'If it warned every time'],
+      [m.macro_f1.toFixed(3), 'Macro F1 (base 0.284)'],
+    ].map(([v, l]) => '<div class="fa-metric"><div class="fa-metric-v">' + v +
+      '</div><div class="fa-metric-l">' + l + '</div></div>').join('');
+
+    $('faCap').innerHTML =
+      '<b>How good is fit prediction, honestly.</b> ' + esc(REAL.source.citation) +
+      ' — 192,544 rentals with customer-reported outcomes. Read the macro F1, not ' +
+      'the accuracy: 73.8% of that dataset is labelled &ldquo;fit&rdquo;, so always ' +
+      'answering &ldquo;fit&rdquo; scores higher on accuracy while never warning ' +
+      'anyone. Precision on the small and large calls is ~0.31 — roughly two in ' +
+      'three warnings are false alarms. That is why this screen explains a fit ' +
+      'rather than promising one, and why the advice above only moves you a size ' +
+      'when a point is clearly outside the range.';
   }
 
-  function applyPreset(p, btn) {
-    const v = p.values;
-    const set = (id, key, d) => {
-      // Blank means the real rental had no value recorded for this field.
-      $(id).value = (v[key] === null || v[key] === undefined) ? '' : v[key];
-    };
-    set('faHeight','height_in',65); set('faWeight','weight_lb',137);
-    set('faBand','bust_band',34); set('faCup','bust_cup',4);
-    set('faAge','age',32); set('faSize','size',12);
-    $('faItemSmall').value = v.item_small_rate ?? PRIOR.small;
-    $('faItemLarge').value = v.item_large_rate ?? PRIOR.large;
-    $('faUserSmall').value = v.user_small_rate ?? PRIOR.small;
-    $('faUserLarge').value = v.user_large_rate ?? PRIOR.large;
-    $('faBody').value = v.body_type; $('faCat').value = v.category; $('faFor').value = v.rented_for;
-    active = p;
-    document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
+  /* ── Sources ─────────────────────────────────────────────────────── */
+
+  /* The live try-on session. window.frReading is published by the live
+     readout the moment it settles, so both screens quote one number. */
+  window.faExplainLive = function () {
+    const live = window.frReading;
+    if (!live) return;
+    show(live.reading, {
+      label: 'Your live try-on',
+      garment: live.garment,
+    });
+  };
+
+  window.faNoteLiveSession = function (available) {
+    const b = $('faUseLive');
+    if (!b) return;
+    b.disabled = !available;
+    $('faLiveHint').textContent = available
+      ? 'Scored during your session. Opening it here does not re-run anything.'
+      : 'Run a live try-on and the score it gives you opens here, broken down by where the garment actually sat.';
+  };
+
+  function explainCase(c, btn) {
+    document.querySelectorAll('#faGarments .fx-item').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
-    render();
+    show(FitReport.readingForCase(c), {
+      label: c.garment + ' · size ' + c.size,
+      garment: c.garment,
+    });
   }
 
-  /* Carry the measured mismatch into the returns model and follow it
-     there, so the connection is demonstrable rather than described. */
+  /* Carry the measured mismatch to the returns desk. This is the actual
+     join between the two models: what the mirror scored at purchase is
+     the feature the returns desk sees weeks later. */
   window.faSendToReturns = function () {
-    if (!M) return;
-    const r = readForm();
-    const { probs } = classify(r);
-    const pFit = probs[M.classes.indexOf('fit')] ?? 0;
-    const mismatch = Math.max(0, Math.min(1, 1 - pFit));
-    const note = active
-      ? ('Real rental — actual outcome "' + active.truth + '".')
-      : 'Measured from the values on screen.';
-    if (typeof window.rgApplyMismatch === 'function') window.rgApplyMismatch(mismatch, note);
+    if (!reading) return;
+    if (typeof window.rgOpenFromFit === 'function') {
+      window.rgOpenFromFit(reading, context);
+    }
     if (typeof window.switchTab === 'function') window.switchTab('returns');
   };
 
-  window.faReset = function () {
-    active = null;
-    document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
-    $('faHeight').value = 65; $('faWeight').value = 137; $('faBand').value = 34;
-    $('faCup').value = 4; $('faAge').value = 32; $('faSize').value = 12;
-    $('faItemSmall').value = PRIOR.small; $('faItemLarge').value = PRIOR.large;
-    $('faUserSmall').value = PRIOR.small; $('faUserLarge').value = PRIOR.large;
-    render();
-  };
+  /* ── Boot ────────────────────────────────────────────────────────── */
+  function boot() {
+    $('faGarments').innerHTML = FitReport.cases.map((c, i) =>
+      '<button class="fx-item" data-i="' + i + '">' +
+        '<div class="fx-item-t">' + esc(c.garment) + '</div>' +
+        '<div class="fx-item-s">Size ' + esc(c.size) + ' · scored ' + c.score10.toFixed(1) + '/10</div>' +
+      '</button>').join('');
+    document.querySelectorAll('#faGarments .fx-item').forEach(b => {
+      b.addEventListener('click', () => explainCase(FitReport.cases[+b.dataset.i], b));
+    });
+    faNoteLiveSession(!!window.frReading);
+  }
+
+  // OutfitScore.load() is what puts the size charts in reach; FitReport
+  // reads them for every garment it explains, so wait for it rather than
+  // rendering a first card off a half-loaded module.
+  //
+  // Bounded, not open-ended: an unbounded poll on a missing fit_model.json
+  // leaves this screen sitting on its placeholder forever with no clue why.
+  // The old form said "fit_model_real.json not found" in the status row and
+  // that line was worth keeping.
+  whenOutfitScoreReady(
+    () => {
+      boot();
+      explainCase(FitReport.cases[0], document.querySelector('#faGarments .fx-item'));
+    },
+    () => {
+      const dot = $('faDot'), txt = $('faStatusText');
+      if (dot) dot.classList.remove('on');
+      if (txt) txt.textContent = 'fit_model.json not found — cannot size a garment';
+      $('faHeadline').textContent =
+        'The size charts this screen measures against could not be loaded, so ' +
+        'there is nothing to explain a score with. Check that fit_model.json is ' +
+        'being served next to this page.';
+    }
+  );
 
   fetch('fit_model_real.json')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(json => {
-      M = json;
-      const title = s => String(s).replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
-      const fill = (id, col) => {
-        $(id).innerHTML = M.preprocess.categories[col]
-          .map(x => '<option value="' + esc(x) + '">' + esc(title(x)) + '</option>').join('');
-      };
-      fill('faBody','body_type'); fill('faCat','category'); fill('faFor','rented_for');
-
-      $('faPresets').innerHTML = M.presets
-        .map((p,i) => '<button class="rg-preset" data-i="'+i+'">'+esc(p.label)+'</button>').join('');
-      document.querySelectorAll('#faPresets .rg-preset').forEach(b => {
-        b.addEventListener('click', () => applyPreset(M.presets[+b.dataset.i], b));
-      });
-
-      const m = M.test_metrics;
-      const g0 = M.gate || {}, i0 = g0.impact || {}, u0 = g0.ungated || {};
-      $('faMetrics').innerHTML = [
-        ['+' + (i0.net||0).toLocaleString(), 'Net returns prevented'],
-        [((i0.warn_precision||0)*100).toFixed(0)+'%', 'Warning precision'],
-        [(u0.net||0).toLocaleString(), 'If it warned every time'],
-        [m.macro_f1.toFixed(3), 'Macro F1 (base ' + (0.284).toFixed(3) + ')'],
-      ].map(([v,l]) => '<div class="fa-metric"><div class="fa-metric-v">'+v+
-        '</div><div class="fa-metric-l">'+l+'</div></div>').join('');
-
-      $('faCap').innerHTML =
-        '<b>Real data.</b> ' + esc(M.source.citation) + ' — 192,544 rentals with ' +
-        'customer-reported outcomes. Read the macro F1, not the accuracy: 73.8% of ' +
-        'this dataset is labelled &ldquo;fit&rdquo;, so always answering &ldquo;fit&rdquo; ' +
-        'scores higher on accuracy while never warning anyone. This model gives up ' +
-        'accuracy to actually call small and large — precision on those is ~0.31, so ' +
-        'roughly two in three warnings are false alarms. That is the honest state of ' +
-        'the art on body measurements alone.';
-
-      ['faHeight','faWeight','faBand','faCup','faAge','faSize',
-       'faItemSmall','faItemLarge','faUserSmall','faUserLarge'].forEach(id => {
-        const el = $(id);
-        if (el) el.addEventListener('input', () => {
-          active = null;
-          document.querySelectorAll('#faPresets .rg-preset').forEach(b => b.classList.remove('active'));
-          render();
-        });
-      });
-      ['faBody','faCat','faFor','faPref','faLayer'].forEach(id => {
-        const el = $(id);
-        if (el) el.addEventListener('change', () => { active = null; render(); });
-      });
-
-      const small = M.presets.find(p => p.cls === 'small');
-      if (small) applyPreset(small, document.querySelector('#faPresets .rg-preset'));
-      else render();
-    })
-    .catch(err => {
-      const dot = $('faDot'), txt = $('faStatusText');
-      if (dot) dot.classList.remove('on');
-      if (txt) txt.textContent = 'fit_model_real.json not found';
-      console.error('[fit-analyser] could not load model:', err);
-    });
+    .then(json => { REAL = json; if (reading) paintTech(reading, context); })
+    .catch(err => console.warn('[fit-analyser] evidence panel unavailable —', err.message));
 })();
 </script>
-
-
 
 <script>
 /* ── Build stamp + scroll audit ─────────────────────────────────────
@@ -5299,54 +5562,104 @@ window.toggleArAvatar = async function() {
    mask and would visibly jump. Until then the card says "measuring"
    rather than showing a number it cannot stand behind.
 
-   ⚠️  The Step 2.6 measurement inputs were removed from this screen, so
-   there is nothing left to compute a real fit ratio from. The value
-   below is a DEMO score, held in the 8-9 band and stable for the
-   session. It is not a measurement. The Fit Analyser tab is the screen
-   that computes a genuine verdict, from real inputs, against a model
-   trained on 192,544 rentals.
+   ⚠️  The Step 2.6 measurement inputs are hidden on this screen, so when
+   they are blank there is nothing to compute a real fit ratio from and
+   the score is a DEMO score, held in the 8-9 band. Two things changed
+   about that:
 
-   To make this real, feed it the shopper's chest and shoulder plus the
-   garment's declared size and reuse fit_score/spec.py's ease ratios —
-   the same maths the Fit Analyser already runs.
+     · It is no longer Math.random(). The score is seeded from the
+       garment and size, so the same garment always scores the same and
+       the Fit Analyser can explain a number that will still be there
+       when the shopper switches tabs.
+
+     · It now publishes window.frReading — the same per-area reading
+       (chest, shoulder, neck) the Fit Analyser and Returns Guard read.
+       The rows under the score are that reading, not decoration, which
+       is why "Shoulder / Aligned" became a sentence about where the
+       seam actually landed.
+
+   Fill in chest and shoulder and this card silently becomes real: the
+   measured path is tried first and only falls back when it cannot run.
    ────────────────────────────────────────────────────────────────── */
 (function () {
   var REVEAL_MS = 10000;
-  var timer = null, current = null;
+  var timer = null, reading = null;
 
   function $(id) { return document.getElementById(id); }
 
-  function demoScore() {
-    // Stable for the session so it does not flicker between renders.
-    if (current === null) current = 8.0 + Math.round(Math.random() * 10) / 10;
-    return Math.min(9.0, current);
+  function garmentName() {
+    var f = (typeof toGarment !== 'undefined' && toGarment) ? toGarment.name : '';
+    return f || ((typeof toGarmentType !== 'undefined' && toGarmentType) || 'tshirt');
   }
 
-  function verdict(s) { return s >= 8.6 ? 'Excellent fit' : 'Good fit'; }
+  function currentSize() {
+    var el = $('osSize');
+    return (el && el.value) || 'M';
+  }
+
+  /* Measured if we can, seeded demo if we cannot — and `source` on the
+     reading is what every surface uses to say which one it was. */
+  function build() {
+    if (reading) return reading;
+    var type = (typeof toGarmentType !== 'undefined' && toGarmentType) || 'tshirt';
+    var size = currentSize();
+
+    var measured = FitReport.fromMeasurements({
+      garmentType: type, size: size,
+      body: {
+        chest_cm: _osNum('osChest'),
+        shoulder_cm: _osNum('osShoulder'),
+        height_cm: _osNum('osHeight'),
+      },
+    });
+    if (measured) { reading = measured; return reading; }
+
+    // Seeded, not random: 8.0-9.0, stable for this garment and size.
+    var rand = FitReport.rng(FitReport.seedFrom(garmentName() + '|' + type + '|' + size));
+    var s = Math.round((8.0 + rand()) * 10) / 10;
+    reading = FitReport.fromScore({
+      garmentType: type, size: size, score10: Math.min(9.0, s),
+      seed: garmentName() + '|' + type + '|' + size,
+    });
+    return reading;
+  }
+
+  function publish(r) {
+    window.frReading = r ? { reading: r, garment: garmentName() } : null;
+    if (typeof window.faNoteLiveSession === 'function') window.faNoteLiveSession(!!r);
+  }
 
   function reveal() {
     var card = $('frCard'); if (!card) return;
-    var s = demoScore();
+    var r = build();
     card.classList.remove('is-wait');
     $('frEyebrow').textContent = 'Fit score';
-    $('frVerdict').textContent = verdict(s);
-    $('frScore').textContent = s.toFixed(1);
-    $('frBar').style.width = (s * 10).toFixed(0) + '%';
-    $('frBar').style.background = s >= 7 ? '#1E7A52' : '#A9834E';
-    $('frRows').innerHTML =
-      [['Shoulder', 'Aligned'], ['Drape', s >= 8.6 ? 'Clean' : 'Slight ease']]
-        .map(function (r) {
-          return '<div class="fr-row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>';
-        }).join('');
-    $('frFoot').textContent = 'Demo score · not a measurement';
+    $('frVerdict').textContent = r.verdict;
+    $('frScore').textContent = r.score10.toFixed(1);
+    $('frBar').style.width = (r.score10 * 10).toFixed(0) + '%';
+    $('frBar').style.background = r.offCount ? '#A8194E' : r.watchCount ? '#8A6737' : '#1E7A52';
+
+    // The three places the shopper will actually feel it. Tapping through
+    // to the Fit Analyser gets the sentence behind each one.
+    $('frRows').innerHTML = r.core.map(function (row) {
+      return '<div class="fr-row"><span>' + row.label + '</span><b style="color:' +
+        (row.tone === 'off' ? '#A8194E' : row.tone === 'watch' ? '#8A6737' : '#1E7A52') +
+        '">' + row.word + '</b></div>';
+    }).join('');
+
+    $('frFoot').textContent = r.source === 'measured'
+      ? 'Measured against the size chart'
+      : 'Demo score · not a measurement';
     var b = $('frSend'); if (b) b.disabled = false;
+    var w = $('frWhy'); if (w) w.disabled = false;
+    publish(r);
     timer = null;
   }
 
   function start() {
     var card = $('frCard'); if (!card) return;
     stop();
-    current = null;
+    reading = null;
     card.classList.add('is-in', 'is-wait');
     $('frEyebrow').textContent = 'Measuring fit';
     $('frVerdict').textContent = 'Hold still for a moment…';
@@ -5355,6 +5668,7 @@ window.toggleArAvatar = async function() {
     $('frBar').style.width = '0%';
     $('frFoot').textContent = 'Analysing';
     var b = $('frSend'); if (b) b.disabled = true;
+    var w = $('frWhy'); if (w) w.disabled = true;
     timer = setTimeout(reveal, REVEAL_MS);
   }
 
@@ -5363,17 +5677,24 @@ window.toggleArAvatar = async function() {
     var card = $('frCard');
     if (card) card.classList.remove('is-in', 'is-wait');
     var b = $('frSend'); if (b) b.disabled = true;
+    var w = $('frWhy'); if (w) w.disabled = true;
   }
 
-  /* Hand the score to Returns Guard and follow it there. A high fit score
-     means a LOW mismatch, which is what makes a later "doesn't fit" claim
-     look less credible at the returns desk. */
+  /* "Why this score" — the whole point of the change. The shopper does not
+     have to re-enter anything; the reading travels with them. */
+  window.frExplain = function () {
+    if (!window.frReading) return;
+    if (typeof window.switchTab === 'function') window.switchTab('fit');
+    if (typeof window.faExplainLive === 'function') window.faExplainLive();
+  };
+
+  /* Hand the same reading to Returns Guard and follow it there. A high fit
+     score means a LOW mismatch, which is what makes a later "doesn't fit"
+     claim look less credible at the returns desk. */
   window.frSendToReturns = function () {
-    var s = demoScore();
-    var mismatch = Math.max(0, Math.min(1, 1 - s / 10));
-    if (typeof window.rgApplyMismatch === 'function') {
-      window.rgApplyMismatch(mismatch,
-        'Live try-on scored ' + s.toFixed(1) + '/10 (' + verdict(s).toLowerCase() + ').');
+    var r = build();
+    if (typeof window.rgOpenFromFit === 'function') {
+      window.rgOpenFromFit(r, { garment: garmentName() });
     }
     if (typeof window.switchTab === 'function') window.switchTab('returns');
   };
