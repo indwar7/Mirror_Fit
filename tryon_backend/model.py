@@ -1503,6 +1503,7 @@ class TryOnModel:
 
         # 2. Face cutoff — chin row. Everything above is preserved.
         face_cutoff_y = int(h * 0.35)
+        face_box = None
         try:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             faces = self._haar.detectMultiScale(
@@ -1511,6 +1512,7 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+                face_box = (int(fx), int(fy), int(fw), int(fh))
                 # Cutoff at chin row. The 25-px soft fade below (in the
                 # blend block) hides the seam, so we can keep the cutoff
                 # right at the chin — collar sits at the neck naturally.
@@ -1619,7 +1621,38 @@ class TryOnModel:
         # is safer because it only kills the garment alpha, not the SD
         # paint region.
 
-        return torso_mask, silhouette, face_cutoff_y
+        # Collar ring.
+        #
+        # The prompt asks for a collar and the sampler does not draw one: the
+        # garment's top edge is deliberately feathered so SD has something
+        # smooth to denoise into, and a few LCM steps will not resolve a
+        # ribbed band there. So draw it.
+        #
+        # A collar reads as the same cloth turned back on itself -- same
+        # hue, less light, with a defined inner edge. The ring between the
+        # neck opening and a slightly larger ellipse is its footprint, and
+        # darkening what the sampler already put there gives exactly that
+        # while never clashing with the garment colour, since the colour
+        # comes from the render.
+        #
+        # Multiplied by torso_mask, so this only shades pixels that already
+        # have garment on them. It cannot add coverage and it cannot remove
+        # any: no throat hole is cut here, unlike the later revision this is
+        # taken from, which opened the neck and lost cloth off the chest.
+        collar_band = np.zeros((h, w), dtype=np.float32)
+        if face_box is not None:
+            fxn, fyn, fwn, fhn = face_box
+            nc = (int(fxn + fwn * 0.5), int(fyn + fhn))   # centred on the chin
+            na = (int(fwn * 0.30), int(fhn * 0.52))       # neck column
+            thick = max(4, int(fwn * 0.11))
+            outer = np.zeros((h, w), dtype=np.float32)
+            inner = np.zeros((h, w), dtype=np.float32)
+            cv2.ellipse(outer, nc, (na[0] + thick, na[1] + thick), 0, 0, 360, 1.0, -1)
+            cv2.ellipse(inner, nc, na, 0, 0, 360, 1.0, -1)
+            ring = cv2.GaussianBlur((outer - inner).clip(0, 1), (5, 5), 0)
+            collar_band = (ring * torso_mask).clip(0, 1)
+
+        return torso_mask, silhouette, face_cutoff_y, collar_band
 
     # ── Tier 3 live inference ─────────────────────────────────────────────────
 
@@ -1671,7 +1704,8 @@ class TryOnModel:
         #   2. Face detection → cut everything above chin out of the mask
         #   3. Vertical band → only paint torso+arms, never legs/feet
         # Result: a body-shaped mask that hugs the actual person each frame.
-        torso_mask, body_silhouette, face_cutoff_y = self._build_body_mask(orig_arr)
+        torso_mask, body_silhouette, face_cutoff_y, collar_band = \
+            self._build_body_mask(orig_arr)
 
         # ── Inpainting path — mask follows actual body silhouette ────────────
         if self._catvton:
@@ -1845,6 +1879,23 @@ class TryOnModel:
 
             a = blend_mask[:, :, np.newaxis]
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
+
+            # ── Collar ──────────────────────────────────────────────────
+            # 0.60 rather than the 0.74 this was first written with: a
+            # collar has to stay legible against a busy print, and cloth
+            # folded back on itself and turned away from the light sits
+            # well below the panel it borders.
+            try:
+                cb = collar_band * blend_mask
+                if cb.max() > 0.05:
+                    cb3 = cb[:, :, np.newaxis]
+                    COLLAR_DARKEN = 0.60
+                    composed = (
+                        composed.astype(np.float32) * (1.0 - cb3)
+                        + composed.astype(np.float32) * COLLAR_DARKEN * cb3
+                    ).clip(0, 255).astype(np.uint8)
+            except Exception as e:
+                log.debug(f"collar shading skipped: {e}")
 
             # ── Temporal stability: lock the painted shirt to previous
             # frame, so colour stops flickering every 3 s. Only blend
