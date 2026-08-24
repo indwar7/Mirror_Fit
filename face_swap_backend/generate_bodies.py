@@ -197,6 +197,27 @@ class Checker:
     def enabled(self) -> bool:
         return self.face_app is not None or self.pose is not None
 
+    def require_anatomy(self) -> None:
+        """Refuse to generate without the body check.
+
+        This used to be a warning. That is how the two-torso templates shipped
+        a second time: mediapipe was not installed, the check quietly downgraded
+        to face-only, and a figure with two torsos has exactly one face — so it
+        passed and the run reported success. A safety check that can turn itself
+        off is not a safety check.
+        """
+        if self.pose is not None:
+            return
+        raise SystemExit(
+            "\n[bodies] REFUSING TO GENERATE — the body/anatomy check is unavailable.\n"
+            "         Without it, a figure with two torsos passes validation,\n"
+            "         because it still has exactly one detectable face. That is\n"
+            "         the exact bug this check exists to catch.\n\n"
+            "         Fix:  pip install mediapipe\n\n"
+            "         To override anyway (you must then check every render by\n"
+            "         eye):  set BODY_SKIP_ANATOMY=1\n"
+        )
+
     def check(self, pil_image) -> tuple[bool, str]:
         """(ok, reason). reason is empty when ok."""
         import cv2
@@ -291,8 +312,10 @@ def main() -> None:
     if args.validate:
         from PIL import Image
         checker = Checker()
-        if not checker.enabled:
-            raise SystemExit("--validate needs insightface and/or mediapipe installed.")
+        # Same reasoning as generation: a face-only pass would report these
+        # templates as fine, which is precisely what happened before.
+        if os.environ.get("BODY_SKIP_ANATOMY") != "1":
+            checker.require_anatomy()
         bad = []
         for bid in all_body_ids():
             path = OUT / f"{bid}.jpg"
@@ -312,6 +335,8 @@ def main() -> None:
         return
 
     checker = Checker()
+    if os.environ.get("BODY_SKIP_ANATOMY") != "1":
+        checker.require_anatomy()
     pipe, is_sdxl = _load_pipe()
     try:
         pipe.enable_xformers_memory_efficient_attention()
@@ -323,7 +348,9 @@ def main() -> None:
     steps = int(os.environ.get("BODY_STEPS", 30))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print(f"[bodies] rendering at {width}x{height}, {steps} steps")
+    print(f"[bodies] rendering at {width}x{height}, {steps} steps, "
+          f"model={'SDXL' if is_sdxl else 'SD1.5 (FALLBACK — check by eye)'}, "
+          f"anatomy check={'ON' if checker.pose else 'OFF'}")
     made = skipped = failed = 0
 
     for gender in ("male", "female"):
