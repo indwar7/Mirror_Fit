@@ -18,3 +18,7 @@ Pillow==10.4.0
 fastapi==0.115.4
 uvicorn[standard]==0.32.0
 websockets==13.1
+# Required by POST /stylize, which takes the photo as a multipart upload.
+# FastAPI raises at import time, not on first request, so leaving this out
+# stops the whole server from starting rather than failing one endpoint.
+python-multipart==0.0.12
