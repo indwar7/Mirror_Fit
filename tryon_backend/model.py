@@ -44,15 +44,6 @@ TRT_ENGINE_PATH           = os.environ.get("TRT_ENGINE_PATH", "")
 ANIMATEDIFF_ADAPTER_PATH  = os.environ.get("ANIMATEDIFF_ADAPTER_PATH", "")
 VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 
-# Fabric shading. One swatch covers this fraction of the wearer's shoulder
-# span, so the print keeps the same physical size as they move toward or
-# away from the camera instead of the same size on screen.
-FABRIC_TILE_SPAN   = float(os.environ.get("TRYON_FABRIC_TILE", "0.42"))
-# How much of the print shows through inside the mask. Below 1.0 leaves a
-# little of the rendered garment's own colour, which softens a very
-# high-contrast swatch.
-FABRIC_STRENGTH    = float(os.environ.get("TRYON_FABRIC_STRENGTH", "0.92"))
-
 # When set, skips every AI tier and always uses the geometric warp.
 # Default OFF — AI inpaint with strong colour anchor tends to win on
 # realism. Set TRYON_FORCE_GEOMETRIC=1 to flip back to the deterministic
@@ -748,25 +739,21 @@ class TryOnModel:
         if h_ < 150:             return "purple"
         return "pink"
 
-    _fabric_tex     = None    # tileable swatch, float32 RGB, body-space source
-    _fabric_tex_pad = None    # same swatch, 1 px wrapped border, for sampling
-    _pose_geom      = None    # last frame's body frame, for the fabric shader
+    _fabric_overlay = None    # numpy RGB (LIVE_SIZE, LIVE_SIZE, 3) or None
 
     def set_fabric(self, fabric_image):
-        """Store a fabric pattern to print onto the rendered garment.
+        """Store a fabric pattern to overlay on top of the final SD result.
 
         The garment (tshirt / shirt / jacket) is left COMPLETELY untouched
-        — the SD pipeline still produces the clean garment on the body as
-        before. Only the final composited result gets the print, applied
-        inside the torso mask, so garment fit and shape stay correct.
+        — the SD pipeline still produces the clean garment on the body
+        as before. Only the final composited result gets a multiply
+        overlay of the fabric pattern inside the torso mask. Result:
+        garment fit/shape stays correct, fabric design shows on top.
 
-        The swatch is kept at swatch resolution and tiled across the body
-        per frame (_fabric_uv_map), not stretched once over the picture.
-        Passing None clears it.
+        Passing None clears the overlay.
         """
         if fabric_image is None:
-            self._fabric_tex     = None
-            self._fabric_tex_pad = None
+            self._fabric_overlay = None
             log.info("Fabric overlay cleared.")
             return
         if fabric_image.mode == "RGBA":
@@ -775,33 +762,9 @@ class TryOnModel:
             fabric_rgb = bg
         else:
             fabric_rgb = fabric_image.convert("RGB")
-        # The swatch is a repeating texture, so it is kept at swatch
-        # resolution and tiled across the body rather than stretched once
-        # over the whole picture. Stretching is what pinned the print to
-        # the frame: one copy of the pattern, always the same size on
-        # screen, no matter how far away the wearer stood.
-        #
-        # 384 px is enough to resolve a woven print at the scale one
-        # repeat occupies on a 512 px torso, and small enough that the
-        # per-frame remap stays cheap.
-        tex = fabric_rgb
-        if max(tex.size) > 384:
-            scale = 384.0 / max(tex.size)
-            tex = tex.resize(
-                (max(8, int(tex.width * scale)), max(8, int(tex.height * scale))),
-                Image.LANCZOS,
-            )
-        self._fabric_tex = np.array(tex).astype(np.float32)
-        # A one-pixel wrapped border, so sampling can use a plain border
-        # mode and still interpolate correctly across the tile seam.
-        # cv2.remap refuses BORDER_WRAP in some OpenCV builds and the
-        # requirement here is only ">=4.9"; copyMakeBorder accepts it
-        # everywhere, so the wrap is baked in once at upload instead of
-        # being asked for on every frame.
-        self._fabric_tex_pad = cv2.copyMakeBorder(
-            self._fabric_tex, 1, 1, 1, 1, cv2.BORDER_WRAP)
-        log.info("Fabric stored as %dx%d tile — mapped in body space.",
-                 self._fabric_tex.shape[1], self._fabric_tex.shape[0])
+        fabric_full = fabric_rgb.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
+        self._fabric_overlay = np.array(fabric_full).astype(np.float32)
+        log.info("Fabric overlay stored — will composite over SD result.")
 
     def recolor_garment(self, color: str):
         """Recolour the cached garment to a hex colour while preserving
@@ -880,8 +843,7 @@ class TryOnModel:
         garment_sq = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         self._garment_cache    = garment_sq
         self._garment_original = garment_sq   # for recolor_garment()
-        self._fabric_tex       = None         # reset on new garment upload
-        self._fabric_tex_pad   = None
+        self._fabric_overlay   = None         # reset on new garment upload
         self._ip_embeds        = None
         self._fixed_mask_cache = None   # reset so mask regenerates at new LIVE_SIZE
         self._prev_result      = None   # reset temporal state for new garment
@@ -1360,7 +1322,6 @@ class TryOnModel:
         hips locate the torso whatever the posture, so the mask follows the
         body rather than the frame.
         """
-        self._pose_geom = None
         if self._mp_pose is None:
             return None
         try:
@@ -1518,161 +1479,10 @@ class TryOnModel:
                 (int(shoulder_span * 0.20), int(shoulder_span * 0.26)),
                 max(4, int(shoulder_span * 0.055)),
             )
-
-            # Body frame for the fabric shader.
-            #
-            # The polygon above already knows where the torso starts, which
-            # way is down the body, how wide the wearer is and where each
-            # arm runs. Every one of those is what a print needs in order
-            # to sit on cloth instead of on the picture, so they are handed
-            # back rather than thrown away at the end of the mask build.
-            arms = []
-            for shoulder_i, elbow_i, wrist_i in (
-                (POSE_L_SHOULDER, POSE_L_ELBOW, POSE_L_WRIST),
-                (POSE_R_SHOULDER, POSE_R_ELBOW, POSE_R_WRIST),
-            ):
-                shoulder, v_s = point(shoulder_i)
-                elbow, v_e = point(elbow_i)
-                if min(v_s, v_e) < 0.4:
-                    continue
-                wrist, v_w = point(wrist_i)
-                arms.append({
-                    "shoulder": shoulder,
-                    "elbow": elbow,
-                    "wrist": wrist if v_w >= 0.4 else None,
-                })
-            self._pose_geom = {
-                "shoulder_mid":     shoulder_mid,
-                "shoulder_dir":     shoulder_dir,   # unit, across the body
-                "down":             down,           # unit, down the body
-                "span":             float(shoulder_span),
-                "sleeve_thickness": float(sleeve_thickness),
-                "arms":             arms,
-            }
             return region, neck_y, neck_ellipse
         except Exception as e:
             log.debug(f"pose torso unavailable: {e}")
             return None
-
-    def _fabric_uv_map(self, geom, h: int, w: int):
-        """Lay the fabric's texture grid over the wearer, not over the frame.
-
-        Returns (map_x, map_y): per-pixel sampling coordinates into the
-        stored swatch, in swatch pixels and already wrapped into range.
-
-        What this replaces stretched one copy of the swatch across the
-        picture and read it off pixel by pixel. That pins the print to the
-        camera: the stripes run dead level across the chest and both
-        sleeves at one scale, they stay the same size as the wearer walks
-        backwards, and they do not move when the wearer does. Nothing about
-        it behaves like cloth, and it is the loudest thing wrong with the
-        render.
-
-        The coordinates here are measured across the body and down it, from
-        the shoulder line, in units of the wearer's own shoulder span. So
-        the print turns when the shoulders turn, shrinks as the wearer
-        steps back, travels with them across the frame, and -- because the
-        across-body axis is wrapped around a cylinder rather than left flat
-        -- compresses toward the sides where the torso curves away from the
-        lens instead of running off the silhouette at full width.
-        """
-        origin = geom["shoulder_mid"]
-        e_u    = geom["shoulder_dir"]        # unit, across the body
-        e_v    = geom["down"]                # unit, down the body
-        span   = max(geom["span"], 1e-3)
-
-        # One swatch covers this much of the wearer. Tying the repeat to
-        # the body rather than to the frame is the whole reason the print
-        # holds its physical size through a step forward or back.
-        tile = max(span * FABRIC_TILE_SPAN, 4.0)
-
-        yy, xx = np.mgrid[0:h, 0:w]
-        xx = xx.astype(np.float32)
-        yy = yy.astype(np.float32)
-
-        def wrap(du, dv, radius, v_start):
-            """Arc length around a cylinder of `radius` seen side-on.
-
-            A flat across-body coordinate keeps the print at full width
-            right up to the silhouette edge, which is exactly how a decal
-            behaves and never how a printed shirt does. Arc length runs
-            faster than screen distance as the surface turns away, so the
-            repeats bunch up toward the edge and the pattern reads as
-            going around something.
-
-            Past the tangent, arcsin has nowhere left to go: clamping there
-            freezes the coordinate, and a frozen coordinate paints a band
-            of flat stripes -- the same painted-on look this whole map
-            exists to remove. The mask does reach past the radius (the
-            torso polygon widens to about 0.6 of the span, the sleeves to
-            1.35 of their own), so those pixels are real. Continue the arc
-            at the slope it had reached instead: still moving, still fast,
-            which is what a surface turning that steeply away should do.
-            """
-            EDGE = 0.94                     # where the tangent gets too steep
-            t  = du / radius
-            tc = np.clip(t, -EDGE, EDGE)
-            arc = np.arcsin(tc) * radius
-            slope = radius / float(np.sqrt(1.0 - EDGE * EDGE))
-            over = np.maximum(np.abs(t) - EDGE, 0.0)
-            arc = arc + np.sign(t) * over * slope
-            return arc, dv + v_start
-
-        # ── Torso ────────────────────────────────────────────────────────
-        dx = xx - float(origin[0])
-        dy = yy - float(origin[1])
-        u  = dx * float(e_u[0]) + dy * float(e_u[1])
-        v  = dx * float(e_v[0]) + dy * float(e_v[1])
-        # 0.62, not 0.58: the torso polygon widens to roughly 0.6 of the
-        # span, so a tighter radius put its own edges past the tangent.
-        map_u, map_v = wrap(u, v, span * 0.62, 0.0)
-
-        # ── Sleeves ──────────────────────────────────────────────────────
-        # Each arm segment gets its own cylinder running down the limb, and
-        # carries on counting `v` from where that arm's shoulder sat on the
-        # torso. Without that continuation the pattern restarts at the
-        # shoulder seam and the sleeve reads as a separate garment.
-        r_arm = max(geom["sleeve_thickness"] * 0.5, 4.0)
-        for arm in geom["arms"]:
-            chain = [arm["shoulder"], arm["elbow"]]
-            if arm["wrist"] is not None:
-                chain.append(arm["wrist"])
-            shoulder_off = arm["shoulder"] - origin
-            v_run = float(shoulder_off[0] * e_v[0] + shoulder_off[1] * e_v[1])
-            for a, b in zip(chain, chain[1:]):
-                seg     = b - a
-                seg_len = float(np.linalg.norm(seg))
-                if seg_len < 1e-3:
-                    continue
-                a_v = seg / seg_len
-                a_u = np.array([a_v[1], -a_v[0]], dtype=np.float32)
-                sdx = xx - float(a[0])
-                sdy = yy - float(a[1])
-                su  = sdx * float(a_u[0]) + sdy * float(a_u[1])
-                sv  = sdx * float(a_v[0]) + sdy * float(a_v[1])
-                cu, cv_ = wrap(su, sv, r_arm, v_run)
-                # This segment owns a pixel only along its own length and
-                # within a sleeve's thickness of its axis. Everywhere else
-                # the torso field stands, so the two never fight over the
-                # chest.
-                owns = (
-                    (sv >= -r_arm) & (sv <= seg_len + r_arm)
-                    & (np.abs(su) <= r_arm * 1.35)
-                )
-                map_u = np.where(owns, cu, map_u)
-                map_v = np.where(owns, cv_, map_v)
-                v_run += seg_len
-
-        tex_h, tex_w = self._fabric_tex.shape[:2]
-        map_x = np.mod((map_u / tile) * tex_w, tex_w).astype(np.float32)
-        map_y = np.mod((map_v / tile) * tex_h, tex_h).astype(np.float32)
-        # np.mod of a small negative rounds up to the modulus itself in
-        # float32, so a few pixels per frame land exactly on tex_w/tex_h --
-        # one past the last valid sample. Wrap them to the other edge,
-        # which is where the tile says they belong anyway.
-        map_x[map_x >= tex_w] = 0.0
-        map_y[map_y >= tex_h] = 0.0
-        return map_x, map_y
 
     def _build_body_mask(self, frame_rgb: np.ndarray):
         """
@@ -2100,7 +1910,6 @@ class TryOnModel:
         # as "definite background", and the face area as "definite
         # foreground" — then finds the real body silhouette. Downscale
         # to 256x256 for speed (iterCount=1 ≈ 30 ms at that size).
-        body_hard = None   # kept for the edge gate below
         try:
             small_size = 256
             small_rgb  = cv2.resize(frame_rgb, (small_size, small_size))
@@ -2158,7 +1967,6 @@ class TryOnModel:
                     and self._prev_body_mask.shape == body.shape):
                 body = (0.6 * body + 0.4 * self._prev_body_mask).clip(0, 1)
             self._prev_body_mask = body
-            body_hard = body
             torso_mask = torso_mask * body
         except Exception as e:
             log.debug(f"grabcut body extraction skipped: {e}")
@@ -2173,44 +1981,6 @@ class TryOnModel:
         if (self._prev_torso_mask is not None
                 and self._prev_torso_mask.shape == torso_mask.shape):
             torso_mask = (0.65 * torso_mask + 0.35 * self._prev_torso_mask).clip(0, 1)
-
-        # Hard cut at the edge of the person.
-        #
-        # torso_mask is a product of soft masks, and a product of soft
-        # values is still soft. A pixel off the shoulder picks up maybe 0.5
-        # from the blurred silhouette and 0.6 from the blurred GrabCut body
-        # and lands around 0.3 -- which _infer_tier3 then pushes to roughly
-        # half opacity when it saturates the interior. That is the
-        # see-through apron of garment hanging past the body, with the room
-        # reading straight through the cloth.
-        #
-        # Feathering belongs on the body's edge, not beyond it. Take the
-        # pixels both the segmenter and GrabCut agree are person, allow a
-        # few pixels of overhang for the feather to live in, and zero
-        # everything past that. Whichever source went wrong, nothing
-        # survives outside the body.
-        #
-        # Applied after the temporal EMA and before the mask is stored, so
-        # the previous frame can never drag garment back onto background
-        # when the wearer moves.
-        try:
-            core = (silhouette > 0.55).astype(np.float32)
-            if body_hard is not None:
-                core = core * (body_hard > 0.55).astype(np.float32)
-            core = cv2.morphologyEx(
-                core, cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)),
-            )
-            reach = cv2.dilate(
-                core,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
-                iterations=1,
-            )
-            reach = cv2.GaussianBlur(reach, (7, 7), 0).clip(0, 1)
-            torso_mask = (torso_mask * reach).clip(0, 1)
-        except Exception as e:
-            log.debug(f"body edge gate skipped: {e}")
-
         self._prev_torso_mask = torso_mask
 
         # NOTE: hand exclusion was tried here (subtracting MediaPipe Hands +
@@ -2428,50 +2198,37 @@ class TryOnModel:
                     **ip_kw,
                 ).images[0]
 
-            # ── Fabric print (post-SD) ───────────────────────────────────
-            # The swatch is sampled in the wearer's own coordinates (see
-            # _fabric_uv_map) and then lit by the render's own shading, so
-            # it moves and curves with the body and still picks up the
-            # folds the sampler drew.
-            #
-            # The mask is shifted down off the throat so the print starts
-            # at the collar rather than at the chin (user: "yeh mere neck
-            # pe fabric overlay ho rhi hai, it should be only till
-            # collar").
-            if self._fabric_tex is not None:
+            # ── Fabric overlay (post-SD) ─────────────────────────────────
+            # HSV composite: take FABRIC's hue + saturation (the colour /
+            # pattern) and SD result's value (the body folds / shading).
+            # Uses a SHIFTED-DOWN mask so the fabric starts at the
+            # collar/clavicle, not at the chin (user: "yeh mere neck pe
+            # fabric overlay ho rhi hai, it should be only till collar").
+            if self._fabric_overlay is not None:
                 try:
-                    r_arr = np.array(result).astype(np.float32)
-                    H_im, W_im = r_arr.shape[:2]
-
-                    geom = self._pose_geom
-                    if geom is not None:
-                        map_x, map_y = self._fabric_uv_map(geom, H_im, W_im)
-                        # +1 for the wrapped border baked into the padded
-                        # copy, so the seam between tiles interpolates
-                        # rather than clamping.
-                        fab = cv2.remap(
-                            self._fabric_tex_pad, map_x + 1.0, map_y + 1.0,
-                            interpolation=cv2.INTER_LINEAR,
-                            borderMode=cv2.BORDER_REPLICATE,
-                        ).astype(np.float32)
+                    r_arr = np.array(result).astype(np.uint8)
+                    if self._fabric_overlay.shape == r_arr.shape:
+                        f_arr = self._fabric_overlay.astype(np.uint8)
                     else:
-                        # No pose landed this frame, so there is no body to
-                        # map onto. Tile the swatch at a fixed screen size
-                        # rather than dropping the print, which would flash
-                        # the plain garment for a frame every time pose
-                        # blinks.
-                        th_, tw_ = self._fabric_tex.shape[:2]
-                        reps_y = int(np.ceil(H_im / th_))
-                        reps_x = int(np.ceil(W_im / tw_))
-                        fab = np.tile(self._fabric_tex,
-                                      (reps_y, reps_x, 1))[:H_im, :W_im].astype(np.float32)
-
+                        f_arr = cv2.resize(
+                            self._fabric_overlay,
+                            (r_arr.shape[1], r_arr.shape[0]),
+                            interpolation=cv2.INTER_LINEAR,
+                        ).astype(np.uint8)
+                    r_hsv = cv2.cvtColor(r_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    f_hsv = cv2.cvtColor(f_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    # H + S from fabric, V from SD (keeps SD's shading).
+                    out_hsv = r_hsv.copy()
+                    out_hsv[:, :, 0] = f_hsv[:, :, 0]
+                    out_hsv[:, :, 1] = f_hsv[:, :, 1]
+                    out_rgb = cv2.cvtColor(out_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
                     # Fabric mask = torso_mask with the neck strip zeroed
                     # out. The 'neck band' is the region from face_cutoff_y
                     # down to clavicle (~80 px). A linear ramp 0->1 lets
                     # the fabric fade in at the clavicle so there's no
                     # hard edge.
                     fabric_mask = torso_mask.copy()
+                    H_im = fabric_mask.shape[0]
                     band_top = max(0, int(face_cutoff_y))
                     band_bot = min(H_im, band_top + 80)
                     if band_bot > band_top:
@@ -2480,38 +2237,12 @@ class TryOnModel:
                         fabric_mask[band_top:band_bot] = \
                             fabric_mask[band_top:band_bot] * ramp[:, None]
                         fabric_mask[:band_top] = 0
-
-                    # Light the print with the render's own shading.
-                    #
-                    # The overlay this replaces took hue and saturation
-                    # from the swatch and kept only the render's value
-                    # channel. That discards every colour the print
-                    # carries -- a red thread and a blue one at the same
-                    # brightness come out the same -- and leaves a flat
-                    # sheet of pattern with none of the swatch's own
-                    # depth. Dividing the render's luminance by its mean
-                    # inside the mask isolates the shading on its own:
-                    # the folds, the shadow under the arm, the light
-                    # across the chest, with absolute brightness (which
-                    # belongs to the generated garment's colour, not to
-                    # this fabric) divided out. Multiplying the print by
-                    # that keeps all of the swatch's colour and still
-                    # reads as cloth with weight on a body.
-                    v_sd = cv2.cvtColor(
-                        np.clip(r_arr, 0, 255).astype(np.uint8),
-                        cv2.COLOR_RGB2HSV,
-                    )[:, :, 2].astype(np.float32)
-                    inside = fabric_mask > 0.35
-                    v_ref = float(v_sd[inside].mean()) if inside.any() else 128.0
-                    shade = np.clip(v_sd / max(v_ref, 1.0), 0.55, 1.45)
-                    lit = fab * shade[:, :, np.newaxis]
-
-                    m = fabric_mask[:, :, np.newaxis] * FABRIC_STRENGTH
-                    mixed = lit * m + r_arr * (1.0 - m)
-                    result = Image.fromarray(
-                        np.clip(mixed, 0, 255).astype(np.uint8))
+                    m = fabric_mask[:, :, np.newaxis]
+                    mixed = (0.80 * out_rgb + 0.20 * r_arr.astype(np.float32)) * m \
+                            + r_arr.astype(np.float32) * (1.0 - m)
+                    result = Image.fromarray(np.clip(mixed, 0, 255).astype(np.uint8))
                 except Exception as e:
-                    log.debug(f"fabric print skipped: {e}")
+                    log.debug(f"fabric overlay skipped: {e}")
 
             # ── Composite result back onto original via body silhouette ──────
             # SD output can bleed slightly past the mask edge. We blend the
