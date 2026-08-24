@@ -203,6 +203,7 @@ class TryOnModel:
         self._prev_result      = None
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._prev_face_bbox   = None      # EMA-smoothed Haar face bbox (fx, fy, fw, fh)
+        self._prev_face_cut    = None      # held face box for the chin row + collar
         self._prev_torso_mask  = None      # EMA-smoothed final torso_mask (kills jitter)
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
@@ -814,6 +815,7 @@ class TryOnModel:
         self._prev_result      = None   # reset temporal state for new garment
         self._prev_silhouette  = None
         self._prev_face_bbox   = None
+        self._prev_face_cut    = None
         self._prev_torso_mask  = None
 
         # Store alpha mask if original had transparency — used by geometric warp
@@ -1512,14 +1514,43 @@ class TryOnModel:
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
-                face_box = (int(fx), int(fy), int(fw), int(fh))
-                # Cutoff at chin row. The 25-px soft fade below (in the
-                # blend block) hides the seam, so we can keep the cutoff
-                # right at the chin — collar sits at the neck naturally.
-                face_cutoff_y = int(np.clip(fy + fh,
-                                            h * 0.20, h * 0.48))
+                # Damp the 2-3 px per-frame wobble Haar has even on a
+                # locked-off shot, so the garment's top edge does not
+                # shimmer against the neck.
+                if self._prev_face_cut is not None:
+                    pfx, pfy, pfw, pfh = self._prev_face_cut
+                    fx = int(0.65 * pfx + 0.35 * fx)
+                    fy = int(0.65 * pfy + 0.35 * fy)
+                    fw = int(0.65 * pfw + 0.35 * fw)
+                    fh = int(0.65 * pfh + 0.35 * fh)
+                self._prev_face_cut = (int(fx), int(fy), int(fw), int(fh))
         except Exception:
             pass
+
+        # Hold the last good face box across a miss.
+        #
+        # This is the garment fading in and out. Haar drops the face
+        # constantly -- motion blur, a turned head, a hand passing in front
+        # -- and on every one of those frames the chin row fell back to
+        # 0.35h. Framed close the real chin sits near 0.48h, so the top of
+        # the garment jumped some 70 px up onto the neck and back again,
+        # once per missed detection. The collar went with it, since it is
+        # built from the same box and there is no pose path here to fall
+        # back on.
+        #
+        # The silhouette is already held across a MediaPipe miss for
+        # exactly this reason; the face box was not. A face does not leave
+        # between two frames 30 ms apart, so the last known one is a far
+        # better answer than a frame-height fraction. It self-corrects on
+        # the next hit, because _prev_face_cut only updates on a real
+        # detection.
+        if self._prev_face_cut is not None:
+            fx, fy, fw, fh = self._prev_face_cut
+            face_box = (fx, fy, fw, fh)
+            # Cutoff at chin row. The 25-px soft fade below (in the
+            # blend block) hides the seam, so we can keep the cutoff
+            # right at the chin — collar sits at the neck naturally.
+            face_cutoff_y = int(np.clip(fy + fh, h * 0.20, h * 0.48))
 
         # 3. Torso band — restrict mask vertically. Extended bottom to
         # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
