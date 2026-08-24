@@ -1732,8 +1732,13 @@ class TryOnModel:
                 # Cutoff at chin row. The 25-px soft fade below (in the
                 # blend block) hides the seam, so we can keep the cutoff
                 # right at the chin — collar sits at the neck naturally.
+                # The 0.48h ceiling assumed the face sits in the upper
+                # part of the frame. On a close-up -- face filling most of
+                # the picture, shoulders at the bottom edge -- the real
+                # chin is well below it and got dragged up by ~80 px, so
+                # the garment started on the jaw instead of the neck.
                 face_cutoff_y = int(np.clip(fy + fh,
-                                            h * 0.20, h * 0.48))
+                                            h * 0.20, h * 0.78))
                 face_box = (int(fx), int(fy), int(fw), int(fh))
         except Exception:
             pass
@@ -1784,8 +1789,13 @@ class TryOnModel:
                 "shirt":  (0.47, 0.36),
                 "jacket": (0.40, 0.30),
             }.get(gtype, (0.56, 0.43))
-            neck_half = fw3 * neck_half_f
-            neck_dip  = fh3 * neck_dip_f
+            # Cap against the body, not just the face. On a close-up the
+            # face box is enormous, and a neckline scaled purely off it
+            # opens most of the chest -- the deep scoop that keeps showing
+            # up instead of a collar. A neck opening is never more than
+            # about 40% of half the shoulder span.
+            neck_half = min(fw3 * neck_half_f, sh_half * 0.42)
+            neck_dip  = min(fh3 * neck_dip_f,  sh_half * 0.40)
 
             band = np.zeros((h, w), dtype=np.float32)
             torso_poly = np.array([

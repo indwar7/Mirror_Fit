@@ -3888,6 +3888,24 @@ function startTryOn() {
       const img=new Image();
       img.onload=()=>{ toLatestResult=img; };
       img.src='data:image/jpeg;base64,'+msg.image;
+      // Mask diagnostic, shown only with ?diag=1 on the URL. The backend
+      // sends how it built the mask with every frame; putting it on screen
+      // means a screenshot of a bad result already carries the reason,
+      // instead of needing a separate trip to the server log.
+      if (msg.diag && new URLSearchParams(location.search).has('diag')) {
+        let d = document.getElementById('toDiag');
+        if (!d) {
+          d = document.createElement('div');
+          d.id = 'toDiag';
+          d.style.cssText = 'position:absolute;right:10px;bottom:10px;z-index:9;'
+            + 'font:11px ui-monospace,Menlo,monospace;padding:6px 9px;border-radius:8px;'
+            + 'background:rgba(20,17,15,.82);color:#fff;letter-spacing:.02em';
+          (document.getElementById('tryonCanvas')?.parentElement
+            || document.body).appendChild(d);
+        }
+        d.textContent = `region=${msg.diag.region} face=${msg.diag.face}`
+          + ` collar_px=${msg.diag.collar_px} torso_px=${msg.diag.torso_px}`;
+      }
       sendToFrame();
     } else if(msg.type==='dropped') {
       toProcessing=false; _toSpinner(false);
