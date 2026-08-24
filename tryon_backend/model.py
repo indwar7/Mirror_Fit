@@ -21,6 +21,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+# Bumped whenever the masking changes. Reported with every frame so a
+# client can tell which build is actually serving -- "did the restart
+# happen" was otherwise guesswork.
+MASK_REV = "2026-08-24-skin-gate"
 import torch
 from PIL import Image
 
@@ -1712,6 +1717,27 @@ class TryOnModel:
                     iterations=2,
                 )
                 skin_mask = cv2.GaussianBlur(skin_mask, (21, 21), 0).clip(0, 1)
+
+                # Keep only skin that touches the body.
+                #
+                # YCrCb "skin" matches far more than skin: beige walls,
+                # wooden furniture, cardboard, warm lamplight. This mask was
+                # OR-ed into the silhouette with no spatial constraint, so a
+                # tan wallpaper behind the wearer became part of the person
+                # and the garment painted across the room -- the wide band
+                # over the background that keeps coming back.
+                #
+                # The purpose here is to reach hands and forearms the
+                # segmenter clipped, and those are attached to the body. So
+                # gate the skin mask by proximity to the silhouette we
+                # already trust. A limb just outside the edge survives; a
+                # wall two feet behind does not.
+                near_body = cv2.dilate(
+                    silhouette,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)),
+                    iterations=2,
+                )
+                skin_mask = skin_mask * (near_body > 0.05).astype(np.float32)
                 silhouette = np.maximum(silhouette, skin_mask * 0.80)
             except Exception as e:
                 log.debug(f"skin extension skipped: {e}")
@@ -1756,6 +1782,9 @@ class TryOnModel:
         pose_region = self._pose_torso_region(frame_rgb)
         if pose_region is not None:
             band, pose_neck_y, pose_neck_ellipse = pose_region
+            # neck axis x is 0.20 of shoulder span, so span recovers from it
+            _span = pose_neck_ellipse[1][0] / 0.20
+            body_cx, body_half = pose_neck_ellipse[0][0], _span * 0.5 * 1.12
             face_cutoff_y = int(np.clip(pose_neck_y, h * 0.05, h * 0.90))
         elif face_box is not None:
             # Pose failed, but a face was found. Size a torso from the face.
@@ -1776,6 +1805,7 @@ class TryOnModel:
             sh_y    = face_cutoff_y + fh3 * 0.22
             hem_y   = float(h) * 0.99
             hem_half = sh_half * 1.12       # hem slightly wider than shoulders
+            body_cx, body_half = cx, hem_half        # hem is already 1.12x shoulders
 
             gtype = getattr(self, "_garment_type", "tshirt")
             # Same proportions as the pose path, re-expressed in face
@@ -1816,6 +1846,7 @@ class TryOnModel:
             band = np.zeros((h, w), dtype=np.float32)
             band[face_cutoff_y:int(h * 0.98), int(w * 0.24):int(w * 0.76)] = 1.0
             band = cv2.GaussianBlur(band, (21, 21), 0)
+            body_cx, body_half = w * 0.5, w * 0.30
 
         # Keep the throat clear.
         #
@@ -1854,6 +1885,23 @@ class TryOnModel:
 
         # 4. torso_mask = silhouette ∩ region  (body pixels, torso only)
         torso_mask = (silhouette * band).clip(0, 1)
+
+        # Hard width bound -- the backstop.
+        #
+        # Every wide-garment bug so far has come from some mask source
+        # claiming the background is part of the person: a rectangular
+        # safety mask, an over-dilated segmentation, skin detection firing
+        # on a beige wall. Each was fixed where it happened, and the next
+        # one appeared somewhere else. This bounds the result no matter
+        # which source went wrong.
+        #
+        # The wearer's own proportions set the limit -- shoulder span from
+        # pose, or 3.1 face widths -- with 35% headroom for sleeves. Nothing
+        # outside that can be garment, whatever the silhouette believes.
+        x0 = max(0, int(body_cx - body_half))
+        x1 = min(w, int(body_cx + body_half))
+        torso_mask[:, :x0] = 0.0
+        torso_mask[:, x1:] = 0.0
 
         # ── GrabCut body extraction: garment ONLY on body, not behind ───
         # User: "background impaint kyu kr rhe ho jab sirf tshrt body p
@@ -1981,6 +2029,7 @@ class TryOnModel:
         # is what makes "is the collar being drawn" answerable without a
         # round trip through the person running the demo.
         self.last_mask_diag = {
+            "rev": MASK_REV,
             "region": ("pose" if pose_region is not None
                        else ("face" if face_box is not None else "none")),
             "face": face_box is not None,
