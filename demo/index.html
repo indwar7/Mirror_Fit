@@ -2392,9 +2392,18 @@ body.landing-active .app { display: none !important; }
 // code change. The literal below is only a fallback for opening the file
 // locally during design review.
 const FALLBACK_HOST = '13.232.241.58';
-const BACKEND_HOST = (
-  location.hostname && !['localhost', '127.0.0.1', ''].includes(location.hostname)
-) ? location.hostname : FALLBACK_HOST;
+// Served over http(s) -- from the box, from localhost, from anywhere --
+// the right backend is always the host the page came from. Only a page
+// opened off disk (file://, where hostname is empty) has no host to use
+// and needs the literal above.
+//
+// localhost and 127.0.0.1 used to be excluded here, which meant opening
+// the demo on the machine running the backend sent every frame to a
+// hard-coded EC2 address instead of to the backend three feet away. That
+// is the one case where the fallback is most obviously wrong, and it is
+// also the only way to get a camera in Chrome without HTTPS, since a
+// plain-http LAN address is not a secure origin.
+const BACKEND_HOST = location.hostname || FALLBACK_HOST;
 
 const FACE_API = `http://${BACKEND_HOST}:7860`;
 const TRYON_WS = `ws://${BACKEND_HOST}:8000/ws/tryon`;
