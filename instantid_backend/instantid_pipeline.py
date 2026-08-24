@@ -77,12 +77,44 @@ def _load_pipeline():
 
     log.info("[InstantID] loading SDXL Lightning UNet")
     base_repo = "stabilityai/stable-diffusion-xl-base-1.0"
-    if LIGHTNING_UNET.exists():
-        unet = UNet2DConditionModel.from_config(base_repo, subfolder="unet").to(
-            "cuda", torch.float16
-        )
+
+    def _build_lightning_unet(ckpt: str):
+        """SDXL's UNet, with the Lightning weights, without a 10 GB RAM spike.
+
+        The obvious spelling — `from_config(...).to("cuda", torch.float16)` —
+        materialises all 2.6 B parameters as fp32 on the CPU first and only
+        then moves them, which is roughly 10 GB of RAM for a model that ends up
+        occupying 5 GB of VRAM. On a 16 GB box the OS kills the process
+        mid-load, and because it is a kill rather than an exception there is no
+        traceback: the server just disappears after logging this line.
+
+        init_empty_weights() builds the module on the meta device instead, so
+        no storage is allocated at all, and load_state_dict(assign=True)
+        replaces those placeholders with the checkpoint's own tensors — which
+        load_file already put straight onto the GPU.
+        """
         from safetensors.torch import load_file
-        unet.load_state_dict(load_file(str(LIGHTNING_UNET), device="cuda"))
+        try:
+            from accelerate import init_empty_weights
+        except ImportError:
+            # accelerate is a declared dependency; if it is somehow missing,
+            # the old path still works on a machine with enough RAM.
+            log.warning("[InstantID] accelerate unavailable — falling back to "
+                        "the high-RAM load path")
+            unet = UNet2DConditionModel.from_config(
+                UNet2DConditionModel.load_config(base_repo, subfolder="unet")
+            ).to("cuda", torch.float16)
+            unet.load_state_dict(load_file(ckpt, device="cuda"))
+            return unet
+
+        config = UNet2DConditionModel.load_config(base_repo, subfolder="unet")
+        with init_empty_weights():
+            unet = UNet2DConditionModel.from_config(config)
+        unet.load_state_dict(load_file(ckpt, device="cuda"), strict=True, assign=True)
+        return unet.to(torch.float16)
+
+    if LIGHTNING_UNET.exists():
+        unet = _build_lightning_unet(str(LIGHTNING_UNET))
     else:
         log.warning("Lightning UNet not at %s, downloading", LIGHTNING_UNET)
         ckpt_path = hf_hub_download(
@@ -90,11 +122,7 @@ def _load_pipeline():
             "sdxl_lightning_4step_unet.safetensors",
             local_dir=str(MODEL_ROOT),
         )
-        from safetensors.torch import load_file
-        unet = UNet2DConditionModel.from_config(base_repo, subfolder="unet").to(
-            "cuda", torch.float16
-        )
-        unet.load_state_dict(load_file(ckpt_path, device="cuda"))
+        unet = _build_lightning_unet(ckpt_path)
 
     log.info("[InstantID] loading ControlNet")
     controlnet = ControlNetModel.from_pretrained(
