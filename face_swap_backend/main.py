@@ -1970,11 +1970,12 @@ async def get_avatar_style_image(avatar_id: str):
 @app.post("/avatars/{avatar_id}/body")
 async def create_avatar_body(
     avatar_id:   str,
-    chest_cm:    float = Form(...),
-    waist_cm:    float = Form(...),
+    chest_cm:    Optional[float] = Form(None),
+    waist_cm:    Optional[float] = Form(None),
     shoulder_cm: Optional[float] = Form(None),
     height_cm:   Optional[float] = Form(None),
     weight_kg:   Optional[float] = Form(None),
+    gender:      Optional[str]   = Form(None),
 ):
     """Give an enrolled avatar a full body, so garments have a torso to sit on.
 
@@ -1999,16 +2000,46 @@ async def create_avatar_body(
                    "are portraits with no measurements behind them.",
         )
 
-    try:
-        measurements = body_shapes.parse_measurements({
-            "chest_cm": chest_cm, "waist_cm": waist_cm,
-            "shoulder_cm": shoulder_cm, "height_cm": height_cm,
-            "weight_kg": weight_kg,
-        })
-    except body_shapes.MeasurementError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    # Gender picks the template when nothing else is given. An explicit form
+    # value wins over what was detected at enrolment, because the detector is a
+    # guess and the person is not.
+    effective_gender = (gender or "").strip().lower() or record.get("gender")
 
-    selection = body_shapes.describe(measurements, record.get("gender"))
+    # Measurements are optional. Without them the standard build for the gender
+    # is used, so "see myself on a body" does not require a tape measure — the
+    # measurements refine the choice, they are not the price of entry.
+    measurements = None
+    if chest_cm is not None and waist_cm is not None:
+        try:
+            measurements = body_shapes.parse_measurements({
+                "chest_cm": chest_cm, "waist_cm": waist_cm,
+                "shoulder_cm": shoulder_cm, "height_cm": height_cm,
+                "weight_kg": weight_kg,
+            })
+        except body_shapes.MeasurementError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    elif chest_cm is not None or waist_cm is not None:
+        # One without the other cannot produce a ratio, and silently ignoring
+        # the one that was given would look like it had been used.
+        raise HTTPException(
+            status_code=422,
+            detail="Give both chest_cm and waist_cm, or neither.",
+        )
+
+    if measurements is not None:
+        selection = body_shapes.describe(measurements, effective_gender)
+    else:
+        body_id = body_shapes.default_body_id(effective_gender)
+        selection = {
+            "body_id": body_id,
+            "gender": body_shapes.normalise_gender(effective_gender),
+            "size": "average",
+            "taper": "regular",
+            "chest_to_waist": None,
+            "shoulder_to_chest": None,
+            "standard": True,
+        }
+
     template_path = _BODY_CACHE / f"{selection['body_id']}.jpg"
     if not template_path.exists():
         raise HTTPException(
@@ -2055,7 +2086,10 @@ async def create_avatar_body(
     updated = user_avatars.update(_AVATAR_CACHE, avatar_id, {
         "body_image": body_filename,
         "body_template": selection["body_id"],
-        "measurements": measurements.as_dict(),
+        # Null when the standard build was used. Sizing advice checks this and
+        # stays quiet rather than grading a fit against measurements nobody gave.
+        "measurements": measurements.as_dict() if measurements else None,
+        "gender": selection["gender"],
     })
     if updated is None:
         with contextlib.suppress(OSError):

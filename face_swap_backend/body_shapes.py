@@ -225,6 +225,17 @@ def describe(m: Measurements, gender: Optional[str]) -> dict:
     }
 
 
+def default_body_id(gender: Optional[str]) -> str:
+    """The standard build for a gender, used when no measurements are given.
+
+    Average size, regular taper — the middle of both axes. Someone who just
+    wants to see themselves on a body should not have to produce a tape
+    measure first; measurements refine this, they are not the price of entry.
+    """
+    g = normalise_gender(gender)
+    return f"body_{g[0]}_average_regular"
+
+
 def all_body_ids() -> list[str]:
     """Every template the library must contain — what generate_bodies.py renders."""
     return [
