@@ -3949,14 +3949,43 @@ async function avCheckReady() {
   const box = document.getElementById('avBlocker');
   const text = document.getElementById('avBlockerText');
 
+  // "unreachable" and "reachable but answered wrongly" are different faults
+  // with different fixes, and collapsing them into one message sent people
+  // looking for a dead port when the port was fine and the code was stale.
+  let res;
+  try {
+    res = await fetch(FACE_API + '/base-bodies');
+  } catch (e) {
+    box.style.display = 'block';
+    text.innerHTML = '<b>Cannot reach the avatar backend on port 7860.</b><br>' +
+      'Start it: <code>python -m uvicorn main:app --host 0.0.0.0 --port 7860</code> ' +
+      'in <code>face_swap_backend</code>.';
+    return;
+  }
+
+  if (res.status === 404) {
+    // The endpoint is new. A 404 means the process is running code from
+    // before it existed — static HTML updates on pull, Python does not.
+    box.style.display = 'block';
+    text.innerHTML = '<b>The backend on 7860 is running older code.</b><br>' +
+      '<code>/base-bodies</code> returned 404, so this process started before ' +
+      'that endpoint existed. Pulling updates the page but not a running ' +
+      'Python process — restart it.';
+    return;
+  }
+  if (!res.ok) {
+    box.style.display = 'block';
+    text.textContent = 'The avatar backend answered ' + res.status +
+      ' for /base-bodies.';
+    return;
+  }
+
   let st;
   try {
-    const res = await fetch(FACE_API + '/base-bodies');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
     st = await res.json();
   } catch (e) {
     box.style.display = 'block';
-    text.textContent = 'Could not reach the avatar backend on port 7860.';
+    text.textContent = '/base-bodies did not return JSON.';
     return;
   }
 
