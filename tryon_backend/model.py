@@ -65,6 +65,11 @@ CATVTON_BASE_MODEL        = os.environ.get(
 # How dark the collar fold gets at the neckline. 1.0 disables the shading.
 COLLAR_SHADE              = float(os.environ.get("TRYON_COLLAR_SHADE", "0.88"))
 
+# How far outside the real silhouette skin-tone detection is allowed to extend
+# the body, in pixels. Large enough to recover an arm the segmenter trimmed,
+# small enough that a warm wall behind the shoulder is not mistaken for one.
+SKIN_REACH_PX             = int(os.environ.get("TRYON_SKIN_REACH_PX", "41"))
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -1518,6 +1523,29 @@ class TryOnModel:
                     iterations=2,
                 )
                 skin_mask = cv2.GaussianBlur(skin_mask, (21, 21), 0).clip(0, 1)
+
+                # Skin may EXTEND the body; it may not invent one elsewhere.
+                #
+                # This mask is dilated 11 px twice and blurred 21 px, so it is
+                # a generous blob, and YCrCb skin detection cannot tell an arm
+                # from a warm wall or a wooden shelf. ORed in unbounded, it
+                # pushed the silhouette out past the shoulders into whatever
+                # in the room happened to be skin-coloured — which is why the
+                # garment sat over the body instead of gripping it.
+                #
+                # Bounding it to a neighbourhood of the real silhouette keeps
+                # what it is for (recovering an arm MediaPipe trimmed) and
+                # drops what it was doing (claiming the room). Only applied
+                # when a real silhouette landed — with no real mask there is
+                # nothing to be near, and the unbounded blob is still better
+                # than nothing.
+                if mp_silhouette_ok:
+                    reach = max(3, int(SKIN_REACH_PX) | 1)
+                    near_body = cv2.dilate(
+                        (silhouette > 0.30).astype(np.uint8),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (reach, reach)),
+                    ).astype(np.float32)
+                    skin_mask = skin_mask * near_body
                 silhouette = np.maximum(silhouette, skin_mask * 0.80)
             except Exception as e:
                 log.debug(f"skin extension skipped: {e}")
