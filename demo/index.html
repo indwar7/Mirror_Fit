@@ -4075,7 +4075,7 @@ async function startTryOnCamera() {
   } catch(e) { alert('Camera error: ' + e.message); }
 }
 function toggleTryOn() { toRunning ? stopTryOn() : startTryOn(); }
-let toProcessing=false, toFrameSentAt=0;
+let toProcessing=false, toFrameSentAt=0, toResultAt=0;
 function _toSpinner(on){
   const el=document.getElementById('toSpinner');
   el.style.display=on?'flex':'none';
@@ -4083,7 +4083,7 @@ function _toSpinner(on){
 function startTryOn() {
   if(!toStream) { setStatus('tryonStatus','error','Start camera first'); return; }
   if(!toGarment) { setStatus('tryonStatus','error','Upload garment first'); return; }
-  toLatestResult=null; toProcessing=false;
+  toLatestResult=null; toProcessing=false; toResultAt=0;
   toWs=new WebSocket(TRYON_WS);
   toWs.onopen=()=>{
     setDot('to',true);
@@ -4109,7 +4109,7 @@ function startTryOn() {
       document.getElementById('toSpinnerMs').textContent=ms+'ms';
       toProcessing=false; _toSpinner(false);
       const img=new Image();
-      img.onload=()=>{ toLatestResult=img; };
+      img.onload=()=>{ toLatestResult=img; toResultAt=Date.now(); };
       img.src='data:image/jpeg;base64,'+msg.image;
       // Mask diagnostic, shown only with ?diag=1 on the URL. The backend
       // sends how it built the mask with every frame; putting it on screen
@@ -4158,14 +4158,27 @@ function _startToRender(){
     const vw=video.videoWidth||480,vh=video.videoHeight||480;
     const sz=Math.min(vw,vh);
     if(canvas.width!==sz||canvas.height!==sz){canvas.width=sz;canvas.height=sz;}
-    if(toLatestResult){ ctx.drawImage(toLatestResult,0,0,sz,sz); }
+    // A result that stopped arriving must not sit frozen on screen. The old
+    // code drew the last one forever, so a stalled backend showed a picture
+    // of the user from minutes ago beside their live camera — which reads as
+    // a rendering bug rather than as a stall. Past the timeout, fall back to
+    // the live camera, which is at least honest about what is happening.
+    const toFresh = toLatestResult && (Date.now()-toResultAt) < TO_STALL_MS;
+    if(toFresh){ ctx.drawImage(toLatestResult,0,0,sz,sz); }
     else if(video.readyState>=2){ drawCam(ctx,video,sz,MIRROR.to); }
     if(toRunning) toRafId=requestAnimationFrame(render);
   })();
 }
 function _stopToRender(){if(toRafId){cancelAnimationFrame(toRafId);toRafId=null;}}
+// One frame on the wire at a time. This used to fire on an 800 ms timer with
+// no in-flight gate, so at ~600 ms of inference plus network the queue grew
+// under any hiccup and every frame the user saw had been waiting behind
+// others. The watchdog is what stops a reply that never comes from wedging
+// the stream permanently.
+const TO_STALL_MS = 6000;
 function sendToFrame(){
   if(!toWs||toWs.readyState!==WebSocket.OPEN) return;
+  if(toProcessing && (Date.now()-toFrameSentAt) < TO_STALL_MS) return;
   const video=document.getElementById('tryonVideo');
   const vw=video.videoWidth||640,vh=video.videoHeight||480;
   const sz=Math.min(vw,vh);
