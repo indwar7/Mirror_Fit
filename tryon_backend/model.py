@@ -44,6 +44,24 @@ VTON_STEPS                = int(os.environ.get("VTON_STEPS", "0"))
 # overlay if the AI path is misbehaving.
 TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 
+# Base diffusion weights every tier loads its VAE, tokenizer, text encoder,
+# scheduler and UNet from.
+#
+# This was hardcoded to a repo under a personal account that does not exist —
+# that account has no models at all. So CatVTON failed to load on every start
+# ("not a valid model identifier"), the tier fell through, and try-on quietly
+# degraded to compositing the garment PNG over the frame. Which looks like a
+# translucent slab that ignores the arms, because that is exactly what it is.
+#
+# A stock SD-inpainting repo is all this needs: the UNet is loaded with
+# in_channels=12 and ignore_mismatched_sizes, so the garment-concat input conv
+# is reshaped on load, and the CatVTON-specific weights arrive afterwards as
+# the MaskFree attention overlay. booksforcharlie/... is the base CatVTON
+# itself builds on - public, ungated, no token required. Override to point at
+# your own mirror.
+CATVTON_BASE_MODEL        = os.environ.get(
+    "TRYON_BASE_MODEL", "booksforcharlie/stable-diffusion-inpainting")
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -248,7 +266,7 @@ class TryOnModel:
     def _load_tier1(self):
         from diffusers import AutoencoderKL, DDIMScheduler
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "abhay07080/CatVTON-bucket"
+        base = CATVTON_BASE_MODEL
         self._vae = AutoencoderKL.from_pretrained(base, subfolder="vae", torch_dtype=self.dtype).to(self.device)
         self._vae.requires_grad_(False)
         tok = CLIPTokenizer.from_pretrained(base, subfolder="tokenizer")
@@ -264,7 +282,7 @@ class TryOnModel:
     def _load_tier2(self):
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
-        base = "abhay07080/CatVTON-bucket"
+        base = CATVTON_BASE_MODEL
 
         # VTON_LORA_CHECKPOINT can be either:
         #   (a) A full UNet directory (config.json + diffusion_pytorch_model.safetensors)
@@ -327,7 +345,7 @@ class TryOnModel:
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
-        base = "abhay07080/CatVTON-bucket"
+        base = CATVTON_BASE_MODEL
         log.info(f"Loading CatVTON model from {base} …")
 
         self._vae = AutoencoderKL.from_pretrained(
