@@ -1975,6 +1975,15 @@ body.landing-active .app { display: none !important; }
     <!-- AI TWIN — SadTalker backend (port 7863), offline talking-head generation -->
     <!-- ══════════════ MY AVATAR — one photo, one choice, done ══════════════ -->
     <div class="panel" id="panel-myavatar">
+      <!-- Shown when the curated base-body set is incomplete. Without this the
+           tab just errors on Create and the try-on step never appears, with
+           nothing on screen saying which asset is missing. -->
+      <div class="card" id="avBlocker" style="display:none;
+           border-color:var(--red);background:rgba(180,30,60,.06)">
+        <div class="card-label" style="color:var(--red)">Not ready</div>
+        <div id="avBlockerText" style="font-size:12px;line-height:1.5"></div>
+      </div>
+
       <div class="card">
         <div class="card-label">Step 1 · Your photo</div>
         <div class="upload-zone" onclick="document.getElementById('avPhotoInput').click()">
@@ -2591,6 +2600,7 @@ function switchTab(t) {
     document.getElementById('panel-'+id).classList.toggle('active', id===t);
   });
   document.getElementById('myAvatarWrap').style.display = t==='myavatar' ? 'block' : 'none';
+  if (t === 'myavatar' && typeof avCheckReady === 'function') avCheckReady();
   document.getElementById('liveWrap').style.display    = t==='liveswap'     ? 'grid' : 'none';
   document.getElementById('lpWrap').style.display      = t==='liveportrait' ? 'grid' : 'none';
   document.getElementById('tryonWrap').style.display   = t==='tryon'        ? 'grid' : 'none';
@@ -3930,6 +3940,37 @@ function _avShow(url) {
 
   img.style.display = 'block';
   document.getElementById('avBodyPlaceholder').style.display = 'none';
+}
+
+// Base bodies are curated photographs and nothing generates one, so an empty
+// asset set is a hard blocker rather than a degraded mode. Say so on arrival,
+// not after the user has picked a photo and pressed Create.
+async function avCheckReady() {
+  const box = document.getElementById('avBlocker');
+  const text = document.getElementById('avBlockerText');
+
+  let st;
+  try {
+    const res = await fetch(FACE_API + '/base-bodies');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    st = await res.json();
+  } catch (e) {
+    box.style.display = 'block';
+    text.textContent = 'Could not reach the avatar backend on port 7860.';
+    return;
+  }
+
+  if (st.ready === st.total) { box.style.display = 'none'; return; }
+
+  const missing = (st.bodies || []).filter(b => b.state !== 'ok').map(b => b.id);
+  box.style.display = 'block';
+  text.innerHTML =
+    '<b>' + st.ready + ' of ' + st.total + ' base bodies available.</b><br>' +
+    'Base bodies are curated photographs — nothing generates one, so a build ' +
+    'with no photograph cannot be substituted for. Create will fail with 501 ' +
+    'until they are added, and Step 3 (garments) only appears once a body ' +
+    'exists.<br><br>Missing: ' + missing.join(', ') +
+    '<br><br>Add them with <code>tools/curate_base_bodies.py add</code>.';
 }
 
 async function avCreate() {
