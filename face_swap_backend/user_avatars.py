@@ -16,12 +16,13 @@ hair transfer — resolves an avatar the same way: `avatars_cache/{id}.jpg`.
 Writing an enrolled face to that path under a `usr_` id makes it work
 everywhere without touching those code paths.
 
-Reserved fields
----------------
-`body_image` and `measurements` are written as null. They are for the
-full-body avatar (an SD-generated figure with the enrolled face swapped onto
-it) and the chest/waist/shoulder fit pass. Declaring them now means adding
-those stages later is a write, not a migration.
+The body stage
+--------------
+Giving an avatar a body does NOT add a second image. The enrolled face is
+composited onto a curated base photograph and the result is written back over
+`avatars_cache/{id}.jpg` — the same path everything already reads. `has_body`
+and `base_body_id` record that it happened and which approved photograph was
+used, so provenance survives in the record rather than only in a filename.
 
 Voice note: `_transform_voice` in main.py picks its pitch shift by id prefix
 and falls through to 0 semitones for anything unrecognised. A `usr_` avatar
@@ -106,8 +107,13 @@ def make_record(
         "created_at": int(time.time()),
         "face_image": face_image,  # filename inside avatars_cache/
         # ── Reserved: see module docstring ──
-        "body_image": None,        # SD full-body figure + enrolled face
-        "measurements": None,      # {"chest_cm", "waist_cm", "shoulder_cm", ...}
+        # Set once a curated base body has been composited over the enrolled
+        # face. The composite REPLACES avatars_cache/{id}.jpg rather than
+        # living beside it, so everything downstream picks it up unchanged.
+        "has_body": False,
+        "base_body_id": None,      # which curated photograph was used
+        "base_body_license": None, # carried so provenance survives the record
+        "measurements": None,      # {"height_cm","chest_cm","waist_cm","hips_cm"}
         "style_image": None,       # InstantID cartoon of this person
         "style": None,             # which style produced style_image
     }
@@ -182,7 +188,7 @@ def remove(cache_dir: pathlib.Path, avatar_id: str) -> bool:
             return False
         _write(cache_dir, [r for r in records if r.get("id") != avatar_id])
 
-    for key in ("face_image", "body_image", "style_image"):
+    for key in ("face_image", "style_image"):
         filename = target.get(key)
         if filename:
             with contextlib.suppress(OSError):

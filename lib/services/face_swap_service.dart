@@ -114,53 +114,98 @@ class FaceSwapService {
         jsonDecode(res.body) as Map<String, dynamic>);
   }
 
-  /// Give an enrolled avatar a full body so garments have a torso to sit on.
+  /// Put the enrolled face on a curated base body.
   ///
-  /// The enrolled selfie is head-and-shoulders; try-on needs shoulders and hips
-  /// to build a torso mask, so a face alone cannot be dressed. The backend
-  /// picks a pre-rendered body matching these measurements and swaps the
-  /// person's face onto it.
+  /// [chestCm]/[waistCm] are optional and refine which of the eight approved
+  /// base photographs is used; omit both and the gender's average build is
+  /// chosen. Supply one without the other and the server rejects it — one
+  /// alone gives no ratio, and half-using it would look like it counted.
   ///
-  /// Measurements are centimetres. [chestCm] and [waistCm] are circumferences;
-  /// [shoulderCm] is a width. A 422 means a measurement was rejected as
-  /// implausible — most often inches typed into a cm field.
+  /// A **501** means that build has no approved photograph yet. The server
+  /// does not substitute a neighbouring build, so surface it as "not available
+  /// yet" rather than as a malformed request.
   ///
-  /// Returns the raw response: `body_image_url`, the stored `measurements`, and
-  /// `selection` (which template was chosen and why), so the UI can show the
-  /// body as an approximation rather than as something measured from the user.
+  /// The composite is written over the avatar's own image, so after this
+  /// [avatarImageUrl] returns the full-body version.
   static Future<Map<String, dynamic>> createAvatarBody({
     required String avatarId,
-    required double chestCm,
-    required double waistCm,
-    double? shoulderCm,
+    required String gender,
+    double? chestCm,
+    double? waistCm,
     double? heightCm,
-    double? weightKg,
+    double? hipsCm,
     void Function(String)? onStatus,
   }) async {
-    onStatus?.call('Building your body model…');
+    onStatus?.call('Putting you on a body…');
     final req = http.MultipartRequest(
       'POST',
       Uri.parse('$_kLocalBase/avatars/$avatarId/body'),
-    )
-      ..fields['chest_cm'] = chestCm.toString()
-      ..fields['waist_cm'] = waistCm.toString();
-    if (shoulderCm != null) req.fields['shoulder_cm'] = shoulderCm.toString();
+    )..fields['gender'] = gender;
+    if (chestCm != null) req.fields['chest_cm'] = chestCm.toString();
+    if (waistCm != null) req.fields['waist_cm'] = waistCm.toString();
     if (heightCm != null) req.fields['height_cm'] = heightCm.toString();
-    if (weightKg != null) req.fields['weight_kg'] = weightKg.toString();
+    if (hipsCm != null) req.fields['hips_cm'] = hipsCm.toString();
 
-    final streamed = await req.send().timeout(const Duration(seconds: 60));
-    final res = await http.Response.fromStream(streamed);
+    final res = await http.Response.fromStream(
+        await req.send().timeout(const Duration(seconds: 90)));
+    if (res.statusCode == 501) {
+      throw FaceSwapException(
+          'No base body for this build yet: ${_extractDetail(res.body)}');
+    }
     if (res.statusCode != 200) {
       throw FaceSwapException('Body setup failed: ${_extractDetail(res.body)}');
     }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  /// URL of an avatar's full-body image, for try-on and for previewing.
-  /// Only meaningful once [createAvatarBody] has succeeded — check
-  /// [AvatarModel.hasBody] first.
-  static String bodyImageUrl(String avatarId) =>
-      '$_kLocalBase/avatars/$avatarId/body-image';
+  /// Put a garment on the avatar. Returns the fitted JPEG bytes.
+  ///
+  /// [category] is `upper`, `lower` or `dress`. The server pastes back
+  /// everything outside the garment mask, so the face comes through
+  /// bit-identical — this cannot change what the person looks like.
+  ///
+  /// A **503** means the try-on models are not loaded on the server; it
+  /// deliberately does not return the avatar unchanged, which would look like
+  /// a try-on that had worked.
+  static Future<Uint8List> tryOnGarment({
+    required String avatarId,
+    required Uint8List garment,
+    String category = 'upper',
+    void Function(String)? onStatus,
+  }) async {
+    onStatus?.call('Fitting the garment…');
+    final req = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_kLocalBase/avatars/$avatarId/tryon'),
+    )
+      ..fields['category'] = category
+      ..files.add(http.MultipartFile.fromBytes('garment_image', garment,
+          filename: 'garment.jpg'));
+
+    final streamed = await req.send().timeout(const Duration(seconds: 180));
+    final bytes = await streamed.stream.toBytes();
+    if (streamed.statusCode != 200) {
+      throw FaceSwapException(
+          'Try-on failed: ${_extractDetail(utf8.decode(bytes, allowMalformed: true))}');
+    }
+    return bytes;
+  }
+
+  /// Per-bin readiness of the curated base-body set.
+  ///
+  /// Reported per id rather than as a count, so a client can say which build
+  /// is missing instead of "some bodies unavailable".
+  static Future<Map<String, dynamic>> baseBodyStatus() async {
+    final res = await http.get(Uri.parse('$_kLocalBase/base-bodies'));
+    if (res.statusCode != 200) {
+      throw FaceSwapException('Could not read base bodies (${res.statusCode})');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// URL of an avatar's image — the full-body composite once a body was built.
+  static String avatarImageUrl(String avatarId) =>
+      '$_kLocalBase/avatars/$avatarId/image';
 
   /// Delete an enrolled avatar and its images. Presets return 403.
   static Future<void> deleteAvatar(String avatarId) async {

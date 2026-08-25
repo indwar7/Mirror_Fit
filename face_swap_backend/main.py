@@ -30,6 +30,9 @@ except Exception:
 
 import user_avatars
 import body_shapes
+import base_bodies
+import tryon
+from avatar_validation import ValidatorUnavailable
 
 from fastapi import (
     FastAPI, File, Form, HTTPException, Response,
@@ -46,15 +49,39 @@ _HERE          = pathlib.Path(__file__).parent
 _AVATAR_CACHE  = _HERE / "avatars_cache"
 _AVATAR_CACHE.mkdir(exist_ok=True)
 
-# Pre-rendered full-body templates, one per (gender x size x taper) bucket that
-# body_shapes.py can select. Populated offline by generate_bodies.py — see that
-# file for why body generation is not a runtime step.
-_BODY_CACHE = _HERE / "bodies_cache"
-_BODY_CACHE.mkdir(exist_ok=True)
+# Base bodies are curated PHOTOGRAPHS in assets/base_bodies/, admitted one at a
+# time by tools/curate_base_bodies.py after a human has looked at them. Nothing
+# here generates one: two rounds of generated figures shipped with two torsos
+# because the gate in front of them only checked for a detectable face, which a
+# two-torso image has. See base_bodies.py and AVATARS.md.
 
-# InstantID lives in its own service and conda env (see instantid_backend/).
-# It is the only piece that can hold identity and style at once, so the cartoon
-# avatar is generated there and proxied back through here.
+# The anatomy gate. Built once; every avatar write goes through it, and it
+# RAISES if its model is missing rather than quietly passing everything.
+_validator = None
+
+def _get_validator():
+    global _validator
+    if _validator is None:
+        from pose_backends import load_validator
+        _validator = load_validator()
+    return _validator
+
+# Try-on pipeline, wired lazily for the same reason.
+_tryon_pipeline = None
+
+def _get_tryon():
+    global _tryon_pipeline
+    if _tryon_pipeline is None:
+        from tryon import TryOnPipeline
+        try:
+            from vton_backends import load_backends
+            parser, densepose, vton = load_backends()
+        except Exception as e:
+            print(f"[LUCY] try-on backends unavailable ({type(e).__name__}: {e})")
+            parser = densepose = vton = None
+        _tryon_pipeline = TryOnPipeline(parser, densepose, vton)
+    return _tryon_pipeline
+
 _INSTANTID_URL = os.environ.get("LUCY_INSTANTID_URL", "http://127.0.0.1:7861")
 
 _INSWAPPER_PATH = str(_HERE / "models" / "models" / "inswapper_128.onnx")
@@ -1813,7 +1840,10 @@ async def list_avatars():
             "enrolled":  True,
             # Reserved stages, surfaced so the client can show enrolment
             # progress rather than having to probe for them.
-            "has_body":     bool(r.get("body_image")),
+            # The composite is written over avatars_cache/{id}.jpg itself, so
+            # "has a body" is a recorded fact rather than a separate file.
+            "has_body":     bool(r.get("has_body")),
+            "base_body_id": r.get("base_body_id"),
             "has_style":    bool(r.get("style_image")),
             "style":        r.get("style"),
             "measurements": r.get("measurements"),
@@ -2012,25 +2042,22 @@ async def get_avatar_style_image(avatar_id: str):
 @app.post("/avatars/{avatar_id}/body")
 async def create_avatar_body(
     avatar_id:   str,
+    gender:      Optional[str]   = Form(None),
+    height_cm:   Optional[float] = Form(None),
     chest_cm:    Optional[float] = Form(None),
     waist_cm:    Optional[float] = Form(None),
-    shoulder_cm: Optional[float] = Form(None),
-    height_cm:   Optional[float] = Form(None),
-    weight_kg:   Optional[float] = Form(None),
-    gender:      Optional[str]   = Form(None),
+    hips_cm:     Optional[float] = Form(None),
 ):
-    """Give an enrolled avatar a full body, so garments have a torso to sit on.
+    """Put the enrolled face on a curated base body.
 
-    The enrolled selfie is head-and-shoulders — try-on needs shoulders AND hips
-    to build a torso mask, so a face alone cannot be dressed. This picks the
-    pre-rendered body template matching the measurements and swaps the person's
-    own face onto it, producing a full-length figure that is recognisably them
-    and roughly their build.
+    Measurements pick which of the eight approved photographs to use. Supply
+    none and the gender's `average` bin is used — seeing yourself on a body
+    should not require a tape measure.
 
-    Roughly, not exactly: see body_shapes.py. Eighteen templates cannot encode
-    a continuous body, and neither could per-user diffusion — you cannot prompt
-    a waist measurement. The measurements are stored verbatim alongside, so fit
-    grading works from the real numbers rather than from the bucket.
+    If the chosen bin has no approved photograph the response is 501 naming the
+    id. It does NOT fall back to a neighbouring build: a silent substitution
+    shows someone a body their measurements did not ask for, with nothing in
+    the response saying so.
     """
     record = _avatar_record(avatar_id)
     if record is None:
@@ -2039,151 +2066,167 @@ async def create_avatar_body(
         raise HTTPException(
             status_code=400,
             detail="Only enrolled avatars can be given a body. Preset avatars "
-                   "are portraits with no measurements behind them.",
+                   "are portraits with no person behind them.",
         )
 
-    # Gender picks the template when nothing else is given. An explicit form
-    # value wins over what was detected at enrolment, because the detector is a
-    # guess and the person is not.
     effective_gender = (gender or "").strip().lower() or record.get("gender")
 
-    # Measurements are optional. Without them the standard build for the gender
-    # is used, so "see myself on a body" does not require a tape measure — the
-    # measurements refine the choice, they are not the price of entry.
-    measurements = None
-    if chest_cm is not None and waist_cm is not None:
-        try:
-            measurements = body_shapes.parse_measurements({
-                "chest_cm": chest_cm, "waist_cm": waist_cm,
-                "shoulder_cm": shoulder_cm, "height_cm": height_cm,
-                "weight_kg": weight_kg,
-            })
-        except body_shapes.MeasurementError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-    elif chest_cm is not None or waist_cm is not None:
-        # One without the other cannot produce a ratio, and silently ignoring
-        # the one that was given would look like it had been used.
-        raise HTTPException(
-            status_code=422,
-            detail="Give both chest_cm and waist_cm, or neither.",
-        )
+    try:
+        measurements = body_shapes.parse_measurements({
+            "height_cm": height_cm, "chest_cm": chest_cm,
+            "waist_cm": waist_cm, "hips_cm": hips_cm,
+        })
+    except body_shapes.MeasurementError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-    if measurements is not None:
-        selection = body_shapes.describe(measurements, effective_gender)
-    else:
-        body_id = body_shapes.default_body_id(effective_gender)
-        selection = {
-            "body_id": body_id,
-            "gender": body_shapes.normalise_gender(effective_gender),
-            "size": "average",
-            "taper": "regular",
-            "chest_to_waist": None,
-            "shoulder_to_chest": None,
-            "standard": True,
-        }
+    selection = body_shapes.describe(effective_gender, measurements)
 
-    template_path = _BODY_CACHE / f"{selection['body_id']}.jpg"
-    if not template_path.exists():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Body template {selection['body_id']} is missing. Run "
-                   f"`python generate_bodies.py` in face_swap_backend/.",
-        )
+    try:
+        base = base_bodies.get(selection["base_body_id"])
+    except base_bodies.MissingBaseBody as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except base_bodies.CorruptBaseBody as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     face_path = _avatar_image_path(avatar_id)
     if not face_path.exists():
         raise HTTPException(status_code=404, detail="Enrolled face image is missing")
-
     if _face_app is None or _inswapper is None:
-        # Minimal mode frees the GPU for another backend; the swap cannot run.
         raise HTTPException(
             status_code=503,
-            detail="Face swap models are not loaded (LUCY_MINIMAL_MODE). "
-                   "Body generation needs them.",
+            detail="Face swap models are not loaded (LUCY_MINIMAL_MODE).",
         )
 
     loop = asyncio.get_event_loop()
     face_img = await loop.run_in_executor(None, _decode_image, face_path.read_bytes())
-    body_img = await loop.run_in_executor(None, _decode_image, template_path.read_bytes())
+    body_img = await loop.run_in_executor(None, _decode_image, base.path().read_bytes())
 
     try:
-        dressed = await loop.run_in_executor(None, _swap, face_img, body_img)
+        composed = await loop.run_in_executor(None, _swap, face_img, body_img)
     except ValueError as e:
-        # Raised when a face can't be found in either image. The template side
-        # is the likelier culprit — SD renders faces poorly at full-body scale,
-        # which is exactly what generate_bodies.py --validate checks for.
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not place the face on the body template: {e}",
-        )
+        raise HTTPException(status_code=422, detail=f"Could not place the face: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Body swap failed: {e}")
 
-    body_filename = f"{avatar_id}_body.jpg"
+    # Tone-match the swapped face to the base body's own skin. Declining is
+    # fine and is reported; the swap is still usable, just less well blended.
+    tone_note = ""
     try:
-        (_AVATAR_CACHE / body_filename).write_bytes(_encode_jpeg(dressed))
+        import skin_match
+        det = await loop.run_in_executor(None, _detect, composed)
+        _, _kps, bbox, _is_real = det
+        if bbox is not None:
+            face_mask = skin_match.face_region_mask(composed.shape, bbox)
+            # Neck strip: immediately below the face box, which on these
+            # photographs is base-body skin the swap did not touch.
+            y2 = int(bbox[3]); x1, x2 = int(bbox[0]), int(bbox[2])
+            neck = np.zeros(composed.shape[:2], np.uint8)
+            neck[y2:min(y2 + (y2 - int(bbox[1])) // 2, composed.shape[0]), x1:x2] = 255
+            composed, stats = skin_match.optional_match(composed, face_mask, neck)
+            tone_note = "matched" if stats.applied else f"skipped ({stats.reason})"
+    except Exception as e:
+        tone_note = f"skipped ({type(e).__name__}: {e})"
+
+    # The anatomy gate, on the thing about to be written. Raises if the pose
+    # model is missing — see avatar_validation for why that is not a warning.
+    try:
+        result = await loop.run_in_executor(None, _get_validator().validate, composed)
+    except ValidatorUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not result.ok:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The composed avatar failed anatomy validation: {result.reason()}",
+        )
+
+    # avatars_cache/{id}.jpg IS the avatar everything else reads — face swap,
+    # lipsync, hair transfer and now try-on. Writing the full-body composite
+    # here is what makes the rest of the system work unchanged.
+    try:
+        _avatar_image_path(avatar_id).write_bytes(_encode_jpeg(composed))
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Could not save body image: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not save avatar: {e}")
+
+    _get_tryon().invalidate(avatar_id)   # cached parse/densepose are now stale
 
     updated = user_avatars.update(_AVATAR_CACHE, avatar_id, {
-        "body_image": body_filename,
-        "body_template": selection["body_id"],
-        # Null when the standard build was used. Sizing advice checks this and
-        # stays quiet rather than grading a fit against measurements nobody gave.
-        "measurements": measurements.as_dict() if measurements else None,
+        "base_body_id": selection["base_body_id"],
+        "base_body_license": base.license,
+        "measurements": measurements.as_dict(),
         "gender": selection["gender"],
+        "has_body": True,
     })
     if updated is None:
-        with contextlib.suppress(OSError):
-            (_AVATAR_CACHE / body_filename).unlink()
         raise HTTPException(status_code=404, detail="Avatar disappeared during update")
 
     return {
         "id": avatar_id,
-        "body_image_url": f"/avatars/{avatar_id}/body-image",
-        "measurements": updated["measurements"],
-        # Returned so the UI can explain the choice rather than presenting a
-        # body the user did not ask for as if it were measured from them.
+        "image_url": f"/avatars/{avatar_id}/image",
         "selection": selection,
+        "base_body": {"id": base.id, "license": base.license, "source": base.source},
+        "skin_tone_match": tone_note,
+        "validation": [{"check": c.name, "passed": c.passed, "detail": c.detail}
+                       for c in result.checks],
     }
 
 
-@app.get("/avatars/{avatar_id}/body-image")
-async def get_avatar_body_image(avatar_id: str):
-    """Serve an enrolled avatar's full-body image — the try-on input."""
+@app.get("/base-bodies")
+async def list_base_bodies():
+    """Per-id readiness of the curated asset set.
+
+    Reports each bin separately: "all bodies present" is exactly the shape of
+    claim that let two rounds of broken assets through.
+    """
+    return base_bodies.status()
+
+
+@app.post("/avatars/{avatar_id}/tryon")
+async def avatar_tryon(
+    avatar_id: str,
+    garment_image: UploadFile = File(...),
+    category: str = Form("upper"),
+):
+    """Put a garment on the avatar without touching anything else.
+
+    Human parse + DensePose + a VTON model, then a hard paste-back: every pixel
+    outside the garment mask is copied from the input, so the face is
+    bit-identical rather than merely similar. The pipeline asserts that itself
+    before returning.
+    """
     record = _avatar_record(avatar_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Avatar not found")
-
-    filename = record.get("body_image")
-    if not filename:
+    if category not in tryon.CATEGORIES:
         raise HTTPException(
-            status_code=404,
-            detail="This avatar has no body yet. POST /avatars/{id}/body with "
-                   "measurements first.",
+            status_code=422,
+            detail=f"category must be one of {', '.join(tryon.CATEGORIES)}",
         )
 
-    path = _AVATAR_CACHE / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Body image file is missing")
-    return FileResponse(str(path), media_type="image/jpeg")
+    raw = await garment_image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty garment upload")
 
+    avatar_path = _avatar_image_path(avatar_id)
+    if not avatar_path.exists():
+        raise HTTPException(status_code=404, detail="Avatar image is missing")
 
-@app.get("/body-templates")
-async def list_body_templates():
-    """Which body templates exist on disk, and which are still missing.
+    loop = asyncio.get_event_loop()
+    avatar_img = await loop.run_in_executor(None, _decode_image, avatar_path.read_bytes())
+    garment_img = await loop.run_in_executor(None, _decode_image, raw)
 
-    Exposed because a missing template is invisible until a user with those
-    exact measurements tries to build a body and gets a 503 — this makes the
-    gap checkable before that happens.
-    """
-    expected = body_shapes.all_body_ids()
-    present = [b for b in expected if (_BODY_CACHE / f"{b}.jpg").exists()]
-    return {
-        "expected": expected,
-        "present": present,
-        "missing": [b for b in expected if b not in present],
-    }
+    pipeline = _get_tryon()
+    try:
+        result = await loop.run_in_executor(
+            None, pipeline.tryon, avatar_id, avatar_img, garment_img, category
+        )
+    except tryon.TryOnUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Try-on failed: {e}")
+
+    return Response(content=_encode_jpeg(result), media_type="image/jpeg")
 
 
 @app.delete("/avatars/{avatar_id}")

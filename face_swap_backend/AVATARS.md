@@ -1,123 +1,172 @@
-# LUCY avatars — enrolment and full-body
+# LUCY avatars — enrol a person, dress them
 
-How a person becomes an avatar they can try clothes on.
+## The one rule
+
+**Base bodies are curated photographs. Nothing generates one at runtime.**
+
+They used to be produced at build time by a text-to-image model. Generation is
+stochastic: a fraction of renders came out with two torsos stacked on top of
+each other. A validator was added — and it only asked *"is a face
+detectable?"*, which a two-torso image answers yes. Eighteen broken figures
+shipped. The validator was then made stricter but left **optional**: when its
+model was missing it printed a warning and fell back to face detection, and the
+same eighteen broken figures shipped again, from a run that ended with "all
+templates usable".
+
+Moving SD 1.5 → SDXL lowered the defect rate. It did not make the output
+something you can ship without a person looking at every frame. So a person
+looks at every frame, once, offline, and the result is an asset in the repo.
+
+`tools/generate_bodies_OFFLINE.py` still exists, but only to produce
+*candidates* for review. Nothing in `face_swap_backend` imports it.
 
 ## The seam everything hangs off
 
-Every consumer — static swap, live swap V1/V2, Wav2Lip lipsync, hair transfer —
-resolves an avatar the same way: **`avatars_cache/{id}.jpg`**. Enrolment writes
-into that path, which is why a user's own face works everywhere without any of
-those code paths knowing enrolment exists.
+Every consumer — static swap, live swap V1/V2, Wav2Lip lipsync, hair transfer,
+try-on — resolves an avatar the same way: **`avatars_cache/{id}.jpg`**.
 
-| id prefix | what it is | where it comes from |
-|---|---|---|
-| `gen_*`, `ai_*` | preset portraits | `generate_avatars.py`, hard-coded list in `main.py` |
-| `usr_*` | an enrolled person | `POST /avatars/create`, recorded in `avatars_cache/user_avatars.json` |
-| `body_*` | body templates | `generate_bodies.py` → `bodies_cache/` |
+Giving an avatar a body does not add a second file. The composite is written
+back over that same path, which is why the rest of the system picks it up with
+no changes.
 
-## L0 — enrolment
+| id prefix | what it is |
+|---|---|
+| `gen_*`, `ai_*` | preset portraits, hard-coded list in `main.py` |
+| `usr_*` | an enrolled person, recorded in `avatars_cache/user_avatars.json` |
+| `body_*` | a curated base body in `assets/base_bodies/` |
 
-`POST /avatars/create` (multipart: `photo`, `name`, optional `gender`)
+## Pipeline
 
-Validates a face is detectable **before** writing anything — an avatar with no
-findable face fails later inside the swap with a far less obvious error. Gender
-is auto-detected from the face when InsightFace's full pipeline is loaded, and
-is used later to pick a body template.
-
-`DELETE /avatars/{id}` removes the record and both images. Presets return 403.
-
-Voice: `_transform_voice` picks its pitch shift by id prefix and falls through
-to 0 semitones for anything unrecognised, so a `usr_` avatar keeps the
-speaker's natural voice. That is the correct default when the avatar *is* the
-speaker — the absence of a `usr_` rule is deliberate, not an oversight.
-
-## L1 — giving that avatar a body
-
-`POST /avatars/{id}/body` (form: `chest_cm`, `waist_cm`, optional
-`shoulder_cm`, `height_cm`, `weight_kg`)
-
-The enrolled selfie is head-and-shoulders. Try-on runs MediaPipe pose to build
-a torso mask from shoulders **and hips** (`tryon_backend/model.py`), so a face
-alone cannot be dressed — there is nothing for the garment to sit on. This
-endpoint picks a pre-rendered body matching the measurements and swaps the
-person's face onto it.
-
-Result: `avatars_cache/{id}_body.jpg`, served at `/avatars/{id}/body-image`.
-
-### Why bodies are pre-rendered, not generated per user
-
-1. **Diffusion does not obey numbers.** "waist 82 cm" is not promptable. You
-   can only describe a build in words, and words land you in a bucket anyway —
-   so per-user generation would produce one of a handful of silhouettes
-   regardless, just slower and non-reproducibly.
-2. **A rendered library is reviewable.** You can look at all 18 figures and
-   approve them. You cannot approve a diffusion sample nobody has seen yet,
-   and a bad one reaches the shopper directly.
-3. **Selection stays testable.** Measurements → template is plain code with
-   unit tests, not a GPU round-trip whose output varies per call.
-4. **No render latency.** Enrolment is a swap, not a 10-second diffusion wait.
-
-> **Correction.** An earlier version of this file claimed this backend *could
-> not* run Stable Diffusion — Python 3.14, no PyTorch CUDA wheels. That is not
-> true of the deployed box: `.github/workflows/deploy.yml` starts
-> face_swap_backend with `C:\miniconda3\python.exe` (conda `base`), which has
-> torch 2.6.0+cu124 with CUDA available. Runtime generation is therefore
-> *possible* here; it is just not worth it, for the reasons above.
-
-Note that `torch`/`diffusers` are still absent from this backend's
-`requirements.txt`, so `generate_bodies.py` depends on the ambient conda env
-rather than on anything this service declares.
-
-The measurements are stored **verbatim** on the record alongside the bucket, so
-fit grading (`fit_score/`) works from the real numbers, not the approximation.
-
-### The 18 templates
-
-`body_shapes.py` selects on two axes, because two are what the measurements
-support:
-
-- **size** — chest/bust circumference, cut at common Indian ready-to-wear
-  S/M/L/XL bands (men 94/106 cm, women 86/97 cm)
-- **taper** — chest-to-waist ratio, the tailor's drop measurement
-  (≥1.22 tapered, ≥1.08 regular, below that straight)
-
-Shoulder is a *width* while chest and waist are *circumferences*, so it is not
-comparable to them and is used only to nudge taper by one band. Its thresholds
-are **per-gender** and must stay that way: a single shared threshold read every
-ordinary female frame as narrow-shouldered and cancelled out genuine tapers.
-
-2 genders × 3 sizes × 3 tapers = 18. `generate_bodies.py` renders exactly the
-set `body_shapes.all_body_ids()` returns, and asserts the two agree on startup —
-a naming drift would otherwise show up as every user silently getting "no body
-template", which looks like a data problem rather than a naming one.
-
-### Running the generator
-
-Must run in an env that **has PyTorch** — the same one `generate_avatars.py`
-uses, not this backend's:
-
-```bash
-python generate_bodies.py              # render what's missing
-python generate_bodies.py --validate   # re-check faces are detectable
-python generate_bodies.py --force      # re-render everything
+```
+selfie ──> POST /avatars/create      face validated before anything is written
+   │
+   └────> POST /avatars/{id}/body    measurements -> bin -> curated photograph
+                                     face swap + LAB skin-tone match to the
+                                     body's own neck, anatomy-validated, then
+                                     written over avatars_cache/{id}.jpg
+   │
+   └────> POST /avatars/{id}/tryon   parse + densepose -> agnostic mask ->
+                                     CatVTON -> hard paste-back
 ```
 
-The template's own face is discarded by the swap, but inswapper must still
-*detect* one to replace it — and SD renders faces badly at full-body scale. So
-each render is checked with the same detector the server uses and retried with
-a new seed if the face is missing or under 56 px. A template that fails this
-would fail at swap time for every user who matched it.
+### Measurements → bin
 
-Check what is actually on disk with `GET /body-templates`.
+`body_shapes.py` is a **pure function**. No I/O, no models, no image creation.
+Four builds per gender — `slim`, `average`, `athletic`, `plus` — because that
+is what the measurements can actually separate.
 
-## Known gaps
+- girth from chest/bust, cut at common Indian ready-to-wear bands
+  (men 94 / 108 cm, women 86 / 100 cm), with a waist override so a large waist
+  on an ordinary chest still reads as `plus`
+- `athletic` is ordinary girth with a pronounced chest-to-waist drop — the
+  tailor's own measure of taper
+- **plus is decided before athletic**: a garment that does not go round the
+  chest is not saved by having the right drop
+- chest without waist is ignored, not half-used — one alone gives no ratio, and
+  using it for girth would look like the measurement had counted
+- no measurements at all → the gender's `average` bin
 
-- **No UI.** The endpoints and the Flutter service methods exist; nothing in
-  the app calls them yet.
-- **`bodies_cache/` is empty** until `generate_bodies.py` runs on a GPU box.
-  Until then `POST /avatars/{id}/body` returns 503 naming the missing template.
-- **Height is collected but unused** in template selection — it mostly affects
-  scale rather than silhouette, and adding a height axis would triple the
-  library. Stored on the record for fit grading regardless.
-- **L2/L3 not built** — feeding the stored measurements into `fit_score`, and
-  running the body image plus an uploaded garment through CatVTON.
+If a bin has no approved photograph the endpoint returns **501 naming the id**.
+It does not fall back to a neighbouring build. A silent substitution shows
+someone a body their measurements did not ask for with nothing saying so.
+
+### Identity
+
+Face swap only — InsightFace inswapper, then GFPGAN/CodeFormer restore, then
+`skin_match.py` moves the face's LAB statistics toward the base body's own neck
+skin. Direction matters: the **face** is corrected toward the **body**, never
+the reverse, because the body is the large continuous region a viewer reads as
+that person's skin tone.
+
+The correction is refused if it would be implausibly large, and only pixels
+inside the face mask are written — a full LAB round trip perturbs every pixel
+in the image by a few levels, so the body and background are copied through
+bit-identical.
+
+### Try-on
+
+The try-on **must never alter identity**, and that is enforced arithmetically,
+not hoped for:
+
+- the agnostic mask is built by union of replaceable ATR labels, then
+  subtraction of protected ones. The subtraction is not redundant — parsers
+  routinely bleed `upper_clothes` a few pixels onto the jaw, and those pixels
+  are exactly the ones a viewer reads as the face changing.
+- `composite()` is a **hard binary copy**, not a blend. A feathered edge leaves
+  the face *nearly* unchanged, and "nearly" is not something a test can hold
+  anyone to.
+- shape mismatch raises rather than resampling the original
+- `tryon()` re-asserts `identity_preserved()` on its own output before
+  returning, so a future change to `composite()` fails loudly
+
+Parse and DensePose are cached per avatar id — they depend only on the avatar,
+so ten garments run them once. Rebuilding the body invalidates the cache.
+
+## The validation gate
+
+`avatar_validation.py`. One validator, used by both the curation script and
+every avatar write.
+
+**It fails closed.** If the pose model is unavailable, every call raises
+`ValidatorUnavailable`. There is no skip flag in the module, and a test asserts
+none is ever added. Bypassing it has to happen at a call site, visibly, in
+review.
+
+Checks, in order, each reported separately:
+
+| check | catches |
+|---|---|
+| `single_person` | 0 or 2+ people — the two-torso signature |
+| `complete_skeleton` | missing or low-confidence keypoints — cropped figures |
+| `vertical_order` | nose < shoulders < hips < knees < ankles |
+| `proportions` | limb ratios outside human range |
+| `single_blob` | a second figure the pose model missed |
+
+Proportions use Drillis & Contini's body-segment tables (shoulder 0.818 of
+height, hip 0.530, knee 0.285, ankle 0.039, biacromial width 0.259), expressed
+against the nose-to-ankle span because that is what is measurable in an image.
+Tolerances are wide — the job is to reject a shape that is not human, not to
+grade posture.
+
+`ValidationResult` is per-check by design. "18 templates passed" is the shape
+of claim that let two rounds of broken assets through.
+
+## Adding a base body
+
+```bash
+python tools/curate_base_bodies.py add candidate.jpg \
+    --id body_male_average --height-cm 178 \
+    --license "Unsplash Licence" --source "https://…" --approved-by "abhay"
+
+python tools/curate_base_bodies.py status    # per-id readiness
+python tools/curate_base_bodies.py verify    # re-validate everything admitted
+```
+
+`add` refuses ids `body_shapes` cannot select, runs the anatomy validator,
+prints the per-check result, and then **requires the operator to confirm they
+have looked at the image**. That step is not ceremony: the validator catches
+two torsos, not "this photograph is unusable for other reasons".
+
+`manifest.json` records gender, build, the model's real height, licence,
+source, sha256, approver and timestamp. The sha256 is checked on read — an
+image swapped after review has not been reviewed.
+
+## Running the tests
+
+```bash
+cd face_swap_backend
+python -m unittest test_avatar_validation test_body_shapes test_tryon test_skin_match -v
+```
+
+55 tests, stdlib only, no models needed — that is the point. The most important
+one asserts that a **missing pose model makes avatar creation fail** rather
+than pass.
+
+## Current state
+
+- **Base bodies: 0 of 8 admitted.** The asset set is empty. Every
+  `POST /avatars/{id}/body` returns 501 until photographs are curated in.
+  `GET /base-bodies` reports each bin separately.
+- Try-on backends (SCHP, DensePose, CatVTON) are adapters against upstream
+  projects that must be installed on the box; `POST /avatars/{id}/tryon`
+  returns 503 naming what is missing until they are.

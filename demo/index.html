@@ -252,8 +252,10 @@ header {
 .btn-ghost:hover { background: var(--ink); color: var(--ivory); }
 
 .garment-type-btn,
+.av-cat-btn,
 .av-gender-btn { transition: all 0.2s ease; cursor: pointer; }
 .garment-type-btn.active,
+.av-cat-btn.active,
 .av-gender-btn.active { background: var(--ink); color: var(--ivory); border-color: var(--ink); }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1637,7 +1639,7 @@ body.landing-active .app { display: none !important; }
          querySelectorAll('.tab') by position, so dropping this node would
          shift every later tab onto the wrong panel. -->
     <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
-            onclick="switchTab('ar')">AR Avatar</button>
+            onclick="switchTab('ar')">Face Filter (3D)</button>
     <!-- AI Twin is hidden. Hidden rather than removed: switchTab() pairs its
          id list with .tab by position, so dropping the node shifts every tab
          after it onto the wrong panel. -->
@@ -1994,6 +1996,43 @@ body.landing-active .app { display: none !important; }
             Female
           </button>
         </div>
+        <!-- Optional: refines which of the eight curated bodies is used.
+             Left blank, the gender's average build is chosen. -->
+        <details style="margin-top:9px">
+          <summary style="font-size:11.5px;opacity:.65;cursor:pointer">
+            Measurements (optional — picks a closer build)
+          </summary>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <label style="flex:1;font-size:11px;opacity:.7">Chest cm
+              <input id="avChest" type="number" placeholder="102"
+                     style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+            <label style="flex:1;font-size:11px;opacity:.7">Waist cm
+              <input id="avWaist" type="number" placeholder="86"
+                     style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+          </div>
+          <div style="font-size:10.5px;opacity:.5;margin-top:6px;line-height:1.4">
+            Both or neither — one alone gives no ratio.
+          </div>
+        </details>
+      </div>
+
+      <!-- Try-on appears only once there is a body to dress. -->
+      <div class="card" id="avTryonCard" style="display:none">
+        <div class="card-label">Step 3 · Try a garment</div>
+        <div class="upload-zone" onclick="document.getElementById('avGarmentInput').click()"
+             style="min-height:78px">
+          <input type="file" id="avGarmentInput" accept="image/*" hidden onchange="avTryon(this)">
+          <span class="upload-hint">Upload a garment photo</span>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button class="btn btn-ghost av-cat-btn active" data-cat="upper"
+                  onclick="avSetCategory('upper', this)" style="flex:1;font-size:12px;padding:7px 4px">Top</button>
+          <button class="btn btn-ghost av-cat-btn" data-cat="lower"
+                  onclick="avSetCategory('lower', this)" style="flex:1;font-size:12px;padding:7px 4px">Bottom</button>
+          <button class="btn btn-ghost av-cat-btn" data-cat="dress"
+                  onclick="avSetCategory('dress', this)" style="flex:1;font-size:12px;padding:7px 4px">Dress</button>
+        </div>
+        <div id="avTryonStatus" class="status-msg"></div>
       </div>
 
       <div class="sticky-action">
@@ -2506,7 +2545,7 @@ body.landing-active .app { display: none !important; }
 // the host it was loaded from — which means a new EC2 public IP needs no
 // code change. The literal below is only a fallback for opening the file
 // locally during design review.
-const FALLBACK_HOST = '13.232.241.58';
+const FALLBACK_HOST = '43.204.212.106';
 // Served over http(s) -- from the box, from localhost, from anywhere --
 // the right backend is always the host the page came from. Only a page
 // opened off disk (file://, where hostname is empty) has no host to use
@@ -3819,17 +3858,16 @@ function renderOutfitScore() {
 let _osLastFit = null;
 
 // ── My Avatar ────────────────────────────────────────────────────────────────
-// One photo, one male/female choice, one button. Enrolment and the body are
-// two endpoints but a single action here: nobody wants to press Create and
-// then discover there is a second form before they see anything.
+// Upload a photo, pick male/female, press Create. Measurements are an optional
+// refinement: they choose a closer one of the eight curated base bodies, and
+// left blank the gender's average build is used.
 //
-// Measurements are deliberately NOT asked for. The standard build for the
-// chosen gender is used, and the backend records measurements as null so
-// sizing advice stays quiet rather than grading a fit nobody supplied.
+// The body composite is written over avatars_cache/{id}.jpg — the same path
+// every other feature reads — so there is one image, not a face and a body.
 //
 // Both endpoints are on FACE_API (:7860), not the :8000 backend serving this
-// page, so a dead :7860 names the port instead of saying "failed to fetch".
-let _avPhotoFile = null, _avGender = 'male';
+// page, so a dead :7860 names the port instead of "failed to fetch".
+let _avPhotoFile = null, _avGender = 'male', _avId = null, _avCategory = 'upper';
 
 function avSetPhoto(input) {
   _avPhotoFile = input.files[0] || null;
@@ -3844,37 +3882,42 @@ function avSetPhoto(input) {
 
 function avSetGender(g, btn) {
   _avGender = g;
-  document.querySelectorAll('.av-gender-btn').forEach(b => {
-    b.classList.toggle('active', b === btn);
-  });
+  document.querySelectorAll('.av-gender-btn').forEach(b => b.classList.toggle('active', b === btn));
 }
 
-function _avStatus(kind, msg) {
+function avSetCategory(c, btn) {
+  _avCategory = c;
+  document.querySelectorAll('.av-cat-btn').forEach(b => b.classList.toggle('active', b === btn));
+}
+
+function _avStatus(el, kind, msg) {
   const colour = kind === 'error' ? 'var(--red)'
                : kind === 'success' ? 'var(--green)' : 'var(--accent-hot)';
-  document.getElementById('avCreateStatus').innerHTML =
-    '<span style="color:' + colour + '">' + msg + '</span>';
+  document.getElementById(el).innerHTML = '<span style="color:' + colour + '">' + msg + '</span>';
 }
 
-// The backend puts the real reason in `detail`; surfacing it is the difference
-// between "no face detected, use a front-facing photo" and a bare 422.
+// The backend puts the real reason in `detail`. Surfacing it is the difference
+// between "no approved base body for body_male_plus" and a bare 501.
 async function _avError(res) {
   try {
     const j = await res.json();
     return j.detail || j.error || ('HTTP ' + res.status);
-  } catch (_) {
-    return 'HTTP ' + res.status;
-  }
+  } catch (_) { return 'HTTP ' + res.status; }
+}
+
+function _avShow(url) {
+  const img = document.getElementById('avBodyImg');
+  img.src = url + (url.includes('?') ? '&' : '?') + 'v=' + Date.now();
+  img.style.display = 'block';
+  document.getElementById('avBodyPlaceholder').style.display = 'none';
 }
 
 async function avCreate() {
   if (!_avPhotoFile) return;
   const btn = document.getElementById('avCreateBtn');
   btn.disabled = true;
-
   try {
-    // 1. Enrol the face.
-    _avStatus('busy', 'Checking the photo…');
+    _avStatus('avCreateStatus', 'busy', 'Checking the photo…');
     const fd = new FormData();
     fd.append('photo', _avPhotoFile);
     fd.append('name', 'You');
@@ -3884,40 +3927,75 @@ async function avCreate() {
     try {
       res = await fetch(FACE_API + '/avatars/create', { method: 'POST', body: fd });
     } catch (e) {
-      _avStatus('error', 'Could not reach the avatar backend on port 7860. Is it running?');
+      _avStatus('avCreateStatus', 'error', 'Could not reach the avatar backend on port 7860.');
       return;
     }
-    if (!res.ok) { _avStatus('error', await _avError(res)); return; }
-    const avatar = await res.json();
+    if (!res.ok) { _avStatus('avCreateStatus', 'error', await _avError(res)); return; }
+    _avId = (await res.json()).id;
 
-    // 2. Put that face on a standard body for the chosen gender. No
-    //    measurements sent — see the note at the top.
-    _avStatus('busy', 'Putting you on a body…');
+    _avStatus('avCreateStatus', 'busy', 'Putting you on a body…');
     const bodyFd = new FormData();
     bodyFd.append('gender', _avGender);
+    const chest = document.getElementById('avChest').value;
+    const waist = document.getElementById('avWaist').value;
+    if (chest) bodyFd.append('chest_cm', chest);
+    if (waist) bodyFd.append('waist_cm', waist);
 
     let bodyRes;
     try {
-      bodyRes = await fetch(FACE_API + '/avatars/' + avatar.id + '/body',
+      bodyRes = await fetch(FACE_API + '/avatars/' + _avId + '/body',
                             { method: 'POST', body: bodyFd });
     } catch (e) {
-      _avStatus('error', 'Could not reach the avatar backend on port 7860.');
+      _avStatus('avCreateStatus', 'error', 'Could not reach the avatar backend on port 7860.');
       return;
     }
-    if (!bodyRes.ok) { _avStatus('error', await _avError(bodyRes)); return; }
-    const data = await bodyRes.json();
+    if (!bodyRes.ok) {
+      // 501 means the bin has no approved photograph yet. Say exactly that
+      // rather than implying the request was malformed.
+      const detail = await _avError(bodyRes);
+      _avStatus('avCreateStatus', 'error',
+        bodyRes.status === 501 ? 'No base body for this build yet — ' + detail : detail);
+      return;
+    }
 
-    const img = document.getElementById('avBodyImg');
-    // Cache-bust, or a second attempt shows the previous avatar.
-    img.src = FACE_API + data.body_image_url + '?v=' + Date.now();
-    img.style.display = 'block';
-    document.getElementById('avBodyPlaceholder').style.display = 'none';
+    const data = await bodyRes.json();
+    _avShow(FACE_API + data.image_url);
+    const sel = data.selection || {};
     document.getElementById('avSelection').textContent =
-      'Standard ' + _avGender + ' build. Your face, on a body you can dress.';
-    _avStatus('success', 'Done.');
+      (sel.from_defaults ? 'Standard ' : '') + sel.gender + ' · ' + sel.build +
+      ' build. Base photo ' + (data.base_body || {}).id +
+      ' (' + ((data.base_body || {}).license || 'licence unrecorded') + '). ' +
+      'Skin tone: ' + data.skin_tone_match + '.';
+    document.getElementById('avTryonCard').style.display = 'block';
+    _avStatus('avCreateStatus', 'success', 'Done.');
   } finally {
     btn.disabled = !_avPhotoFile;
   }
+}
+
+async function avTryon(input) {
+  const file = input.files[0];
+  if (!file || !_avId) return;
+  _avStatus('avTryonStatus', 'busy', 'Fitting the garment…');
+
+  const fd = new FormData();
+  fd.append('garment_image', file);
+  fd.append('category', _avCategory);
+
+  let res;
+  try {
+    res = await fetch(FACE_API + '/avatars/' + _avId + '/tryon',
+                      { method: 'POST', body: fd });
+  } catch (e) {
+    _avStatus('avTryonStatus', 'error', 'Could not reach the avatar backend on port 7860.');
+    return;
+  }
+  if (!res.ok) { _avStatus('avTryonStatus', 'error', await _avError(res)); return; }
+
+  // The endpoint returns the image itself, not JSON.
+  const blob = await res.blob();
+  _avShow(URL.createObjectURL(blob));
+  _avStatus('avTryonStatus', 'success', 'Fitted — your face is untouched.');
 }
 
 /// Live try-on → Returns Guard, the same join Fit Analyser uses:

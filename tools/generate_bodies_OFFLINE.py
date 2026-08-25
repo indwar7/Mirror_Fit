@@ -1,44 +1,20 @@
 r"""
-One-time body-template generator for LUCY full-body avatars.
+OFFLINE / DEPRECATED — not part of the runtime.
 
-Renders the 18 figures body_shapes.py can select (2 genders x 3 sizes x 3
-tapers) into ./bodies_cache/. At enrolment the user's measurements — or just
-their gender — pick one of these, their enrolled face is swapped onto it, and
-the result becomes that avatar's body image for virtual try-on.
+Base bodies are no longer generated. They are curated photographs in
+assets/base_bodies/, admitted one at a time by tools/curate_base_bodies.py
+after a human has looked at them. See face_swap_backend/base_bodies.py and
+AVATARS.md.
 
-Run in an env that has PyTorch and diffusers — on the G5 that is conda `base`
-(C:\miniconda3\python.exe), the same interpreter deploy.yml starts this backend
-with, and the one generate_avatars.py already uses.
+This file is kept only as a way to produce CANDIDATE images for a human to
+review — never to write into the asset set. Its output must go through
+curation like any other candidate, and most of it will be rejected: this is
+the generator whose stochastic output shipped two rounds of figures with two
+torsos, which is the reason the architecture changed.
 
-    python generate_bodies.py                 # render what's missing
-    python generate_bodies.py --validate      # re-check existing templates
-    python generate_bodies.py --force         # re-render everything
-
-Skips templates that already exist, so it is safe to re-run.
-
-Why SDXL and not SD 1.5
------------------------
-The first version of this script used SD 1.5 at 640x960 and shipped figures
-with TWO TORSOS stacked on top of each other. SD 1.5 is trained at 512x512;
-push it to a tall full-body frame and it composes the image twice. That is not
-a prompt problem and no negative prompt reliably fixes it.
-
-SDXL is trained on multiple aspect ratios including 832x1216, which is what a
-standing figure needs, and does not duplicate. The weights are already on the
-box — InstantID pulls the same `stable-diffusion-xl-base-1.0` repo, and the
-HuggingFace cache is shared across conda envs.
-
-Why validation checks the whole body, not just the face
--------------------------------------------------------
-The earlier check only asked "is a face detectable?". A figure with two torsos
-still has exactly one detectable face, so the broken templates passed and went
-straight into production. Anatomy is now checked with MediaPipe pose: the
-landmarks a dressable body must have, in the order a real body has them.
-
-The face check still matters for a different reason — inswapper has to *detect*
-a face in the target before it can replace it, and a face too small in frame
-gives a poor swap even when detection succeeds.
+Nothing in face_swap_backend imports this. Do not wire it back in.
 """
+
 import argparse
 import os
 import zlib

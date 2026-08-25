@@ -1,123 +1,108 @@
 """
-Body measurements → which pre-rendered body template to use.
+Measurements → which curated base body to use.
 
-Why templates instead of generating a body per user
----------------------------------------------------
-Diffusion does not obey numbers. "waist 82 cm" is not a thing you can prompt
-for — you can only describe a build in words, and words land you in a bucket
-anyway. Per-user generation would therefore produce one of a handful of
-silhouettes regardless, just slower and non-reproducibly.
+This is a pure function. It does no I/O, loads no model, and never creates an
+image. Given a gender and optional measurements it returns the id of one of the
+eight photographs in assets/base_bodies/, and that is all it does.
 
-What bucketing buys on top of that: a body library somebody can look at and
-approve before a shopper ever sees it, selection logic that is plain testable
-code rather than a GPU round-trip, and no render latency at enrolment.
+Why it is only a lookup
+-----------------------
+The previous design generated a body per bin with a text-to-image model at
+build time. Generation is stochastic: some renders came out with two torsos,
+and because the gate in front of them only asked "is a face detectable?" — a
+question a two-torso image answers "yes" — eighteen broken figures shipped
+twice. Swapping SD 1.5 for SDXL lowered the rate; it did not make the output
+something you could rely on without a human looking at every frame.
 
-(An earlier version of this note claimed the backend *could not* run Stable
-Diffusion at all. That was wrong for the deployed box — deploy.yml starts this
-service with conda `base`, which has CUDA torch. Runtime generation is
-possible here; it is just not worth it.)
+So the bodies are now a fixed, human-approved asset set, and this module's only
+job is to choose between them. There is deliberately no fallback that
+synthesises anything: if a bin has no photograph, the caller returns 501 naming
+the missing id rather than inventing a stand-in.
 
-The axes
+The bins
 --------
-Two axes, because two are what the measurements actually support:
+Four builds per gender, chosen because they are what the measurements can
+actually separate and what apparel sizing already thinks in:
 
-  size   — overall girth, from chest/bust circumference
-  taper  — chest-to-waist ratio, i.e. how much the torso narrows
+    slim      small girth
+    average   the middle
+    athletic  ordinary girth, pronounced chest-to-waist drop
+    plus      large girth
 
-Shoulder is collected too, but it is a *width* in cm while chest and waist are
-*circumferences*, so it is not directly comparable to them. It is used only to
-nudge the taper axis when shoulders are unusually broad or narrow for the
-chest — see `_shoulder_nudge`.
-
-Thresholds
-----------
-Size cutoffs follow common Indian ready-to-wear chest/bust sizing (S/M/L/XL)
-rather than being invented: menswear S≈91cm, M≈97-102, L≈107, XL≈112;
-womenswear S≈81-86, M≈91, L≈97, XL≈102.
-
-Taper cutoffs use chest-to-waist ratio, the standard drop measurement tailors
-work from. They are deliberately wide bands — the point is to pick one of three
-renders, not to grade a physique.
+Cutoffs follow common Indian ready-to-wear chest/bust bands rather than being
+invented. Drop (chest ÷ waist) is the tailor's own measure of taper.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
 
-# ── Axes ─────────────────────────────────────────────────────────────────────
-SIZES = ("slim", "average", "broad")
-TAPERS = ("tapered", "regular", "straight")
-
-# Chest/bust circumference in cm → size band. Upper bound of each band.
-_SIZE_CUTOFFS_CM = {
-    "male": (94.0, 106.0),    # <94 slim | 94-106 average | >106 broad
-    "female": (86.0, 97.0),   # <86 slim | 86-97  average | >97  broad
-}
-
-# Chest-to-waist ratio → taper band. Lower bound of each band.
-#   >= 1.22  strong narrowing at the waist  -> "tapered"
-#   >= 1.08  ordinary drop                  -> "regular"
-#   <  1.08  little to no narrowing         -> "straight"
-_TAPER_TAPERED = 1.22
-_TAPER_REGULAR = 1.08
-
-# Shoulder width as a fraction of chest/bust circumference, as (narrow, broad).
-#
-# These MUST be per-gender. Typical shoulder widths are ~45-48cm for men over a
-# ~95-105cm chest (≈0.46), but ~36-40cm for women over an ~85-95cm bust (≈0.42).
-# A single shared threshold read every ordinary female frame as narrow-
-# shouldered and cancelled out a genuine taper — an hourglass build with a
-# chest-to-waist ratio of 1.31 was being filed as "regular".
-_SHOULDER_RATIOS = {
-    "male": (0.43, 0.49),
-    "female": (0.39, 0.45),
-}
-
+GENDERS = ("male", "female")
+BUILDS = ("slim", "average", "athletic", "plus")
 DEFAULT_GENDER = "male"
+DEFAULT_BUILD = "average"
+
+# Chest/bust circumference in cm. (slim_below, plus_above).
+# Menswear S≈91, M≈97-102, L≈107, XL≈112; womenswear S≈81-86, M≈91, L≈97, XL≈102.
+_GIRTH_CUTOFFS = {
+    "male":   (94.0, 108.0),
+    "female": (86.0, 100.0),
+}
+
+# Waist alone can also put someone in `plus` — a large waist with an ordinary
+# chest is a shape the chest cutoff would otherwise miss entirely.
+_WAIST_PLUS = {"male": 100.0, "female": 94.0}
+
+# Chest ÷ waist at or above which the silhouette reads as tapered.
+_ATHLETIC_DROP = {"male": 1.22, "female": 1.28}
+
+
+class MeasurementError(ValueError):
+    """A measurement is missing, non-numeric, or outside any plausible range."""
+
+
+# Generous. The job is to catch typos and unit mix-ups — inches entered as cm,
+# a waist of 3 — not to police body size.
+_PLAUSIBLE = {
+    "height_cm": (100.0, 230.0),
+    "chest_cm":  (50.0, 200.0),
+    "waist_cm":  (40.0, 200.0),
+    "hips_cm":   (50.0, 200.0),
+}
 
 
 @dataclass(frozen=True)
 class Measurements:
-    """What the user types in. Circumferences in cm, shoulder is a width."""
-
-    chest_cm: float
-    waist_cm: float
-    shoulder_cm: Optional[float] = None
+    """Circumferences in cm. Every field optional — see `bin_for`."""
     height_cm: Optional[float] = None
-    weight_kg: Optional[float] = None
+    chest_cm: Optional[float] = None
+    waist_cm: Optional[float] = None
+    hips_cm: Optional[float] = None
 
     def as_dict(self) -> dict:
         return {
+            "height_cm": self.height_cm,
             "chest_cm": self.chest_cm,
             "waist_cm": self.waist_cm,
-            "shoulder_cm": self.shoulder_cm,
-            "height_cm": self.height_cm,
-            "weight_kg": self.weight_kg,
+            "hips_cm": self.hips_cm,
         }
 
+    @property
+    def has_torso(self) -> bool:
+        """True when chest AND waist are both present.
 
-class MeasurementError(ValueError):
-    """A measurement is missing or outside any plausible human range."""
-
-
-# Generous bounds — the job here is to reject typos and unit mix-ups (inches
-# entered as cm, a waist of 3), not to police body size.
-_PLAUSIBLE = {
-    "chest_cm": (50.0, 200.0),
-    "waist_cm": (40.0, 200.0),
-    "shoulder_cm": (25.0, 70.0),
-    "height_cm": (100.0, 230.0),
-    "weight_kg": (20.0, 300.0),
-}
+        Both or neither: one alone cannot produce a drop ratio, and using it
+        for girth while silently ignoring the missing half would look like the
+        measurement had been taken into account.
+        """
+        return self.chest_cm is not None and self.waist_cm is not None
 
 
 def parse_measurements(raw: dict) -> Measurements:
-    """Validate and coerce a measurements dict. Raises MeasurementError."""
-    def num(key: str, required: bool) -> Optional[float]:
+    """Validate and coerce. Absent keys stay None; bad values raise."""
+    def num(key: str) -> Optional[float]:
         value = raw.get(key)
         if value is None or value == "":
-            if required:
-                raise MeasurementError(f"{key} is required")
             return None
         try:
             out = float(value)
@@ -126,121 +111,76 @@ def parse_measurements(raw: dict) -> Measurements:
         lo, hi = _PLAUSIBLE[key]
         if not (lo <= out <= hi):
             # Naming the range makes the common failure — inches typed into a
-            # cm field — obvious from the error alone.
+            # cm field — obvious from the message alone.
             raise MeasurementError(
-                f"{key}={out} is outside the plausible range {lo}-{hi} cm/kg. "
+                f"{key}={out} is outside the plausible range {lo}-{hi}. "
                 f"Measurements are in centimetres, not inches."
             )
         return out
 
-    chest = num("chest_cm", True)
-    waist = num("waist_cm", True)
-    assert chest is not None and waist is not None  # num() raises otherwise
-
-    if waist > chest * 1.6:
+    m = Measurements(
+        height_cm=num("height_cm"), chest_cm=num("chest_cm"),
+        waist_cm=num("waist_cm"), hips_cm=num("hips_cm"),
+    )
+    if m.chest_cm is not None and m.waist_cm is not None and m.waist_cm > m.chest_cm * 1.6:
         raise MeasurementError(
             "waist_cm is implausibly large relative to chest_cm — check the two "
             "are not swapped."
         )
-
-    return Measurements(
-        chest_cm=chest,
-        waist_cm=waist,
-        shoulder_cm=num("shoulder_cm", False),
-        height_cm=num("height_cm", False),
-        weight_kg=num("weight_kg", False),
-    )
-
-
-def _size_band(chest_cm: float, gender: str) -> str:
-    small, large = _SIZE_CUTOFFS_CM.get(gender, _SIZE_CUTOFFS_CM[DEFAULT_GENDER])
-    if chest_cm < small:
-        return "slim"
-    if chest_cm <= large:
-        return "average"
-    return "broad"
-
-
-def _shoulder_nudge(m: Measurements, gender: str) -> int:
-    """+1 toward tapered, -1 toward straight, 0 when shoulders are unremarkable.
-
-    Shoulder width is not comparable to a circumference, so it is used only as
-    a tie-breaker on the silhouette rather than as a measurement in its own
-    right.
-    """
-    if not m.shoulder_cm or m.chest_cm <= 0:
-        return 0
-    narrow, broad = _SHOULDER_RATIOS.get(gender, _SHOULDER_RATIOS[DEFAULT_GENDER])
-    ratio = m.shoulder_cm / m.chest_cm
-    if ratio >= broad:
-        return 1
-    if ratio <= narrow:
-        return -1
-    return 0
-
-
-def _taper_band(m: Measurements, gender: str = DEFAULT_GENDER) -> str:
-    if m.waist_cm <= 0:
-        return "regular"
-    ratio = m.chest_cm / m.waist_cm
-
-    if ratio >= _TAPER_TAPERED:
-        index = 0  # tapered
-    elif ratio >= _TAPER_REGULAR:
-        index = 1  # regular
-    else:
-        index = 2  # straight
-
-    # Broad shoulders read as more tapered, narrow as less. Clamped so the
-    # nudge can only move one band, never invert the ratio's verdict.
-    index -= _shoulder_nudge(m, gender)
-    index = max(0, min(len(TAPERS) - 1, index))
-    return TAPERS[index]
+    return m
 
 
 def normalise_gender(gender: Optional[str]) -> str:
     g = (gender or "").strip().lower()
-    return g if g in _SIZE_CUTOFFS_CM else DEFAULT_GENDER
+    return g if g in GENDERS else DEFAULT_GENDER
 
 
-def body_id(m: Measurements, gender: Optional[str]) -> str:
-    """The template id for this body: e.g. `body_m_average_tapered`."""
+def bin_for(gender: Optional[str], m: Optional[Measurements]) -> str:
+    """The build bin. Returns 'average' when there is nothing to go on.
+
+    Order is load-bearing and is checked by the tests: plus is decided before
+    athletic, so a large tapered frame reads as plus rather than athletic —
+    the garment has to fit the girth first, and taper is the finer distinction.
+    """
     g = normalise_gender(gender)
-    return f"body_{g[0]}_{_size_band(m.chest_cm, g)}_{_taper_band(m, g)}"
+    if m is None or not m.has_torso:
+        return DEFAULT_BUILD
+
+    slim_below, plus_above = _GIRTH_CUTOFFS[g]
+    chest, waist = m.chest_cm, m.waist_cm
+
+    if chest > plus_above or waist > _WAIST_PLUS[g]:
+        return "plus"
+    if chest < slim_below and waist < _WAIST_PLUS[g]:
+        return "slim"
+    if waist > 0 and (chest / waist) >= _ATHLETIC_DROP[g]:
+        return "athletic"
+    return DEFAULT_BUILD
 
 
-def describe(m: Measurements, gender: Optional[str]) -> dict:
-    """Selection plus the reasoning behind it, so the UI (and a bug report) can
-    show why a given body was chosen."""
+def base_body_id(gender: Optional[str], m: Optional[Measurements] = None) -> str:
+    """e.g. `body_male_athletic`. Names an asset; does not guarantee it exists."""
+    return f"body_{normalise_gender(gender)}_{bin_for(gender, m)}"
+
+
+def describe(gender: Optional[str], m: Optional[Measurements] = None) -> dict:
+    """The choice plus the reasoning, so a UI (or a bug report) can show why."""
     g = normalise_gender(gender)
+    build = bin_for(gender, m)
+    drop = None
+    if m is not None and m.has_torso and m.waist_cm:
+        drop = round(m.chest_cm / m.waist_cm, 3)
     return {
-        "body_id": body_id(m, gender),
+        "base_body_id": base_body_id(gender, m),
         "gender": g,
-        "size": _size_band(m.chest_cm, g),
-        "taper": _taper_band(m, g),
-        "chest_to_waist": round(m.chest_cm / m.waist_cm, 3) if m.waist_cm else None,
-        "shoulder_to_chest": (
-            round(m.shoulder_cm / m.chest_cm, 3) if m.shoulder_cm and m.chest_cm else None
-        ),
+        "build": build,
+        "chest_to_waist": drop,
+        # True when nothing was supplied and the middle bin was assumed, so the
+        # client can say "standard build" rather than implying it was measured.
+        "from_defaults": m is None or not m.has_torso,
     }
 
 
-def default_body_id(gender: Optional[str]) -> str:
-    """The standard build for a gender, used when no measurements are given.
-
-    Average size, regular taper — the middle of both axes. Someone who just
-    wants to see themselves on a body should not have to produce a tape
-    measure first; measurements refine this, they are not the price of entry.
-    """
-    g = normalise_gender(gender)
-    return f"body_{g[0]}_average_regular"
-
-
-def all_body_ids() -> list[str]:
-    """Every template the library must contain — what generate_bodies.py renders."""
-    return [
-        f"body_{g[0]}_{size}_{taper}"
-        for g in ("male", "female")
-        for size in SIZES
-        for taper in TAPERS
-    ]
+def all_base_body_ids() -> list[str]:
+    """Every id the asset set must contain — what the manifest is checked against."""
+    return [f"body_{g}_{b}" for g in GENDERS for b in BUILDS]
