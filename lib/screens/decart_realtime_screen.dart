@@ -85,7 +85,7 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
 
   /// Default backend (EC2 g5.xlarge). Overridden by whatever the user
   /// saves through the ⚡ bolt-icon dialog on the Try-On screen.
-  static const String _defaultBackendUrl = 'http://13.203.75.149:8000';
+  static const String _defaultBackendUrl = 'http://43.204.212.106:8000';
 
   /// Resolve backend URL: prefer saved override, otherwise the default EC2
   /// host. Converts to a ws:// or wss:// URL pointing at /ws/tryon, then
@@ -131,7 +131,7 @@ class _DecartRealtimeScreenState extends State<DecartRealtimeScreen>
     if (html == null || ctrl == null) return;
     // baseUrl=http://localhost: localhost counts as a secure context for
     // getUserMedia in modern Chromium, AND because the page itself is
-    // http://, the browser doesn't flag ws://13.203.75.149 as mixed
+    // http://, the browser doesn't flag ws://43.204.212.106 as mixed
     // content. (https://localhost would force the page to be "secure"
     // and would then block any ws:// upgrade attempts.)
     ctrl.loadData(
