@@ -3905,9 +3905,29 @@ async function _avError(res) {
   } catch (_) { return 'HTTP ' + res.status; }
 }
 
+// Tracks the object URL currently on screen so it can be released when the
+// next one replaces it — every try-on makes a new blob and they are held for
+// the lifetime of the document otherwise.
+let _avObjectUrl = null;
+
 function _avShow(url) {
   const img = document.getElementById('avBodyImg');
-  img.src = url + (url.includes('?') ? '&' : '?') + 'v=' + Date.now();
+
+  // Cache-bust ONLY http(s) URLs. The body composite is written back over the
+  // avatar's own path, so without a changing query the browser serves the
+  // previous body. A blob: URL is already unique per call, and appending a
+  // query to one makes it unresolvable — which is what left the image blank
+  // after a garment upload.
+  const isObjectUrl = url.startsWith('blob:') || url.startsWith('data:');
+  img.src = isObjectUrl
+    ? url
+    : url + (url.includes('?') ? '&' : '?') + 'v=' + Date.now();
+
+  if (_avObjectUrl && _avObjectUrl !== url) {
+    URL.revokeObjectURL(_avObjectUrl);
+  }
+  _avObjectUrl = isObjectUrl ? url : null;
+
   img.style.display = 'block';
   document.getElementById('avBodyPlaceholder').style.display = 'none';
 }
@@ -3994,8 +4014,18 @@ async function avTryon(input) {
 
   // The endpoint returns the image itself, not JSON.
   const blob = await res.blob();
+  if (!blob.size) {
+    _avStatus('avTryonStatus', 'error', 'The server returned an empty image.');
+    return;
+  }
+  const img = document.getElementById('avBodyImg');
+  // Report a load failure rather than leaving a blank pane under a success
+  // message — that combination is what made this bug hard to place.
+  img.onerror = () => _avStatus('avTryonStatus', 'error',
+    'The fitted image could not be displayed.');
+  img.onload = () => _avStatus('avTryonStatus', 'success',
+    'Fitted — your face is untouched.');
   _avShow(URL.createObjectURL(blob));
-  _avStatus('avTryonStatus', 'success', 'Fitted — your face is untouched.');
 }
 
 /// Live try-on → Returns Guard, the same join Fit Analyser uses:
