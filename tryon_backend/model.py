@@ -62,6 +62,9 @@ TRYON_FORCE_GEOMETRIC     = os.environ.get("TRYON_FORCE_GEOMETRIC", "0") == "1"
 CATVTON_BASE_MODEL        = os.environ.get(
     "TRYON_BASE_MODEL", "booksforcharlie/stable-diffusion-inpainting")
 
+# How dark the collar fold gets at the neckline. 1.0 disables the shading.
+COLLAR_SHADE              = float(os.environ.get("TRYON_COLLAR_SHADE", "0.88"))
+
 # AnimateDiff frame buffer config
 ANIMATEDIFF_BUFFER_SIZE = 8   # number of frames to accumulate before processing as video sequence
 
@@ -1691,15 +1694,37 @@ class TryOnModel:
         collar_band = np.zeros((h, w), dtype=np.float32)
         if face_box is not None:
             fxn, fyn, fwn, fhn = face_box
-            nc = (int(fxn + fwn * 0.5), int(fyn + fhn))   # centred on the chin
-            na = (int(fwn * 0.30), int(fhn * 0.52))       # neck column
+            ncx, ncy = int(fxn + fwn * 0.5), int(fyn + fhn)   # centred on the chin
+            rx, ry = int(fwn * 0.30), int(fhn * 0.52)         # neck column
             thick = max(4, int(fwn * 0.11))
             outer = np.zeros((h, w), dtype=np.float32)
             inner = np.zeros((h, w), dtype=np.float32)
-            cv2.ellipse(outer, nc, (na[0] + thick, na[1] + thick), 0, 0, 360, 1.0, -1)
-            cv2.ellipse(inner, nc, na, 0, 0, 360, 1.0, -1)
-            ring = cv2.GaussianBlur((outer - inner).clip(0, 1), (5, 5), 0)
-            collar_band = (ring * torso_mask).clip(0, 1)
+            cv2.ellipse(outer, (ncx, ncy), (rx + thick, ry + thick), 0, 0, 360, 1.0, -1)
+            cv2.ellipse(inner, (ncx, ncy), (rx, ry), 0, 0, 360, 1.0, -1)
+            ring = (outer - inner).clip(0, 1)
+
+            # Graded across the band rather than flat. A uniform multiply over
+            # a ring is a drawn line, and at 0.60 it read as a black choker
+            # around the neck. Cloth curving away from the light is darkest
+            # right at the fold and lifts as it turns back toward the viewer,
+            # so the shade follows distance out from the neck opening.
+            d    = cv2.distanceTransform((1 - inner).astype(np.uint8), cv2.DIST_L2, 3)
+            grad = np.clip(1.0 - d / float(max(1, thick)), 0.0, 1.0)
+
+            # Lower arc only. A collar shadows where the cloth meets the
+            # chest; carrying the ring up around the sides and under the jaw
+            # put shading on the neck itself, which is the other half of why
+            # it looked like a band rather than a neckline.
+            lower = np.zeros((h, w), dtype=np.float32)
+            lower[ncy:] = 1.0
+            lower = cv2.GaussianBlur(lower, (0, 0), max(2.0, ry * 0.30))
+
+            collar_band = (ring * grad * lower * torso_mask).clip(0, 1)
+            # Softened, then clipped back to the garment: the blur spreads a
+            # couple of pixels, and shading skin or background just outside
+            # the neckline is the artefact this whole band exists to avoid.
+            collar_band = cv2.GaussianBlur(collar_band, (0, 0), 2.0)
+            collar_band = (collar_band * torso_mask).clip(0, 1)
 
         return torso_mask, silhouette, face_cutoff_y, collar_band
 
@@ -1930,15 +1955,16 @@ class TryOnModel:
             composed = (result_arr * a + orig_f * (1.0 - a)).astype(np.uint8)
 
             # ── Collar ──────────────────────────────────────────────────
-            # 0.60 rather than the 0.74 this was first written with: a
-            # collar has to stay legible against a busy print, and cloth
-            # folded back on itself and turned away from the light sits
-            # well below the panel it borders.
+            # The band is now a gradient that peaks at the neckline and
+            # fades outward, so this is the darkness AT the fold, not across
+            # a whole ring. 0.60 flat over a closed ellipse was read as a
+            # black choker; 0.88 on a gradient reads as a neckline.
+            # TRYON_COLLAR_SHADE=1.0 turns the shading off entirely.
             try:
                 cb = collar_band * blend_mask
                 if cb.max() > 0.05:
                     cb3 = cb[:, :, np.newaxis]
-                    COLLAR_DARKEN = 0.60
+                    COLLAR_DARKEN = COLLAR_SHADE
                     composed = (
                         composed.astype(np.float32) * (1.0 - cb3)
                         + composed.astype(np.float32) * COLLAR_DARKEN * cb3
