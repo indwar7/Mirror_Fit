@@ -11,8 +11,7 @@ class DecartTryOnException implements Exception {
 /// Virtual try-on using Decart AI's lucy-pro-i2i image-to-image model.
 class DecartTryOnService {
   static const _baseUrl = 'https://api.decart.ai/v1/generate/lucy-pro-i2i';
-  static const _apiKey =
-      'lucy_pHvLsDWaDEDGdcwUJYFRwvfCYotVOpgTrmihYiMcKxgjfbEwVDsSrpWwUioFcCyH';
+  static const _apiKey = String.fromEnvironment('DECART_API_KEY');
 
   static const bool isDemoMode = false;
 

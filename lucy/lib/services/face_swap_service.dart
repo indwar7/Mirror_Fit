@@ -41,7 +41,7 @@ class AvatarModel {
 
 class FaceSwapService {
   // ── Replicate (cloud, no local server needed) ─────────────────────
-  static const _apiToken = 'r8_6WzyWiVBzsg2pZxV7NjVUnsIAi5tLAA1CwIMd';
+  static const _apiToken = String.fromEnvironment('REPLICATE_API_TOKEN');
   static const _predictUrl =
       'https://api.replicate.com/v1/models/codeplugtech/face-swap/predictions';
   static Map<String, String> get _headers => {

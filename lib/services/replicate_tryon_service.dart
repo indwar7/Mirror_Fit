@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 /// Reliable, fast (~20 sec), $0.025/image.
 class ReplicateTryOnService {
   static const _apiUrl = 'https://api.replicate.com/v1/predictions';
-  static const _apiToken = 'r8_6WzyWiVBzsg2pZxV7NjVUnsIAi5tLAA1CwIMd';
+  static const _apiToken = String.fromEnvironment('REPLICATE_API_TOKEN');
   static const _modelVersion =
       '0513734a452173b8173e907e3a59d19a36266e55b48528559432bd21c7d7e985';
 
