@@ -230,6 +230,7 @@ class TryOnModel:
         self._prev_silhouette  = None      # smoothed MediaPipe silhouette (per-pixel EMA)
         self._prev_face_bbox   = None      # EMA-smoothed Haar face bbox (fx, fy, fw, fh)
         self._prev_face_cut    = None      # held face box for the chin row + collar
+        self._neck_gap_px = 80   # fallback until a face is detected
         self._prev_torso_mask  = None      # EMA-smoothed final torso_mask (kills jitter)
         self._fixed_mask_cache = None
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
@@ -1600,6 +1601,12 @@ class TryOnModel:
             # blend block) hides the seam, so we can keep the cutoff
             # right at the chin — collar sits at the neck naturally.
             face_cutoff_y = int(np.clip(fy + fh, h * 0.20, h * 0.48))
+            # Neck gap scaled to the detected face. A fixed pixel gap is
+            # wrong at close framing: when the face fills much of the frame
+            # the same 80 px is proportionally a much smaller drop, so the
+            # fabric starts at the chin instead of the collarbone. Chin ->
+            # collarbone is roughly 55% of face height on a real body.
+            self._neck_gap_px = int(np.clip(fh * 0.55, 40, 260))
 
         # 3. Torso band — restrict mask vertically. Extended bottom to
         # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
@@ -1917,7 +1924,7 @@ class TryOnModel:
                     fabric_mask = torso_mask.copy()
                     H_im = fabric_mask.shape[0]
                     band_top = max(0, int(face_cutoff_y))
-                    band_bot = min(H_im, band_top + 80)
+                    band_bot = min(H_im, band_top + getattr(self, "_neck_gap_px", 80))
                     if band_bot > band_top:
                         ramp = np.linspace(0, 1, band_bot - band_top,
                                            dtype=np.float32)
@@ -1956,7 +1963,7 @@ class TryOnModel:
             # chin (user: "face p chin ko ek line cut kr rhi hai").
             # 25-pixel linear ramp blends paint smoothly into face.
             blend_mask[:face_cutoff_y] = 0.0
-            fade_band = 25
+            fade_band = int(np.clip(getattr(self, "_neck_gap_px", 80) * 0.33, 12, 90))
             for i in range(fade_band):
                 y = face_cutoff_y + i
                 if 0 <= y < blend_mask.shape[0]:

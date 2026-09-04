@@ -37,7 +37,7 @@ credentials (passwords, tokens) are never written here, only where they live.
 ### GPU box (live try-on backend)
 
 - Box: Windows, NVIDIA A10G (24GB, shared across `face-swap` / `try-on` /
-  `ai-twin` — they're on the same GPU), public IP `35.154.220.66`.
+  `ai-twin` — they're on the same GPU), public IP `13.126.77.241` (changes on every instance stop/start — Elastic IP not attached).
   RDP creds live wherever you keep secrets, not here.
 - Layout: repo at `C:\virtual-try-on`, conda at `C:\miniconda3`, logs at
   `C:\logs`. `face-swap` and `try-on` **share one conda env**
@@ -76,8 +76,8 @@ credentials (passwords, tokens) are never written here, only where they live.
      origin that isn't `localhost` — a remote IP over HTTP is treated as
      insecure. Work around it (dev-only, this Mac's Chrome only):
      `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → enable →
-     add `http://35.154.220.66:7860,http://35.154.220.66:8000` → Relaunch.
-  3. Open `http://35.154.220.66:7860/` (not `/demo/index.html` — the static
+     add `http://13.126.77.241:7860,http://13.126.77.241:8000` → Relaunch.
+  3. Open `http://13.126.77.241:7860/` (not `/demo/index.html` — the static
      server's root *is* the demo folder), click **Live Try-On**.
   4. If the box is behind a cloud security group (this IP looks like AWS
      `ap-south-1`), the Windows Firewall rule above isn't enough on its own —
@@ -134,6 +134,6 @@ credentials (passwords, tokens) are never written here, only where they live.
 - [ ] Apply + test the fabric-overlay neck-gap proportional fix.
 - [ ] Decide on the 3s-pop fix (crossfade duration vs. capture interval vs.
       re-tuning the diffusion blend).
-- [ ] Cloud security group check on the GPU box (35.154.220.66) — confirm
+- [ ] Cloud security group check on the GPU box (13.126.77.241) — confirm
       which ports are actually meant to be open to the internet long-term;
       currently 7860/8000 are open for testing.
