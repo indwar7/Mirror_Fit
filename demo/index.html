@@ -1631,9 +1631,19 @@ body.landing-active .app { display: none !important; }
     <!-- switchTab() indexes .tab positionally against a fixed id list, so the
          order of these buttons is load-bearing: removing or reordering one
          silently points every later tab at the wrong panel. -->
-    <button class="tab active" onclick="switchTab('liveswap')">Live Face Swap</button>
-    <button class="tab" onclick="switchTab('liveportrait')">Live Portrait</button>
-    <button class="tab" onclick="switchTab('tryon')">Live Try-On</button>
+    <!-- Live Face Swap and Live Portrait are hidden. To bring them back:
+         drop the style/aria-hidden/tabindex attributes from the two buttons
+         below, put class="tab active" back on Live Face Swap, take it off
+         Live Try-On, and change the switchTab('tryon') init call at the
+         bottom of this file back to switchTab('liveswap'). Nothing was
+         deleted -- panel-liveswap and panel-liveportrait are untouched, and
+         hiding rather than removing keeps switchTab()'s positional id list
+         aligned with .tab. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('liveswap')">Live Face Swap</button>
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('liveportrait')">Live Portrait</button>
+    <button class="tab active" onclick="switchTab('tryon')">Live Try-On</button>
     <!-- AR Avatar is hidden. Reverse this commit to bring it back -- nothing was deleted and panel-ar is untouched.
          Hidden rather than removed: switchTab() pairs its id list with
          querySelectorAll('.tab') by position, so dropping this node would
@@ -4305,7 +4315,8 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
-switchTab('liveswap');
+// Opens on Try-On: the Face Swap tab it used to open on is hidden.
+switchTab('tryon');
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AI Twin (SadTalker) — upload image + audio → talking head mp4 from /generate-
