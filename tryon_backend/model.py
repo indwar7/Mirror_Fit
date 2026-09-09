@@ -1058,11 +1058,30 @@ class TryOnModel:
         # collar/print onto the wearer's back, so fall back to the
         # geometric wrap (colour/pattern only, no invented front details)
         # instead of guessing with the wrong reference image.
-        if self._is_back_facing_now(person_image):
+        back_facing = self._is_back_facing_now(person_image)
+        # One line per processed frame (~1/s on the live path) so "which
+        # tier ran, and why" is readable straight off the log instead of
+        # inferred from timing. The vanishing-garment reports could not
+        # be told apart (gate never flipped? flipped but render crashed?)
+        # without this.
+        log.info(f"[orient] back_facing={back_facing} "
+                 f"miss={self._orient_face_miss_count} "
+                 f"back_photo={self._garment_cache_back is not None}")
+        if back_facing:
             if self._garment_cache_back is not None:
                 garment = self._garment_cache_back
             else:
-                return self._infer_live_geometric(person_image, force_back=True)
+                try:
+                    return self._infer_live_geometric(person_image, force_back=True)
+                except Exception:
+                    # server.py's frame handler has no except of its own -
+                    # an exception here kills the whole WebSocket, which
+                    # the browser shows as a frozen last frame. Keep the
+                    # session alive with the raw frame and make the
+                    # failure loud in the log instead.
+                    log.exception("[orient] back-view geometric render failed; "
+                                  "passing raw frame through")
+                    return person_image
 
         if self._trt is not None:
             return self._infer_catvton(person_image.resize((OUTPUT_W, OUTPUT_H)),
