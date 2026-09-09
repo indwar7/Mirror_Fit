@@ -1280,14 +1280,17 @@ class TryOnModel:
         # scratch every frame (Haar wobbles a couple px, the mask edge
         # shifts a few px), which reads as the whole shirt shaking. EMA
         # against the previous frame's box removes that shake while still
-        # tracking real movement within a few frames.
+        # tracking real movement within a few frames. 0.65 prev (was
+        # 0.55) - user feedback wanted it steadier once the underlying
+        # vanishing-garment bug was fixed; still catches real movement
+        # within a handful of frames, just less twitchy frame-to-frame.
         if self._live_prev_box is not None:
             ptop, pbottom, pleft, pright, pcx = self._live_prev_box
-            top    = int(0.55 * ptop    + 0.45 * top)
-            bottom = int(0.55 * pbottom + 0.45 * bottom)
-            left   = int(0.55 * pleft   + 0.45 * left)
-            right  = int(0.55 * pright  + 0.45 * right)
-            cx     = int(0.55 * pcx     + 0.45 * cx)
+            top    = int(0.65 * ptop    + 0.35 * top)
+            bottom = int(0.65 * pbottom + 0.35 * bottom)
+            left   = int(0.65 * pleft   + 0.35 * left)
+            right  = int(0.65 * pright  + 0.35 * right)
+            cx     = int(0.65 * pcx     + 0.35 * cx)
         self._live_prev_box = (top, bottom, left, right, cx)
 
         th = max(1, bottom - top)
