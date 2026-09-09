@@ -30,6 +30,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           if (-not $env:HF_TOKEN) {
-            Write-Host "::warning::HF_TOKEN secret is empty — Try-On will fall back to a tier that masks poorly."
+            Write-Host "::warning::HF_TOKEN secret is empty - Try-On will fall back to a tier that masks poorly."
           }
           & powershell -ExecutionPolicy Bypass -File "$env:APP_DIR\start_all.ps1" -Force
