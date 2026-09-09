@@ -1020,7 +1020,23 @@ class TryOnModel:
             self._orient_face_miss_count = 0
             return False
         self._orient_face_miss_count += 1
-        return self._orient_face_miss_count > 6
+        if self._orient_face_miss_count == 2:
+            # The flip frame. The geometric tier hasn't run while the
+            # wearer was front-facing (the AI tier was), so its box EMA
+            # state is either empty or stale from an earlier turn-around
+            # minutes ago. Clear it so the first back-facing frame starts
+            # from the fresh silhouette instead of drifting in from an
+            # old position over several frames.
+            self._live_prev_box = None
+        # Switch after 2 consecutive misses, not 6. This counter ticks once
+        # per PROCESSED frame, and the live path processes ~1 frame/s
+        # (frame-drop gate in server.py + ~900ms inference), so 6 misses
+        # was ~6 seconds of running the face-anchored AI tier on someone
+        # who'd already turned around - the garment vanished for that
+        # whole window and only came back once this finally flipped.
+        # 2 misses still absorbs a single-frame blink/blur without
+        # flipping tiers, and switches within ~2s on a real turn.
+        return self._orient_face_miss_count > 1
 
     def tryon(self, person_image: Image.Image,
               garment_image: Image.Image | None = None) -> Image.Image:
@@ -1046,7 +1062,7 @@ class TryOnModel:
             if self._garment_cache_back is not None:
                 garment = self._garment_cache_back
             else:
-                return self._infer_live_geometric(person_image)
+                return self._infer_live_geometric(person_image, force_back=True)
 
         if self._trt is not None:
             return self._infer_catvton(person_image.resize((OUTPUT_W, OUTPUT_H)),
@@ -1149,7 +1165,17 @@ class TryOnModel:
 
     # ── Live geometric warp ───────────────────────────────────────────────────
 
-    def _infer_live_geometric(self, person_image: Image.Image) -> Image.Image:
+    def _infer_live_geometric(self, person_image: Image.Image,
+                              force_back: bool = False) -> Image.Image:
+        """
+        force_back=True: the caller (the orientation gate in tryon()) has
+        already decided the wearer is back-facing. Skip this tier's own
+        Haar check and its front-box grace hold and go straight to the
+        silhouette-derived back placement. Without this, the looser Haar
+        settings here could still read hair/an ear at the back of the
+        head as a face and paint a front-style box anchored to it - the
+        two checks disagreeing on the same frame.
+        """
         garment = self._garment_cache
         if garment is None:
             return person_image
@@ -1198,7 +1224,7 @@ class TryOnModel:
             cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=HAAR_MIN_FACE
         )
 
-        if len(faces) > 0:
+        if len(faces) > 0 and not force_back:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
             # Shirt top = just below the chin (≈18% face-height neck gap)
@@ -1229,7 +1255,8 @@ class TryOnModel:
             # keep the last good front-facing box for a short grace window
             # so the shirt doesn't jump on a single dropped detection.
             FACE_MISS_GRACE = 6
-            if (self._live_last_face_box is not None
+            if (not force_back
+                    and self._live_last_face_box is not None
                     and self._live_face_miss_count <= FACE_MISS_GRACE):
                 top, bottom, left, right, face_bottom, cx = self._live_last_face_box
             else:
