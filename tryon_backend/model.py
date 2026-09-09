@@ -1000,8 +1000,21 @@ class TryOnModel:
         """
         small = np.array(person_image.convert("RGB").resize((256, 256), Image.BILINEAR))
         gray  = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+        # minNeighbors=7, not the usual 4 elsewhere in this file. This is
+        # the gate that decides "still front-facing" vs "turned around" -
+        # a false positive here (hair, an ear, a textured wall behind the
+        # head momentarily overlapping enough candidate windows to read
+        # as a face) means the system keeps running the face-anchored AI
+        # tier on someone who's actually back-facing, and that tier's own
+        # mask ends up anchored to a bogus face position - live-tested as
+        # the garment vanishing completely, not just misplaced. Higher
+        # minNeighbors demands more overlapping detections before
+        # confirming a face, trading a slightly slower reaction to a
+        # genuine face at a bad angle (already covered by the grace
+        # window below) for far fewer of these false "still front-facing"
+        # reads.
         faces = self._haar.detectMultiScale(
-            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=HAAR_MIN_FACE
+            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=7, minSize=HAAR_MIN_FACE
         )
         if len(faces) > 0:
             self._orient_face_miss_count = 0
