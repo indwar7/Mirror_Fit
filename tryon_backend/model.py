@@ -1956,14 +1956,16 @@ class TryOnModel:
         # dissolving the collar notch carved into the safety polygon
         # above (that one breaks down around 71px, well past this).
         torso_mask = cv2.GaussianBlur(torso_mask, (19, 19), 0)
-        # Per-pixel EMA on the final mask (0.65 new + 0.35 prev). Even
-        # with bbox EMA above, the silhouette / safety blur can still
-        # produce 1-2 px boundary wobble between frames; the painted
-        # jacket inherits that wobble and looks unstable on the body.
-        # Mask EMA glues it down.
+        # Per-pixel EMA on the final mask (0.55 new + 0.45 prev, was
+        # 0.65/0.35 - user: "cloth move na kare bas body p stick aur tight
+        # rahe"). Even with bbox EMA above, the silhouette / safety blur
+        # can still produce 1-2 px boundary wobble between frames; the
+        # painted jacket inherits that wobble and looks unstable on the
+        # body. Mask EMA glues it down; heavier prev weight trades a
+        # little responsiveness to real movement for a steadier garment.
         if (self._prev_torso_mask is not None
                 and self._prev_torso_mask.shape == torso_mask.shape):
-            torso_mask = (0.65 * torso_mask + 0.35 * self._prev_torso_mask).clip(0, 1)
+            torso_mask = (0.55 * torso_mask + 0.45 * self._prev_torso_mask).clip(0, 1)
         self._prev_torso_mask = torso_mask
 
         # NOTE: hand exclusion was tried here (subtracting MediaPipe Hands +
@@ -2161,8 +2163,18 @@ class TryOnModel:
                 ).images[0]
 
             # ── Fabric overlay (post-SD) ─────────────────────────────────
-            # HSV composite: take FABRIC's hue + saturation (the colour /
-            # pattern) and SD result's value (the body folds / shading).
+            # Multiply blend: take the fabric's own RGB pixels and modulate
+            # them by the SD result's local luminance (body folds /
+            # shading), instead of extracting hue+saturation from the
+            # fabric and swapping them onto the SD result's HSV. Hue is a
+            # CIRCULAR value - on a busy multi-colour pattern (plaid, fine
+            # stripes) with a colour edge every few pixels, adjacent
+            # source pixels can round to wildly different hues after any
+            # resize/blur, which showed up live as a rainbow moire grid
+            # over the whole pattern. A multiply blend never touches hue;
+            # it just darkens/lightens the fabric's real colours by the
+            # garment's shading, so it can't produce that artifact
+            # regardless of how fine the pattern is.
             # Uses a SHIFTED-DOWN mask so the fabric starts at the
             # collar/clavicle, not at the chin (user: "yeh mere neck pe
             # fabric overlay ho rhi hai, it should be only till collar").
@@ -2177,13 +2189,16 @@ class TryOnModel:
                             (r_arr.shape[1], r_arr.shape[0]),
                             interpolation=cv2.INTER_LINEAR,
                         ).astype(np.uint8)
-                    r_hsv = cv2.cvtColor(r_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
-                    f_hsv = cv2.cvtColor(f_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
-                    # H + S from fabric, V from SD (keeps SD's shading).
-                    out_hsv = r_hsv.copy()
-                    out_hsv[:, :, 0] = f_hsv[:, :, 0]
-                    out_hsv[:, :, 1] = f_hsv[:, :, 1]
-                    out_rgb = cv2.cvtColor(out_hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+                    r_gray = cv2.cvtColor(r_arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                    # Normalized around mid-gray (128) so average lighting
+                    # neither darkens nor brightens the fabric's own
+                    # colours - only the local shading VARIATION (shadow
+                    # under the arm, highlight on the chest) does. Clipped
+                    # to a moderate range so deep shadow doesn't crush the
+                    # pattern to black or a blown highlight wash it to
+                    # white.
+                    shade = np.clip(r_gray / 128.0, 0.45, 1.55)[:, :, np.newaxis]
+                    out_rgb = np.clip(f_arr.astype(np.float32) * shade, 0, 255)
                     # Fabric mask = torso_mask with the neck strip zeroed
                     # out. The 'neck band' is the region from face_cutoff_y
                     # down to clavicle (~80 px). A linear ramp 0->1 lets
