@@ -26,6 +26,16 @@ from PIL import Image
 log = logging.getLogger(__name__)
 
 LIVE_SIZE = 512
+# Minimum face size (px) Haar will report a detection for. At the old
+# (40, 40) - ~8% of LIVE_SIZE's 512px width - anyone standing far enough
+# back from the camera for their face to shrink under that goes
+# undetected, which every "no face" branch in this file (torso
+# placement, orientation gating, face-protection cutoff) then reads as
+# "the wearer turned around" even though they're still front-facing.
+# Lower catches farther-back users at the cost of slightly more false
+# positives on non-face shapes - minNeighbors=4 on each call already
+# guards against most of those.
+HAAR_MIN_FACE = (22, 22)
 OUTPUT_W, OUTPUT_H = 512, 768
 LATENT_W = OUTPUT_W // 8
 LATENT_H = OUTPUT_H // 8
@@ -979,7 +989,7 @@ class TryOnModel:
         small = np.array(person_image.convert("RGB").resize((256, 256), Image.BILINEAR))
         gray  = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
-            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=(30, 30)
+            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=HAAR_MIN_FACE
         )
         if len(faces) > 0:
             self._orient_face_miss_count = 0
@@ -1160,7 +1170,7 @@ class TryOnModel:
         # ── Face detection → torso placement ─────────────────────────────────
         gray  = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
-            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=(40, 40)
+            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=HAAR_MIN_FACE
         )
 
         if len(faces) > 0:
@@ -1531,7 +1541,7 @@ class TryOnModel:
         gray  = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
             cv2.equalizeHist(gray), scaleFactor=1.1,
-            minNeighbors=4, minSize=(40, 40)
+            minNeighbors=4, minSize=HAAR_MIN_FACE
         )
         if len(faces) > 0:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
@@ -1638,7 +1648,7 @@ class TryOnModel:
             gray_for_safety = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             safety_faces = self._haar.detectMultiScale(
                 cv2.equalizeHist(gray_for_safety), scaleFactor=1.1,
-                minNeighbors=4, minSize=(40, 40),
+                minNeighbors=4, minSize=HAAR_MIN_FACE,
             )
             # If Haar fails on this frame (user too close / tilt / motion
             # blur), reuse the last successful bbox instead of falling
@@ -1802,7 +1812,7 @@ class TryOnModel:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             faces = self._haar.detectMultiScale(
                 cv2.equalizeHist(gray), scaleFactor=1.1,
-                minNeighbors=4, minSize=(40, 40),
+                minNeighbors=4, minSize=HAAR_MIN_FACE,
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
