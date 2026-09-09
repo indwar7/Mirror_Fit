@@ -97,7 +97,14 @@ def _decode_image_raw(b64: str) -> Image.Image:
 
 def _encode_jpeg(img: Image.Image, quality: int = 88) -> str:
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
+    # subsampling=0 (4:4:4, full colour resolution) instead of PIL's
+    # default chroma subsampling. A fine repeating pattern (plaid, thin
+    # stripes) changes colour faster than a subsampled chroma grid can
+    # represent, which showed up live as a rainbow fringe/moire over the
+    # whole pattern - this happens at JPEG encode time, downstream of
+    # every fabric-blend fix in model.py, which is why those didn't
+    # touch it. Costs some bytes/frame; fine for a live low-fps stream.
+    img.save(buf, format="JPEG", quality=quality, subsampling=0)
     return base64.b64encode(buf.getvalue()).decode()
 
 
