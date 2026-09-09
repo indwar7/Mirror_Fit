@@ -256,6 +256,7 @@ class TryOnModel:
         # internal state above so the two don't double-increment on a
         # frame where geometric ends up being the one that's called.
         self._orient_face_miss_count = 0
+        self._back_facing = False   # set per frame in tryon() from the gate
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
         self._garment_cache_back  = None   # optional real back-view garment photo
@@ -987,11 +988,15 @@ class TryOnModel:
         garment's reference photo latent directly — they have no notion of
         "this is the back of the body", so they paint the front-of-garment
         appearance (collar, print, buttons) regardless of which way the
-        person is actually facing. There is no back-view reference photo to
-        condition on instead, so the only real fix is to not run the
-        generative model at all once the person has turned around, and use
-        the geometric wrap-around renderer for that instead (it derives
-        placement from the actual silhouette, not a front-facing photo).
+        person is actually facing. For a t-shirt that's mostly fine - the
+        back is the same fabric/colour - IF the mask isn't anchored to a
+        face that isn't there. So this gate's job is to tell the mask
+        builder (via self._back_facing) to place from the silhouette,
+        skip the collar, and not hold the last front face box; the same
+        AI tier then renders both views so they look alike. (An earlier
+        revision diverted back-facing to the geometric wrap instead; the
+        two renderers looked visibly different, which read as the back
+        being broken.)
 
         Same grace-window hysteresis as the geometric tier's own internal
         face tracking (a brief miss ≠ turned around), but tracked in a
@@ -1067,21 +1072,16 @@ class TryOnModel:
         log.info(f"[orient] back_facing={back_facing} "
                  f"miss={self._orient_face_miss_count} "
                  f"back_photo={self._garment_cache_back is not None}")
-        if back_facing:
-            if self._garment_cache_back is not None:
-                garment = self._garment_cache_back
-            else:
-                try:
-                    return self._infer_live_geometric(person_image, force_back=True)
-                except Exception:
-                    # server.py's frame handler has no except of its own -
-                    # an exception here kills the whole WebSocket, which
-                    # the browser shows as a frozen last frame. Keep the
-                    # session alive with the raw frame and make the
-                    # failure loud in the log instead.
-                    log.exception("[orient] back-view geometric render failed; "
-                                  "passing raw frame through")
-                    return person_image
+        # Back-facing no longer diverts to the geometric wrap. The AI tier
+        # renders the back fine - a garment's back is the same fabric/
+        # colour as its front - as long as its mask isn't anchored to a
+        # face that isn't there. _build_body_mask reads self._back_facing
+        # and switches to silhouette-derived placement, skips the collar,
+        # and doesn't hold the last front face box. So both views come out
+        # of the same renderer and look the same, which is the point.
+        self._back_facing = back_facing
+        if back_facing and self._garment_cache_back is not None:
+            garment = self._garment_cache_back
 
         if self._trt is not None:
             return self._infer_catvton(person_image.resize((OUTPUT_W, OUTPUT_H)),
@@ -1108,7 +1108,7 @@ class TryOnModel:
             return self._infer_tier3(person_image, garment)
 
         # ── Geometric warp fallback — no model required ───────────────────────
-        return self._infer_live_geometric(person_image)
+        return self._infer_live_geometric(person_image, force_back=back_facing)
 
     # ── Helpers: hand + skin exclusion ────────────────────────────────────────
 
@@ -1579,6 +1579,7 @@ class TryOnModel:
         self._live_face_miss_count = 0
         self._live_prev_box        = None
         self._orient_face_miss_count = 0
+        self._back_facing          = False
 
     # ── CatVTON shared inference (Tier 1 + 2) ────────────────────────────────
 
@@ -1651,6 +1652,40 @@ class TryOnModel:
         return Image.fromarray(result_arr)
 
     # ── Body-shaped mask builder (per-frame, follows actual silhouette) ──────
+
+    @staticmethod
+    def _shoulder_row_from_silhouette(sil: np.ndarray):
+        """
+        Find the shoulder line on a person silhouette without a face:
+        start at the top of the mask (hair/head), measure head width a
+        few rows down, then scan downward for the first row where the
+        silhouette widens well past that - the shoulders. Returns
+        (row, (left, right)) or (None, None) if the mask is empty or
+        never widens (e.g. only a head in frame).
+
+        Same idea the geometric tier uses for its back-view box; here it
+        gives the AI tier's mask builder a garment-top row when the
+        wearer is back-facing, instead of holding the last FRONT face's
+        chin row forever (which stops tracking the moment they move).
+        """
+        H, W = sil.shape[:2]
+        b = sil > 0.5
+        ys = np.where(b.any(axis=1))[0]
+        if ys.size == 0:
+            return None, None
+        top = int(ys[0])
+
+        def span(y):
+            xs = np.where(b[y])[0]
+            return (int(xs[0]), int(xs[-1])) if xs.size else None
+
+        hs = span(min(top + 6, H - 1))
+        head_w = (hs[1] - hs[0]) if hs else int(W * 0.08)
+        for y in range(top, min(top + int(H * 0.55), H)):
+            s = span(y)
+            if s and (s[1] - s[0]) > head_w * 1.35:
+                return y, s
+        return None, None
 
     def _build_body_mask(self, frame_rgb: np.ndarray):
         """
@@ -1744,16 +1779,23 @@ class TryOnModel:
         try:
             safety = np.zeros((h, w), dtype=np.float32)
             gray_for_safety = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-            safety_faces = self._haar.detectMultiScale(
-                cv2.equalizeHist(gray_for_safety), scaleFactor=1.1,
-                minNeighbors=4, minSize=HAAR_MIN_FACE,
+            # Back-facing: don't run Haar at all here. Hair/an ear at the
+            # back of the head can still pass this looser check and
+            # anchor the safety polygon to a bogus "face".
+            safety_faces = (
+                np.empty((0, 4), dtype=int) if self._back_facing
+                else self._haar.detectMultiScale(
+                    cv2.equalizeHist(gray_for_safety), scaleFactor=1.1,
+                    minNeighbors=4, minSize=HAAR_MIN_FACE,
+                )
             )
             # If Haar fails on this frame (user too close / tilt / motion
             # blur), reuse the last successful bbox instead of falling
             # back to the wide horizontal band. Without this fallback,
             # one missed-detection frame painted a giant teal rectangle
             # because the fallback band is 64% of frame width.
-            if len(safety_faces) == 0 and self._prev_face_bbox is not None:
+            if (len(safety_faces) == 0 and self._prev_face_bbox is not None
+                    and not self._back_facing):
                 pfx, pfy, pfw, pfh = self._prev_face_bbox
                 safety_faces = np.array([[pfx, pfy, pfw, pfh]])
             if len(safety_faces) > 0:
@@ -1908,9 +1950,15 @@ class TryOnModel:
         face_box = None
         try:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-            faces = self._haar.detectMultiScale(
-                cv2.equalizeHist(gray), scaleFactor=1.1,
-                minNeighbors=4, minSize=HAAR_MIN_FACE,
+            # Back-facing: skip Haar (same false-positive risk as the
+            # safety rect above). The back-facing block below sets the
+            # cutoff from the silhouette instead.
+            faces = (
+                np.empty((0, 4), dtype=int) if self._back_facing
+                else self._haar.detectMultiScale(
+                    cv2.equalizeHist(gray), scaleFactor=1.1,
+                    minNeighbors=4, minSize=HAAR_MIN_FACE,
+                )
             )
             if len(faces) > 0:
                 fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
@@ -1944,7 +1992,7 @@ class TryOnModel:
         # better answer than a frame-height fraction. It self-corrects on
         # the next hit, because _prev_face_cut only updates on a real
         # detection.
-        if self._prev_face_cut is not None:
+        if self._prev_face_cut is not None and not self._back_facing:
             fx, fy, fw, fh = self._prev_face_cut
             face_box = (fx, fy, fw, fh)
             # Cutoff at chin row. The 25-px soft fade below (in the
@@ -1957,6 +2005,22 @@ class TryOnModel:
             # fabric starts at the chin instead of the collarbone. Chin ->
             # collarbone is roughly 55% of face height on a real body.
             self._neck_gap_px = int(np.clip(fh * 0.55, 40, 260))
+
+        if self._back_facing:
+            # Back-facing: no chin to anchor off, and holding the last
+            # FRONT face's chin row (above) stops tracking the moment the
+            # wearer moves. Take the garment top from where the silhouette
+            # widens into the shoulders instead - that row is the same
+            # anatomical line whichever way they face. face_box stays None
+            # so no collar band gets drawn on the back of the neck (the
+            # "peeche collar aa raha hai" complaint from when the AI tier
+            # last ran on the back).
+            face_box = None
+            srow, _ = self._shoulder_row_from_silhouette(silhouette)
+            face_cutoff_y = int(np.clip(
+                srow if srow is not None else int(h * 0.30),
+                h * 0.10, h * 0.55,
+            ))
 
         # 3. Torso band — restrict mask vertically. Extended bottom to
         # 0.98 (was 0.92) so the jacket reaches the bottom of the frame
@@ -2293,7 +2357,12 @@ class TryOnModel:
                     fabric_mask = torso_mask.copy()
                     H_im = fabric_mask.shape[0]
                     band_top = max(0, int(face_cutoff_y))
-                    band_bot = min(H_im, band_top + getattr(self, "_neck_gap_px", 80))
+                    # Back-facing: the cutoff already IS the shoulder line
+                    # (no chin/neck above it to clear), so the fabric only
+                    # needs a short fade-in there, not the chin->collarbone
+                    # gap that would push it well below the shoulders.
+                    neck_gap = 20 if self._back_facing else getattr(self, "_neck_gap_px", 80)
+                    band_bot = min(H_im, band_top + neck_gap)
                     if band_bot > band_top:
                         ramp = np.linspace(0, 1, band_bot - band_top,
                                            dtype=np.float32)
