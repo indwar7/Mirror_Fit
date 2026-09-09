@@ -1288,6 +1288,30 @@ class TryOnModel:
         g_crop = garment.crop((cl, 0, cr, gH))
         shirt  = np.array(g_crop.resize((tw, th), Image.LANCZOS))
 
+        # ── Fabric overlay — this tier is what renders the back view (see
+        # the orientation gate in tryon()), and it was using the plain
+        # garment colour even when a fabric pattern was uploaded: the
+        # front (AI tier) applied it, this one never did. Turning around
+        # then showed a different-looking garment, which reads as
+        # misalignment even when placement itself is correct. Same
+        # multiply blend as the AI tier's fabric overlay (mask-based hue
+        # extraction fringes badly on fine patterns - see that fix) -
+        # fabric's own colours modulated by the garment crop's shading,
+        # cropped/resized identically to `shirt` so they land pixel-
+        # aligned.
+        if self._fabric_overlay is not None:
+            try:
+                fabric_full = Image.fromarray(self._fabric_overlay.astype(np.uint8))
+                fabric_crop = fabric_full.crop((cl, 0, cr, gH))
+                f_arr = np.array(
+                    fabric_crop.resize((tw, th), Image.LANCZOS)
+                ).astype(np.float32)
+                shirt_gray = cv2.cvtColor(shirt, cv2.COLOR_RGB2GRAY).astype(np.float32)
+                shade = np.clip(shirt_gray / 128.0, 0.45, 1.55)[:, :, np.newaxis]
+                shirt = np.clip(f_arr * shade, 0, 255).astype(np.uint8)
+            except Exception as e:
+                log.debug(f"geometric fabric overlay skipped: {e}")
+
         # ── Alpha mask ────────────────────────────────────────────────────────
         if self._garment_alpha is not None:
             alpha_pil  = Image.fromarray((self._garment_alpha * 255).astype(np.uint8))
