@@ -1479,38 +1479,21 @@ class TryOnModel:
 
         orig_arr = np.array(person)
 
-        # Fraction of the denoising trajectory re-run each frame, anchored
-        # to the PREVIOUS frame's own output instead of starting from pure
-        # noise every time. Independent per-frame generation has no reason
-        # to land on the same fold/shape/crop twice, which is why the
-        # garment visibly shifted every frame even when the wearer barely
-        # moved. Lower = steadier but slower to follow real movement;
-        # higher = more responsive but more flicker. Also means fewer UNet
-        # steps run once a previous frame exists — a free speed-up at the
-        # current ~1fps.
-        STRENGTH = 0.55
-
+        # NOTE: an earlier attempt anchored each frame to the previous one
+        # via partial re-noising (img2img-style) to reduce frame-to-frame
+        # jitter. It produced pure static/noise output instead — CatVTON's
+        # UNet here is not a standard SD1.5 backbone and was trained to
+        # always denoise the FULL trajectory from pure noise conditioned on
+        # [person_lat, garment_lat]; starting it partway through a
+        # standard img2img noise schedule is not something it was trained
+        # for. Reverted to full generation every frame. Jitter is a real
+        # complaint but needs a different fix (e.g. smoothing in pixel
+        # space, or a frame-blend after generation) — not this.
         with torch.inference_mode():
             p_lat = self._vae.encode(to_lat(person)).latent_dist.sample() * self._vae.config.scaling_factor
             g_lat = self._vae.encode(to_lat(garment)).latent_dist.sample() * self._vae.config.scaling_factor
-
-            all_timesteps = self._scheduler.timesteps
-            n_total = len(all_timesteps)
-
-            if self._prev_result is not None and self._prev_result.shape[:2] == orig_arr.shape[:2]:
-                prev_lat = self._vae.encode(
-                    to_lat(Image.fromarray(self._prev_result))
-                ).latent_dist.sample() * self._vae.config.scaling_factor
-                init_steps    = max(1, min(int(round(n_total * STRENGTH)), n_total))
-                t_start        = max(n_total - init_steps, 0)
-                run_timesteps  = all_timesteps[t_start:]
-                noise          = torch.randn_like(prev_lat)
-                x = self._scheduler.add_noise(prev_lat, noise, run_timesteps[:1].to(self.device))
-            else:
-                run_timesteps = all_timesteps
-                x = torch.randn_like(p_lat)
-
-            for t in run_timesteps:
+            x = torch.randn_like(p_lat)
+            for t in self._scheduler.timesteps:
                 inp = torch.cat([x, p_lat, g_lat], dim=1).to(self.dtype)
                 t_b = t.unsqueeze(0).to(self.device)
                 noise_pred = self._catvton_unet(
