@@ -366,6 +366,27 @@ class TryOnModel:
           dresscode-16k-512 — trained on DressCode (broader garment types)
           mix-48k-1024     — trained on a 48k mixed dataset at 1024px (highest quality)
         """
+        # Disabled: CATVTON_BASE_MODEL (see its definition above) is a
+        # stock SD-inpainting checkpoint with a 9-channel conv_in, reshaped
+        # to 12 channels below via ignore_mismatched_sizes. That drops the
+        # mismatched tensor and randomly reinitializes it wholesale (no
+        # partial-channel preservation) - the MaskFree overlay further
+        # down only ever touches attention layers, never conv_in, so it
+        # doesn't fix this either way. The result is a UNet whose first
+        # layer is untrained noise-in-noise-out: it produced literal
+        # static on live testing, not a degraded-but-usable render. Fail
+        # fast, before spending ~30s loading a UNet/VAE/text-encoder that
+        # can't produce anything usable, so the caller's fallback to
+        # SD+IP-Adapter (proven working) kicks in instead.
+        #
+        # Re-enable only once this loads from an actually fine-tuned
+        # checkpoint with real conv_in weights (see VTON_LORA_CHECKPOINT /
+        # _load_tier2 for that path) - remove this raise at that point.
+        raise RuntimeError(
+            "CatVTON direct disabled: conv_in has no trained weights under "
+            "the current base model/overlay combination (see comment above)."
+        )
+
         from diffusers import AutoencoderKL, DDIMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
