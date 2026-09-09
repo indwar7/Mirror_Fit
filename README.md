@@ -1,4 +1,5 @@
-# LUCY - Real-Time Virtual Try-On
+# MIRRORFIT
+- Real-Time Virtual Try-On
 
 A Flutter-based real-time virtual try-on mobile application. Users see 3D clothes on their body in real time through the camera — like a virtual trial room.
 
