@@ -1938,8 +1938,12 @@ class TryOnModel:
         except Exception as e:
             log.debug(f"grabcut body extraction skipped: {e}")
 
-        # Gentle feather so SD has a smooth boundary to denoise into.
-        torso_mask = cv2.GaussianBlur(torso_mask, (11, 11), 0)
+        # Feather so SD has a smooth boundary to denoise into. 19px (was
+        # 11) - the neck/collar and sleeve/arm boundaries read as a hard
+        # cut-line at 11px; wide enough here to soften those without
+        # dissolving the collar notch carved into the safety polygon
+        # above (that one breaks down around 71px, well past this).
+        torso_mask = cv2.GaussianBlur(torso_mask, (19, 19), 0)
         # Per-pixel EMA on the final mask (0.65 new + 0.35 prev). Even
         # with bbox EMA above, the silhouette / safety blur can still
         # produce 1-2 px boundary wobble between frames; the painted
