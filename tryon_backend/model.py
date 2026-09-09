@@ -810,7 +810,19 @@ class TryOnModel:
         else:
             fabric_rgb = fabric_image.convert("RGB")
         fabric_full = fabric_rgb.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
-        self._fabric_overlay = np.array(fabric_full).astype(np.float32)
+        fabric_arr = np.array(fabric_full)
+        # Light pre-blur before this gets used for hue/saturation transplant
+        # in _infer_tier3. A fine repeating pattern (plaid, houndstooth,
+        # thin stripes) has a color edge every few pixels; pulling hue out
+        # of that many sharp transitions - even after a Lanczos resize -
+        # produced a rainbow moire grid overlaying the garment (hue is
+        # circular, so two adjacent original colors can round to wildly
+        # different hues at a lightly-blended boundary pixel). This softens
+        # those transitions just enough to kill the fringing while the
+        # pattern itself (checked against wide stripes/solids) stays
+        # clearly readable.
+        fabric_arr = cv2.GaussianBlur(fabric_arr, (7, 7), 0)
+        self._fabric_overlay = fabric_arr.astype(np.float32)
         log.info("Fabric overlay stored — will composite over SD result.")
 
     def recolor_garment(self, color: str):
