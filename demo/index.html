@@ -1847,6 +1847,20 @@ body.landing-active .app { display: none !important; }
         </button>
       </div>
 
+      <!-- Step 2.2: Back-view photo -->
+      <div class="card">
+        <div class="card-label">Step 2.2 · Back view (optional)</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'gbp','gbph');setGarmentBack(this)">
+          <img id="gbp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="gbph"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3.3 5 5.1 3.2 9.5l2.8 1.3.9-1.9v11.8h10.2V8.9l.9 1.9 2.8-1.3L19 5.1l-3.7-1.8a3.3 3.3 0 0 1-6.6 0z"/></svg></span>
+          <span class="upload-hint" id="gbph2">Upload the garment's back — used when the wearer turns around</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearGarmentBack()" style="font-size:11px;padding:6px;margin-top:6px;width:100%">
+          Remove back view
+        </button>
+      </div>
+
       <!-- Step 2.5: Garment Type -->
       <div class="card">
         <div class="card-label">Step 2.5 · Type</div>
@@ -4162,15 +4176,40 @@ function clearFabric() {
   }
 }
 
+let toGarmentBack = null, toGarmentBackB64 = null;   // real back-view photo (optional)
+function setGarmentBack(inp) {
+  toGarmentBack = inp.files[0];
+  if (!toGarmentBack) return;
+  const r = new FileReader();
+  r.onload = e => {
+    toGarmentBackB64 = e.target.result.split(',')[1];
+    if (toWs && toWs.readyState === WebSocket.OPEN) {
+      toWs.send(JSON.stringify({ type: 'garment_back', garment_back_image: toGarmentBackB64 }));
+    }
+  };
+  r.readAsDataURL(toGarmentBack);
+}
+function clearGarmentBack() {
+  toGarmentBack    = null;
+  toGarmentBackB64 = null;
+  document.querySelector('input[onchange*="setGarmentBack"]').value = '';
+  document.getElementById('gbp').style.display = 'none';
+  document.getElementById('gbph').style.display = '';
+  if (toWs && toWs.readyState === WebSocket.OPEN) {
+    toWs.send(JSON.stringify({ type: 'garment_back_clear' }));
+  }
+}
+
 function _resendTryOnInit() {
   if (!(toWs && toWs.readyState === WebSocket.OPEN && toGarment)) return;
   const r = new FileReader();
   r.onload = e => {
     toWs.send(JSON.stringify({
       type: 'init',
-      garment_image: e.target.result.split(',')[1],
-      garment_type:  toGarmentType,
-      fabric_image:  toFabricB64,   // include fabric in init if uploaded
+      garment_image:      e.target.result.split(',')[1],
+      garment_type:       toGarmentType,
+      fabric_image:       toFabricB64,        // include fabric in init if uploaded
+      garment_back_image: toGarmentBackB64,   // include back-view photo if uploaded
     }));
   };
   r.readAsDataURL(toGarment);
@@ -4200,9 +4239,10 @@ function startTryOn() {
     const r=new FileReader();
     r.onload=e=>toWs.send(JSON.stringify({
       type: 'init',
-      garment_image: e.target.result.split(',')[1],
-      garment_type:  toGarmentType,
-      fabric_image:  toFabricB64,    // include fabric so it's applied at session start
+      garment_image:      e.target.result.split(',')[1],
+      garment_type:       toGarmentType,
+      fabric_image:       toFabricB64,        // include fabric so it's applied at session start
+      garment_back_image: toGarmentBackB64,   // include back-view photo so it's applied at session start
     }));
     r.readAsDataURL(toGarment);
     document.getElementById('tryonBtn').textContent='Stop';

@@ -182,12 +182,22 @@ async def tryon_ws(ws: WebSocket):
                     await run_in_thread(tryon_model.set_fabric, fabric_img)
                     log.info("Fabric applied in init.")
 
+                # Optional real back-view photo of the garment. set_garment
+                # (above) always clears any previous back photo, so this
+                # must come after it — re-applies the one for this garment
+                # if the caller included it in the same init message.
+                garment_back_b64 = msg.get("garment_back_image")
+                if garment_back_b64:
+                    garment_back_img = await run_in_thread(_decode_image_raw, garment_back_b64)
+                    await run_in_thread(tryon_model.set_garment_back, garment_back_img)
+                    log.info("Back-view garment applied in init.")
+
                 # Reset temporal state for new session
                 tryon_model.reset_temporal()
 
                 await send({"type": "ready"})
-                log.info("Garment set (type=%s, fabric=%s).",
-                         garment_type, bool(fabric_b64))
+                log.info("Garment set (type=%s, fabric=%s, back_view=%s).",
+                         garment_type, bool(fabric_b64), bool(garment_back_b64))
 
             # ── Fabric: apply uploaded fabric pattern onto cached garment ────
             elif kind == "fabric":
@@ -202,6 +212,19 @@ async def tryon_ws(ws: WebSocket):
                 tryon_model.reset_temporal()
                 await send({"type": "fabric_cleared"})
                 log.info("Fabric cleared, garment restored.")
+
+            # ── Garment back: real back-view photo, used when the wearer
+            # turns around instead of the geometric colour-only wrap ─────────
+            elif kind == "garment_back":
+                garment_back_img = await run_in_thread(_decode_image_raw, msg["garment_back_image"])
+                await run_in_thread(tryon_model.set_garment_back, garment_back_img)
+                await send({"type": "garment_back_set"})
+                log.info("Back-view garment applied.")
+
+            elif kind == "garment_back_clear":
+                await run_in_thread(tryon_model.set_garment_back, None)
+                await send({"type": "garment_back_cleared"})
+                log.info("Back-view garment cleared.")
 
             # ── Frame: camera frame → try-on result ───────────────────────────
             elif kind == "frame":

@@ -233,8 +233,23 @@ class TryOnModel:
         self._neck_gap_px = 80   # fallback until a face is detected
         self._prev_torso_mask  = None      # EMA-smoothed final torso_mask (kills jitter)
         self._fixed_mask_cache = None
+        # Live geometric tier: last face-anchored torso box, and how many
+        # consecutive frames we've gone without a face. Held so the shirt
+        # keeps the same size/position it had while front-facing instead of
+        # snapping to a generic frame-fraction guess the instant the face
+        # detector misses one frame.
+        self._live_last_face_box   = None   # (top, bottom, left, right, face_bottom, cx)
+        self._live_face_miss_count = 0
+        self._live_prev_box        = None   # EMA-smoothed (top, bottom, left, right, cx)
+        # Separate hysteresis counter gating which TIER runs per frame (AI
+        # vs geometric). Kept independent from the geometric tier's own
+        # internal state above so the two don't double-increment on a
+        # frame where geometric ends up being the one that's called.
+        self._orient_face_miss_count = 0
         self._garment_alpha       = None   # alpha mask from original RGBA garment PNG
         self._garment_color_name  = None   # dominant garment color, injected into prompt
+        self._garment_cache_back  = None   # optional real back-view garment photo
+        self._garment_alpha_back  = None   # alpha mask for the back-view photo, if RGBA
 
         # ── Tier 4: AnimateDiff video backbone ───────────────────────────────
         self._animatediff_pipe = None
@@ -365,6 +380,14 @@ class TryOnModel:
         self._catvton_unet = UNet2DConditionModel.from_pretrained(
             base, subfolder="unet", torch_dtype=self.dtype,
             in_channels=12, ignore_mismatched_sizes=True,
+            # low_cpu_mem_usage (default True) loads via a meta-device
+            # fast path; combined with ignore_mismatched_sizes, the
+            # resized conv_in layer comes back as an empty meta tensor
+            # with no real data, and .to(device) below then fails with
+            # "Cannot copy out of meta tensor; no data!". Disabling it
+            # forces eager loading so the resized layer is actually
+            # materialized.
+            low_cpu_mem_usage=False,
         ).to(self.device)
         self._catvton_unet.requires_grad_(False)
 
@@ -844,6 +867,14 @@ class TryOnModel:
         self._prev_face_bbox   = None
         self._prev_face_cut    = None
         self._prev_torso_mask  = None
+        self._live_last_face_box   = None
+        self._live_face_miss_count = 0
+        self._live_prev_box        = None
+        self._orient_face_miss_count = 0
+        # A new front garment invalidates any back-view photo uploaded for
+        # the previous garment — clear it until one is set for this one.
+        self._garment_cache_back   = None
+        self._garment_alpha_back   = None
 
         # Store alpha mask if original had transparency — used by geometric warp
         if garment_image.mode == 'RGBA':
@@ -873,7 +904,67 @@ class TryOnModel:
                 log.warning(f"IP embed pre-cache failed, will encode per-frame: {e}")
         log.info("Garment cached.")
 
+    def set_garment_back(self, garment_image: Image.Image | None):
+        """
+        Optional real back-view photo of the garment. When set, a
+        back-facing frame composites this photo through the same AI tier
+        used for the front instead of falling back to the geometric wrap —
+        the wrap can only stretch the front photo's colour, it has no way
+        to show a back-specific collar, print or design. Pass None to
+        clear it (e.g. garment changed and no new back photo uploaded yet).
+        """
+        if garment_image is None:
+            self._garment_cache_back = None
+            self._garment_alpha_back = None
+            log.info("Back-view garment cleared.")
+            return
+
+        if garment_image.mode == 'RGBA':
+            bg = Image.new('RGB', garment_image.size, (255, 255, 255))
+            bg.paste(garment_image, mask=garment_image.split()[3])
+            g = bg
+            alpha_sq = garment_image.split()[3].resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
+            self._garment_alpha_back = np.array(alpha_sq).astype(np.float32) / 255.0
+        else:
+            g = garment_image.convert("RGB")
+            self._garment_alpha_back = None
+
+        gw, gh = g.size
+        sq = max(gw, gh)
+        padded = Image.new("RGB", (sq, sq), (255, 255, 255))
+        padded.paste(g, ((sq - gw) // 2, (sq - gh) // 2))
+        self._garment_cache_back = padded.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
+        log.info("Back-view garment cached.")
+
     # ── Inference ─────────────────────────────────────────────────────────────
+
+    def _is_back_facing_now(self, person_image: Image.Image) -> bool:
+        """
+        Every AI tier (CatVTON, SD+IP-Adapter, AnimateDiff) conditions on the
+        garment's reference photo latent directly — they have no notion of
+        "this is the back of the body", so they paint the front-of-garment
+        appearance (collar, print, buttons) regardless of which way the
+        person is actually facing. There is no back-view reference photo to
+        condition on instead, so the only real fix is to not run the
+        generative model at all once the person has turned around, and use
+        the geometric wrap-around renderer for that instead (it derives
+        placement from the actual silhouette, not a front-facing photo).
+
+        Same grace-window hysteresis as the geometric tier's own internal
+        face tracking (a brief miss ≠ turned around), but tracked in a
+        separate counter so calling this doesn't perturb that tier's own
+        state when it ends up being invoked as a result.
+        """
+        small = np.array(person_image.convert("RGB").resize((256, 256), Image.BILINEAR))
+        gray  = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+        faces = self._haar.detectMultiScale(
+            cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=4, minSize=(30, 30)
+        )
+        if len(faces) > 0:
+            self._orient_face_miss_count = 0
+            return False
+        self._orient_face_miss_count += 1
+        return self._orient_face_miss_count > 6
 
     def tryon(self, person_image: Image.Image,
               garment_image: Image.Image | None = None) -> Image.Image:
@@ -886,6 +977,20 @@ class TryOnModel:
         # the deterministic, lag-free overlay (TRYON_FORCE_GEOMETRIC=1).
         if TRYON_FORCE_GEOMETRIC:
             return self._infer_live_geometric(person_image)
+
+        # Back-facing: none of the AI tiers below know the difference
+        # between front and back on their own — they just composite
+        # whatever reference photo they're given. If a real back-view
+        # photo was uploaded, swap it in and let the same AI tier run as
+        # normal. Without one, an AI tier would paint the front photo's
+        # collar/print onto the wearer's back, so fall back to the
+        # geometric wrap (colour/pattern only, no invented front details)
+        # instead of guessing with the wrong reference image.
+        if self._is_back_facing_now(person_image):
+            if self._garment_cache_back is not None:
+                garment = self._garment_cache_back
+            else:
+                return self._infer_live_geometric(person_image)
 
         if self._trt is not None:
             return self._infer_catvton(person_image.resize((OUTPUT_W, OUTPUT_H)),
@@ -1001,6 +1106,36 @@ class TryOnModel:
         frame     = np.array(person_sq)
         H, W      = frame.shape[:2]
 
+        # ── Body segmentation — computed once, up front, so the torso box
+        # itself can be sized from the real silhouette instead of a fixed
+        # ratio off the face. Fixed ratios don't track how far the person
+        # is from the camera or their actual build, which is why the shirt
+        # read as the wrong size/position on both front and back. ─────────
+        seg_mask = None
+        if self._mp_seg is not None:
+            try:
+                import mediapipe as mp
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=np.ascontiguousarray(frame),
+                )
+                seg_result = self._mp_seg.segment(mp_image)
+                if seg_result.confidence_masks:
+                    seg_mask = (seg_result.confidence_masks[0].numpy_view() > 0.4)
+            except Exception:
+                pass
+
+        def _mask_row_span(row_y: int, min_width: int):
+            """Leftmost/rightmost silhouette pixel on a row, or None if too
+            thin/absent to trust (e.g. the row lands above the shoulders,
+            still in the neck)."""
+            if seg_mask is None or not (0 <= row_y < H):
+                return None
+            row = np.where(seg_mask[row_y])[0]
+            if row.size == 0 or (row[-1] - row[0]) < min_width:
+                return None
+            return int(row[0]), int(row[-1])
+
         # ── Face detection → torso placement ─────────────────────────────────
         gray  = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         faces = self._haar.detectMultiScale(
@@ -1011,23 +1146,93 @@ class TryOnModel:
             fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
             cx          = fx + fw // 2
             # Shirt top = just below the chin (≈18% face-height neck gap)
-            # so the collar lands on the neck, not on the jaw. Width = 2× the
-            # face width — that's roughly shoulder span for a forward-facing
-            # subject.
-            # Shirt top sits a small neck gap below the chin so the collar
-            # lands on the neck. Width = ≈2.7× face width (≈ realistic
-            # shoulder span). Body silhouette will clip whatever extends
-            # past the actual body.
+            # so the collar lands on the neck, not on the jaw.
             top         = fy + fh + int(fh * 0.15)
             bottom      = min(H, top + int(fh * 3.0))
-            left        = max(0, cx - int(fw * 1.35))
-            right       = min(W, cx + int(fw * 1.35))
             face_bottom = fy + fh + int(fh * 0.10)
+
+            # Shoulder width: read it off the real silhouette a little below
+            # the collar (shoulders, not neck) when the segmentation mask
+            # landed cleanly; otherwise fall back to the old face-ratio
+            # guess (≈2.7× face width) so a missed/low-confidence mask
+            # frame doesn't leave the shirt with no width at all.
+            span = _mask_row_span(top + int(fh * 0.35), min_width=int(fw * 1.2))
+            if span is not None:
+                left, right = span
+                cx = (left + right) // 2
+            else:
+                left  = max(0, cx - int(fw * 1.35))
+                right = min(W, cx + int(fw * 1.35))
+
+            self._live_last_face_box   = (top, bottom, left, right, face_bottom, cx)
+            self._live_face_miss_count = 0
         else:
-            top = int(H * 0.32); bottom = int(H * 0.88)
-            left = int(W * 0.10); right = int(W * 0.90)
-            face_bottom = int(H * 0.40)
-            cx = W // 2
+            self._live_face_miss_count += 1
+            # A face can miss for a frame or two from motion blur or a
+            # turning head without the person actually being back-facing —
+            # keep the last good front-facing box for a short grace window
+            # so the shirt doesn't jump on a single dropped detection.
+            FACE_MISS_GRACE = 6
+            if (self._live_last_face_box is not None
+                    and self._live_face_miss_count <= FACE_MISS_GRACE):
+                top, bottom, left, right, face_bottom, cx = self._live_last_face_box
+            else:
+                # Sustained face loss: assume the person has turned around.
+                # There is no chin to anchor off, so derive the box from the
+                # real silhouette instead of a generic frame-fraction guess.
+                #
+                # A fixed fraction of visible-body height for the collar row
+                # left a gap between the garment and the actual shoulders —
+                # it doesn't track how close the person is to the camera.
+                # Instead, scan downward from the top of the head and find
+                # where the silhouette actually widens from head-width to
+                # shoulder-width; that row IS the shoulder line, regardless
+                # of framing distance. No chin to protect either, so
+                # nothing gets blanked back to raw camera.
+                mask_top = None
+                if seg_mask is not None:
+                    ys = np.where(seg_mask.any(axis=1))[0]
+                    if ys.size > 0:
+                        mask_top = int(ys[0])
+
+                if mask_top is not None:
+                    head_span = _mask_row_span(min(mask_top + 6, H - 1), min_width=1)
+                    head_w    = (head_span[1] - head_span[0]) if head_span else int(W * 0.08)
+                    shoulder_row = None
+                    for y in range(mask_top, min(mask_top + int(H * 0.55), H)):
+                        row_span = _mask_row_span(y, min_width=1)
+                        if row_span and (row_span[1] - row_span[0]) > head_w * 1.35:
+                            shoulder_row = y
+                            break
+                    top    = shoulder_row if shoulder_row is not None \
+                             else mask_top + int((H - mask_top) * 0.10)
+                    bottom = min(H, top + int((H - mask_top) * 0.62))
+                    span   = _mask_row_span(top, min_width=int(W * 0.12))
+                    if span is not None:
+                        left, right = span
+                        cx = (left + right) // 2
+                    else:
+                        left, right = int(W * 0.14), int(W * 0.86)
+                        cx = W // 2
+                else:
+                    top = int(H * 0.22); bottom = int(H * 0.86)
+                    left = int(W * 0.14); right = int(W * 0.86)
+                    cx = W // 2
+                face_bottom = 0
+
+        # ── Temporal smoothing — without this the box is recomputed from
+        # scratch every frame (Haar wobbles a couple px, the mask edge
+        # shifts a few px), which reads as the whole shirt shaking. EMA
+        # against the previous frame's box removes that shake while still
+        # tracking real movement within a few frames.
+        if self._live_prev_box is not None:
+            ptop, pbottom, pleft, pright, pcx = self._live_prev_box
+            top    = int(0.55 * ptop    + 0.45 * top)
+            bottom = int(0.55 * pbottom + 0.45 * bottom)
+            left   = int(0.55 * pleft   + 0.45 * left)
+            right  = int(0.55 * pright  + 0.45 * right)
+            cx     = int(0.55 * pcx     + 0.45 * cx)
+        self._live_prev_box = (top, bottom, left, right, cx)
 
         th = max(1, bottom - top)
         tw = max(1, right  - left)
@@ -1060,10 +1265,17 @@ class TryOnModel:
 
         alpha = cv2.GaussianBlur(alpha, (9, 9), 0)
 
-        # ── Perspective warp — taper bottom 6% to simulate body wrap ─────────
-        taper = max(1, int(tw * 0.06))
+        # ── Perspective warp — taper both ends to simulate body wrap. Real
+        # shirts are narrower at the collar than at the shoulder line, and
+        # narrower again at the waist than at the chest; tapering only the
+        # bottom (old behaviour) left a rectangle with one curved edge,
+        # which reads as a flat sticker rather than a garment wrapped
+        # around a torso.
+        taper_top = max(1, int(tw * 0.10))
+        taper_bot = max(1, int(tw * 0.06))
         src_pts = np.float32([[0,0],[tw,0],[tw,th],[0,th]])
-        dst_pts = np.float32([[0,0],[tw,0],[tw-taper,th],[taper,th]])
+        dst_pts = np.float32([[taper_top,0],[tw-taper_top,0],
+                               [tw-taper_bot,th],[taper_bot,th]])
         M_persp = cv2.getPerspectiveTransform(src_pts, dst_pts)
         shirt = cv2.warpPerspective(shirt, M_persp, (tw, th),
                                     flags=cv2.INTER_LINEAR,
@@ -1078,23 +1290,13 @@ class TryOnModel:
             ratio = np.clip((orig_mean / shirt_mean) * 0.35 + 0.65, 0.4, 1.8)
             shirt = np.clip(shirt.astype(np.float32) * ratio, 0, 255).astype(np.uint8)
 
-        # ── Body mask — MediaPipe if available, else soft torso ellipse ───────
+        # ── Body mask — reuse the silhouette computed above (avoids running
+        # segmentation twice per frame); else soft torso ellipse ───────────
         body_mask_roi = None
-        if self._mp_seg is not None:
-            try:
-                import mediapipe as mp
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=np.ascontiguousarray(frame),
-                )
-                seg_result = self._mp_seg.segment(mp_image)
-                if seg_result.confidence_masks:
-                    mask_arr = seg_result.confidence_masks[0].numpy_view()
-                    bm = (mask_arr > 0.4).astype(np.float32)
-                    bm = cv2.GaussianBlur(bm, (21, 21), 0)
-                    body_mask_roi = bm[top:top+th, left:left+tw]
-            except Exception:
-                pass
+        if seg_mask is not None:
+            bm = seg_mask.astype(np.float32)
+            bm = cv2.GaussianBlur(bm, (21, 21), 0)
+            body_mask_roi = bm[top:top+th, left:left+tw]
 
         if body_mask_roi is None:
             # Fallback: soft ellipse approximating torso silhouette
@@ -1118,11 +1320,16 @@ class TryOnModel:
             if hand_roi.shape == (th, tw):
                 alpha = alpha * (1.0 - hand_roi)
 
-        # ── Edge shadow — depth cue ───────────────────────────────────────────
+        # ── Shading — depth cue. Side edges darken (body curving away from
+        # camera) and a mild vertical gradient brightens the chest / shades
+        # the waist, so the fabric reads as wrapped around a rounded torso
+        # instead of a flat decal pasted on top of the frame.
         edge_w = max(1, int(tw * 0.07))
         eshadow = np.ones_like(alpha)
         eshadow[:, :edge_w]  *= np.linspace(0.45, 1.0, edge_w)
         eshadow[:, -edge_w:] *= np.linspace(1.0, 0.45, edge_w)
+        vshade = np.linspace(1.08, 0.92, th, dtype=np.float32)[:, np.newaxis]
+        eshadow *= vshade
         shirt = np.clip(shirt.astype(np.float32) * eshadow[:, :, np.newaxis],
                         0, 255).astype(np.uint8)
 
@@ -1239,6 +1446,10 @@ class TryOnModel:
         self._frame_buffer     = []
         self._video_results    = []
         self._video_result_idx = 0
+        self._live_last_face_box   = None
+        self._live_face_miss_count = 0
+        self._live_prev_box        = None
+        self._orient_face_miss_count = 0
 
     # ── CatVTON shared inference (Tier 1 + 2) ────────────────────────────────
 
@@ -1268,11 +1479,38 @@ class TryOnModel:
 
         orig_arr = np.array(person)
 
+        # Fraction of the denoising trajectory re-run each frame, anchored
+        # to the PREVIOUS frame's own output instead of starting from pure
+        # noise every time. Independent per-frame generation has no reason
+        # to land on the same fold/shape/crop twice, which is why the
+        # garment visibly shifted every frame even when the wearer barely
+        # moved. Lower = steadier but slower to follow real movement;
+        # higher = more responsive but more flicker. Also means fewer UNet
+        # steps run once a previous frame exists — a free speed-up at the
+        # current ~1fps.
+        STRENGTH = 0.55
+
         with torch.inference_mode():
             p_lat = self._vae.encode(to_lat(person)).latent_dist.sample() * self._vae.config.scaling_factor
             g_lat = self._vae.encode(to_lat(garment)).latent_dist.sample() * self._vae.config.scaling_factor
-            x = torch.randn_like(p_lat)
-            for t in self._scheduler.timesteps:
+
+            all_timesteps = self._scheduler.timesteps
+            n_total = len(all_timesteps)
+
+            if self._prev_result is not None and self._prev_result.shape[:2] == orig_arr.shape[:2]:
+                prev_lat = self._vae.encode(
+                    to_lat(Image.fromarray(self._prev_result))
+                ).latent_dist.sample() * self._vae.config.scaling_factor
+                init_steps    = max(1, min(int(round(n_total * STRENGTH)), n_total))
+                t_start        = max(n_total - init_steps, 0)
+                run_timesteps  = all_timesteps[t_start:]
+                noise          = torch.randn_like(prev_lat)
+                x = self._scheduler.add_noise(prev_lat, noise, run_timesteps[:1].to(self.device))
+            else:
+                run_timesteps = all_timesteps
+                x = torch.randn_like(p_lat)
+
+            for t in run_timesteps:
                 inp = torch.cat([x, p_lat, g_lat], dim=1).to(self.dtype)
                 t_b = t.unsqueeze(0).to(self.device)
                 noise_pred = self._catvton_unet(
