@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirror</title>
+<style>
+  :root { --bg:#1c1b19; --panel:#2a2825; --ink:#f0ece4; --muted:#a39d92; --line:#3b3834; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:15px/1.4 system-ui, "Segoe UI", Roboto, sans-serif; }
+  #stage { position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  #out { max-width:100%; max-height:100%; transform:scaleX(-1); background:#000; }
+  #status { position:absolute; top:14px; left:14px; padding:6px 10px; background:rgba(28,27,25,.75); border-radius:6px; color:var(--muted); font-size:13px; }
+  #diagBox { position:absolute; top:52px; left:14px; margin:0; padding:8px 10px; background:rgba(28,27,25,.85); border-radius:6px; color:#7fe3ff; font:12px/1.5 ui-monospace, Menlo, monospace; white-space:pre; }
+  #panel { position:absolute; left:0; right:0; bottom:0; padding:12px 14px; background:linear-gradient(transparent, rgba(28,27,25,.92) 30%); display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; }
+  .fabrics { display:flex; gap:8px; }
+  .swatch { width:46px; height:46px; border-radius:6px; border:2px solid transparent; cursor:pointer; background-size:cover; }
+  .swatch.on { border-color:var(--ink); }
+  label { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; }
+  input[type=range] { width:110px; }
+  button { background:var(--ink); color:var(--bg); border:0; padding:8px 14px; border-radius:6px; font-weight:600; cursor:pointer; }
+  button.quiet { background:var(--panel); color:var(--ink); border:1px solid var(--line); }
+  input[type=file] { display:none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="out"></canvas>
+  <div id="status">Starting camera…</div>
+  <pre id="diagBox"></pre>
+  <div id="panel">
+    <div class="fabrics" id="fabrics"></div>
+    <label><button class="quiet" id="pickFabric">Add fabric image</button><input type="file" id="fabricFile" accept="image/*"></label>
+    <label>Pattern size <input type="range" id="tile" min="1" max="12" step="0.5" value="4"></label>
+    <label>Fit <input type="range" id="fit" min="0.4" max="1.6" step="0.02" value="1.0"></label>
+    <label>Height <input type="range" id="lift" min="-0.2" max="0.3" step="0.01" value="0.08"></label>
+    <label><input type="checkbox" id="occl" checked> Hair and face in front</label>
+    <label><input type="checkbox" id="showTrack"> Show tracking</label>
+    <button id="capture">Capture photo</button>
+  </div>
+</div>
+<video id="video" playsinline muted style="display:none"></video>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { FilesetResolver, PoseLandmarker, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), out = $("out"), status = $("status");
+window.__diag = $("diagBox");
+const octx = out.getContext("2d");
+
+// ---------- camera ----------
+const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+video.srcObject = stream; await video.play();
+const W = video.videoWidth, H = video.videoHeight;
+out.width = W; out.height = H;
+
+// ---------- three.js ----------
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+renderer.setSize(W, H, false); renderer.setClearColor(0, 0);
+const scene = new THREE.Scene();
+const FOV = 50; // typical laptop webcam vertical field of view
+const cam = new THREE.PerspectiveCamera(FOV, W / H, 10, 20000);
+cam.position.z = (H / 2) / Math.tan(THREE.MathUtils.degToRad(FOV / 2)); scene.add(cam); // z = 0 plane maps 1:1 to pixels
+scene.add(new THREE.HemisphereLight(0xffffff, 0x777777, 1.1)); scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(-300, 400, 800); scene.add(sun);
+
+const rig = new THREE.Group(); scene.add(rig);
+let bones = {}, mat, rigShoulderW = 0.316, shoulderMidRest = new THREE.Vector3();
+status.textContent = "Loading jacket…";
+const gltf = await new GLTFLoader().loadAsync("jacket_rigged.glb");
+gltf.scene.traverse(o => { if (o.isBone) bones[o.name] = o; if (o.isSkinnedMesh) { o.frustumCulled = false; mat = o.material; } });
+rig.add(gltf.scene);
+mat.side = THREE.DoubleSide; mat.roughness = 0.85; mat.metalness = 0;
+gltf.scene.updateMatrixWorld(true);
+{ const l = new THREE.Vector3(), r = new THREE.Vector3();
+  bones.upperarm_l.getWorldPosition(l); bones.upperarm_r.getWorldPosition(r);
+  rigShoulderW = l.distanceTo(r); shoulderMidRest.copy(l).add(r).multiplyScalar(0.5); }
+// rest direction of each arm bone (child offset in the bone's frame at bind)
+const restDir = {}; for (const n of ["upperarm_l","lowerarm_l","upperarm_r","lowerarm_r"]) restDir[n] = bones[n].children[0].position.clone().normalize();
+
+// jacket width across the chest (rig units), used for auto fit
+let jacketChestW = 0.42;
+{ const pos = gltf.scene.getObjectByProperty("isSkinnedMesh", true).geometry.attributes.position; let lo = 1e9, hi = -1e9;
+  for (let i = 0; i < pos.count; i++) { const y = pos.getY(i); if (y > 0.58 && y < 0.63) { const x = pos.getX(i); lo = Math.min(lo, x); hi = Math.max(hi, x); } }
+  jacketChestW = hi - lo; }
+
+// invisible body: writes depth only, so the back of the jacket is hidden and your video shows through
+const hide = new THREE.MeshBasicMaterial({ colorWrite: false });
+function occluder(parent, r, len, along) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 16), hide); m.renderOrder = -1;
+  if (along) { m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), along.clone().normalize()); m.position.copy(along).multiplyScalar(0.5); }
+  parent.add(m); return m;
+}
+{ const torso = occluder(bones.hips, 1, 0.60, null); torso.scale.set(0.15, 1, 0.055); torso.position.set(0, 0.31, 0.0);
+  const neck = occluder(bones.neck, 0.042, 0.45, null); neck.position.set(0, 0.20, -0.01);
+  for (const n of ["upperarm_l","lowerarm_l","upperarm_r","lowerarm_r"]) occluder(bones[n], 0.038, bones[n].children[0].position.length(), bones[n].children[0].position); }
+
+// ---------- fabrics ----------
+function proceduralFabric(kind) {
+  const c = document.createElement("canvas"); c.width = c.height = 256; const g = c.getContext("2d");
+  if (kind === "navy") { g.fillStyle = "#26324a"; g.fillRect(0,0,256,256); for (let i=0;i<4000;i++){ g.fillStyle = `rgba(255,255,255,${Math.random()*0.08})`; g.fillRect(Math.random()*256, Math.random()*256, 2, 2);} }
+  if (kind === "check") { g.fillStyle = "#d9cdb8"; g.fillRect(0,0,256,256); g.fillStyle = "rgba(120,60,40,.55)"; for (let i=0;i<256;i+=64){ g.fillRect(i,0,32,256); g.fillRect(0,i,256,32);} }
+  if (kind === "stripe") { g.fillStyle = "#6b1f2a"; g.fillRect(0,0,256,256); g.fillStyle = "#e8dcc8"; for (let i=0;i<256;i+=32) g.fillRect(i,0,8,256); }
+  return c;
+}
+const swatches = $("fabrics");
+function setFabric(src) {
+  const tex = new THREE.Texture(src); tex.needsUpdate = true; tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; const t = +$("tile").value; tex.repeat.set(t, t);
+  mat.map = tex; mat.color.set(0xffffff); mat.needsUpdate = true;
+}
+function addSwatch(src, on = false) {
+  const b = document.createElement("div"); b.className = "swatch" + (on ? " on" : "");
+  b.style.backgroundImage = `url(${src.toDataURL ? src.toDataURL() : src.src})`;
+  b.onclick = () => { [...swatches.children].forEach(x => x.classList.remove("on")); b.classList.add("on"); setFabric(src); };
+  swatches.appendChild(b); if (on) setFabric(src);
+}
+addSwatch(proceduralFabric("navy"), true); addSwatch(proceduralFabric("check")); addSwatch(proceduralFabric("stripe"));
+$("pickFabric").onclick = () => $("fabricFile").click();
+$("fabricFile").onchange = e => { const f = e.target.files[0]; if (!f) return; const img = new Image(); img.onload = () => { addSwatch(img); swatches.lastChild.click(); }; img.src = URL.createObjectURL(f); };
+$("tile").oninput = () => { if (mat.map) { const t = +$("tile").value; mat.map.repeat.set(t, t); } };
+
+// ---------- MediaPipe ----------
+status.textContent = "Loading tracking models…";
+const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+const pose = await PoseLandmarker.createFromOptions(vision, {
+  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate: "GPU" },
+  runningMode: "VIDEO", numPoses: 1 });
+const seg = await ImageSegmenter.createFromOptions(vision, {
+  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite", delegate: "GPU" },
+  runningMode: "VIDEO", outputCategoryMask: true, outputConfidenceMasks: false });
+status.textContent = "";
+
+// ---------- pose → rig ----------
+// MediaPipe indices: 11 L shoulder, 12 R shoulder, 13 L elbow, 14 R elbow, 15 L wrist, 16 R wrist, 23 L hip, 24 R hip.
+// The person's RIGHT side is on the viewer's left, which is the jacket's "_l" side.
+const MAP = { upperarm_l: [12, 14], lowerarm_l: [14, 16], upperarm_r: [11, 13], lowerarm_r: [13, 15] };
+const toPx = lm => new THREE.Vector3((lm.x - 0.5) * W, (0.5 - lm.y) * H, 0);
+const toWorld = lm => new THREE.Vector3(lm.x, -lm.y, -lm.z);
+const sm = { pos: new THREE.Vector3(), scale: 0, yaw: 0, roll: 0, q: {} }; const calib = { k: 1, n: 0 };
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), pq = new THREE.Quaternion();
+
+function drive(lm2, lm3) {
+  const fit = +$("fit").value;
+  // scale: pixels per metre from the shoulder line, times true shoulder width
+  const s2 = toPx(lm2[11]).sub(toPx(lm2[12])); const s3 = toWorld(lm3[11]).sub(toWorld(lm3[12]));
+  const proj = Math.max(Math.hypot(s3.x, s3.y), 0.08);
+  const pxPerM = s2.length() / proj;
+  // stable size signal: torso length in pixels vs metres gives px per metre, times true shoulder width
+  const shMid3 = toWorld(lm3[11]).add(toWorld(lm3[12])).multiplyScalar(0.5), hipMid3 = toWorld(lm3[23]).add(toWorld(lm3[24])).multiplyScalar(0.5);
+  const torsoPx = toPx(lm2[11]).add(toPx(lm2[12])).multiplyScalar(0.5).distanceTo(toPx(lm2[23]).add(toPx(lm2[24])).multiplyScalar(0.5));
+  const torsoM = shMid3.distanceTo(hipMid3);
+  // Hips out of frame — sitting at a desk, or standing close — are extrapolated
+  // by MediaPipe, and a short guessed torso divides the size signal up until the
+  // jacket swamps the wearer. Fall back to the shoulder line, which needs only
+  // the upper body and does not change when seated.
+  const hipsOk = (lm2[23].visibility ?? 0) > 0.6 && (lm2[24].visibility ?? 0) > 0.6 && torsoM > 0.28;
+  const torsoScale = hipsOk
+    ? torsoPx / torsoM * s3.length() / rigShoulderW
+    : s2.length() / proj * s3.length() / rigShoulderW;
+  const yawRaw = Math.atan2(-s3.z, s3.x);
+  // calibrate that signal against the silhouette, only while facing the camera with arms down
+  const chestY = (lm2[11].y + lm2[12].y) / 2 + 0.06 * s2.length() / H, chestX = (lm2[11].x + lm2[12].x) / 2;
+  const silW = silhouetteWidth(chestX, chestY);
+  // Wrists below the shoulders is enough; requiring them below the hips fails
+  // for anyone sitting at a desk, and calibration then never completes.
+  const armsDown = lm2[15].y > lm2[11].y + 0.05 && lm2[16].y > lm2[12].y + 0.05;
+  if (silW > 40 && Math.abs(yawRaw) < 0.35 && armsDown) { const k = (silW / jacketChestW) / torsoScale; calib.k = calib.n ? calib.k + (k - calib.k) * 0.1 : k; calib.n++; }
+  let scale = (calib.n >= 15 ? torsoScale * calib.k : (silW > 40 ? silW / jacketChestW : torsoScale)) * fit;
+  const yaw = THREE.MathUtils.clamp(yawRaw * 0.8, -0.9, 0.9);
+  // What the size signal is actually seeing, so a bad fit can be read off the
+  // screen instead of guessed at.
+  if (window.__diag) {
+    const shPx = s2.length(), want = shPx / rigShoulderW;
+    window.__diag.textContent =
+      `shoulders ${shPx.toFixed(0)}px | silhouette ${silW.toFixed(0)}px | hips ${hipsOk ? "ok" : "GUESSED"}\n` +
+      `torsoScale ${torsoScale.toFixed(0)} | calib.k ${calib.k.toFixed(3)} (n=${calib.n}) | scale ${sm.scale.toFixed(0)}\n` +
+      `scale that would match shoulders ≈ ${want.toFixed(0)}  → off by ${(sm.scale / want).toFixed(2)}x`;
+  }
+  // Say which condition is actually unmet, so it is clear what to change.
+  if (calib.n >= 15) status.textContent = "";
+  else if (!armsDown) status.textContent = "Let your arms hang down for a second";
+  else if (Math.abs(yawRaw) >= 0.35) status.textContent = "Face the camera for a second";
+  else status.textContent = `Hold still… ${Math.round(calib.n / 15 * 100)}%`;
+  const roll = THREE.MathUtils.clamp(Math.atan2(s2.y, s2.x) * 0.7, -0.5, 0.5);
+  const mid = toPx(lm2[11]).add(toPx(lm2[12])).multiplyScalar(0.5);
+  // smooth
+  const a = sm.scale ? 0.35 : 1;
+  // Size is smoothed harder than pose: a jacket that breathes in and out reads
+  // as broken, while a little lag in rotation does not.
+  sm.scale += (scale - sm.scale) * (sm.scale ? 0.12 : 1);
+  sm.yaw += (yaw - sm.yaw) * a; sm.roll += (roll - sm.roll) * a; sm.pos.lerp(mid, a);
+  rig.scale.setScalar(sm.scale);
+  rig.rotation.set(0, sm.yaw, sm.roll, "ZYX");
+  // place so the rig's shoulder midpoint lands on the tracked shoulder midpoint
+  const off = shoulderMidRest.clone().addScaledVector(new THREE.Vector3(0, -1, 0), +$("lift").value).multiplyScalar(sm.scale).applyEuler(rig.rotation);
+  rig.position.copy(sm.pos).sub(off); rig.position.z = 0;
+  rig.updateMatrixWorld(true);
+  // arm bones
+  for (const [name, [i, j]] of Object.entries(MAP)) {
+    const b = bones[name];
+    // A joint MediaPipe is unsure about (out of frame, occluded) jumps around;
+    // hold the last good rotation rather than following it.
+    if ((lm2[j].visibility ?? 1) < 0.5 && sm.q[name]) { b.quaternion.copy(sm.q[name]); b.updateMatrixWorld(true); continue; }
+    // aim the bone so its far end lands on the tracked joint in the image; depth comes from foreshortening
+    b.getWorldPosition(tmpV);
+    const L = b.children[0].position.length() * sm.scale;
+    const end = toPx(lm2[j]); const dx = end.x - tmpV.x, dy = end.y - tmpV.y, d = Math.hypot(dx, dy);
+    const target = new THREE.Vector3();
+    if (d >= L) target.set(dx / d, dy / d, 0);
+    else {
+      // Pointing at the lens is ambiguous from one camera: the 2D length says
+      // nothing about direction. Cap how far the bone is allowed to swing
+      // toward the camera so the sleeve foreshortens instead of folding flat.
+      const dzMax = L * 0.82;
+      const dz = Math.min(Math.sqrt(L * L - d * d), dzMax) * (lm2[j].z < lm2[i].z ? 1 : -1);
+      target.set(dx, dy, dz).normalize();
+    }
+    b.parent.getWorldQuaternion(pq); target.applyQuaternion(pq.invert());
+    tmpQ.setFromUnitVectors(restDir[name], target);
+    if (!sm.q[name]) sm.q[name] = tmpQ.clone(); else sm.q[name].slerp(tmpQ, 0.4);
+    b.quaternion.copy(sm.q[name]);
+    b.updateMatrixWorld(true);
+  }
+}
+
+// ---------- occlusion ----------
+const maskC = document.createElement("canvas"), mctx = maskC.getContext("2d");
+let maskData = null, maskW = 0, maskH = 0;
+function silhouetteWidth(xFrac, yFrac) {
+  if (!maskData) return 0;
+  const y = Math.min(maskH - 1, Math.max(0, Math.round(yFrac * maskH))), cx = Math.round(xFrac * maskW), row = y * maskW;
+  const body = c => c === 2 || c === 4; // body skin, clothes
+  let l = cx, r = cx, gap = 0;
+  while (l > 0 && gap < 3) { l--; gap = body(maskData[row + l]) ? 0 : gap + 1; }
+  gap = 0; while (r < maskW - 1 && gap < 3) { r++; gap = body(maskData[row + r]) ? 0 : gap + 1; }
+  return (r - l - 6) / maskW * W;
+}
+const occC = document.createElement("canvas"); occC.width = W; occC.height = H; const octx2 = occC.getContext("2d");
+function drawOcclusion(res, yCut, draw) {
+  const m = res.categoryMask; if (!m) return;
+  const data = m.getAsUint8Array(); const mw = m.width, mh = m.height;
+  maskData = data; maskW = mw; maskH = mh;
+  if (!draw) { m.close(); return; }
+  if (maskC.width !== mw) { maskC.width = mw; maskC.height = mh; }
+  const img = mctx.createImageData(mw, mh); const d = img.data;
+  for (let i = 0; i < data.length; i++) { const c = data[i]; const keep = c === 1 || c === 3; d[i*4+3] = keep ? 255 : 0; } // 1 hair, 3 face skin
+  mctx.putImageData(img, 0, 0);
+  octx2.clearRect(0, 0, W, H);
+  octx2.globalCompositeOperation = "source-over"; octx2.drawImage(video, 0, 0, W, H);
+  octx2.globalCompositeOperation = "destination-in"; octx2.drawImage(maskC, 0, 0, W, H);
+  octx2.globalCompositeOperation = "destination-out"; octx2.fillStyle = "#000"; octx2.fillRect(0, yCut, W, H - yCut); // nothing below the chin line covers the collar
+  octx.drawImage(occC, 0, 0);
+  m.close();
+}
+
+// ---------- loop ----------
+let lastT = -1;
+function frame() {
+  const t = performance.now();
+  octx.drawImage(video, 0, 0, W, H);
+  if (t !== lastT) {
+    lastT = t;
+    const r = pose.detectForVideo(video, t);
+    if (r.landmarks.length) {
+      const segRes = seg.segmentForVideo(video, t);
+      { const m = segRes.categoryMask; if (m) { maskData = m.getAsUint8Array(); maskW = m.width; maskH = m.height; } }
+      drive(r.landmarks[0], r.worldLandmarks[0]);
+      renderer.render(scene, cam);
+      octx.drawImage(renderer.domElement, 0, 0);
+      { const lm = r.landmarks[0]; const mouthY = (lm[9].y + lm[10].y) / 2 * H, shY = (lm[11].y + lm[12].y) / 2 * H;
+        drawOcclusion(segRes, mouthY + 0.45 * (shY - mouthY), $("occl").checked); }
+      if ($("showTrack").checked) {
+        octx.fillStyle = "#00e5ff"; for (const p of r.landmarks[0]) { octx.beginPath(); octx.arc(p.x*W, p.y*H, 4, 0, 7); octx.fill(); }
+        octx.fillStyle = "#ff2fd6"; for (const n of ["upperarm_l","upperarm_r","neck","lowerarm_l","lowerarm_r","hand_l","hand_r"]) { bones[n].getWorldPosition(tmpV); octx.beginPath(); octx.arc(W/2 + tmpV.x, H/2 - tmpV.y, 7, 0, 7); octx.fill(); }
+      }
+    } else status.textContent = "Step back so your shoulders and hips are in view";
+  }
+  requestAnimationFrame(frame);
+}
+frame();
+
+// ---------- capture ----------
+$("capture").onclick = () => {
+  const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
+  g.translate(W, 0); g.scale(-1, 1); g.drawImage(out, 0, 0);
+  const a = document.createElement("a"); a.download = `tryon-${Date.now()}.png`; a.href = c.toDataURL("image/png"); a.click();
+  // Hybrid 1 step 2: POST c.toDataURL() to the CatVTON service and show the returned photo.
+};
+</script>
+</body>
+</html>
