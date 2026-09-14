@@ -32,6 +32,19 @@
               border-radius: 14px; background: rgba(0,0,0,.6);
               color: #fff; font: 13px system-ui; pointer-events: none; }
 #livestatus:empty { display: none; }
+#account { position: absolute; top: 12px; right: 12px; display: flex;
+           gap: 6px; align-items: center; font: 13px system-ui;
+           background: rgba(0,0,0,.6); color: #fff; padding: 6px 10px;
+           border-radius: 14px; }
+#account form { display: flex; gap: 6px; margin: 0; }
+#account input { width: 130px; padding: 4px 7px; border-radius: 8px;
+                 border: 1px solid rgba(255,255,255,.25); background: rgba(0,0,0,.35);
+                 color: #fff; font: inherit; }
+#account button { padding: 4px 9px; border-radius: 8px; border: 0;
+                  background: #fff; color: #000; font: inherit; cursor: pointer; }
+#account button.quiet { background: rgba(255,255,255,.15); color: #fff; }
+#account .credits { font-variant-numeric: tabular-nums; opacity: .85; }
+#golive:disabled { opacity: .45; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -40,6 +53,7 @@
   <video id="live" autoplay playsinline muted></video>
   <div id="status">Starting camera…</div>
   <div id="livestatus"></div>
+  <div id="account"></div>
   <pre id="diagBox"></pre>
   <div id="panel">
     <div class="fabrics" id="fabrics"></div>
@@ -347,11 +361,20 @@ if (HEADLESS) {
 // the switch from guide to rendered is a crossfade rather than a jump.
 if (!HEADLESS) {
   const { wireLiveButton } = await import("./session_ui.js");
+  const { wireAccount } = await import("./auth.js");
+
+  // Signed out, the mirror still works — only the model costs a credit.
+  const account = wireAccount({
+    box: $("account"),
+    onChange: (u) => { $("golive").disabled = !u || u.credits < 1; },
+  });
+
   wireLiveButton({
     button: $("golive"),
     canvas: out,
     output: $("live"),
     statusEl: $("livestatus"),
+    onSpent: () => account.refresh(),
   });
 }
 

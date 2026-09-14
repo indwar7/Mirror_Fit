@@ -6,8 +6,9 @@
  */
 
 import { LiveSession } from "./webrtc.js";
+import { auth } from "./auth.js";
 
-export function wireLiveButton({ button, canvas, output, statusEl }) {
+export function wireLiveButton({ button, canvas, output, statusEl, onSpent = () => {} }) {
   let session = null;
 
   const show = (text) => {
@@ -22,7 +23,10 @@ export function wireLiveButton({ button, canvas, output, statusEl }) {
       return;
     }
 
+    if (!auth.token) { show("Sign in to go live"); return; }
+
     session = new LiveSession(canvas, output, {
+      token: auth.token,
       onState: ({ state, reason }) => {
         if (state === "queued") show("Waiting for a GPU…");
         if (state === "live") {
@@ -34,6 +38,7 @@ export function wireLiveButton({ button, canvas, output, statusEl }) {
           button.textContent = "Go live";
           show(reason ? `Session ended (${reason})` : "Session ended");
           session = null;
+          onSpent();   // the credit is gone; refresh the count
         }
       },
       onStats: renderStatus,

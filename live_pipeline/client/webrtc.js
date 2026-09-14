@@ -15,9 +15,13 @@ const SIGNAL = {
 export class LiveSession {
   /** @param {HTMLCanvasElement} canvas  the 3D composite
    *  @param {HTMLVideoElement} output   where the model's frames play */
-  constructor(canvas, output, { onState = () => {}, onStats = () => {} } = {}) {
+  constructor(canvas, output, { onState = () => {}, onStats = () => {},
+                               token = "", garment = null, fabric = null } = {}) {
     this.canvas = canvas;
     this.output = output;
+    this.token = token;
+    this.garment = garment;
+    this.fabric = fabric;
     this.onState = onState;
     this.onStats = onStats;
     this.pc = null;
@@ -61,12 +65,19 @@ export class LiveSession {
     // This request blocks server-side until a GPU slot frees up.
     const res = await fetch(SIGNAL.offer, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
       body: JSON.stringify({
         sdp: this.pc.localDescription.sdp,
         type: this.pc.localDescription.type,
+        garment: this.garment,
+        fabric: this.fabric,
       }),
     });
+    if (res.status === 401) throw new Error("please sign in");
+    if (res.status === 402) throw new Error("out of credits");
     if (!res.ok) throw new Error(`offer rejected: ${res.status}`);
 
     const answer = await res.json();

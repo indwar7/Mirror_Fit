@@ -1,0 +1,8 @@
+# Runtime state, never committed: it holds real accounts and credits.
+data/
+runs/
+
+# Training artefacts
+*.pth
+*.safetensors
+__pycache__/

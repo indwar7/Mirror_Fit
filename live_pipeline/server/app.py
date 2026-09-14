@@ -17,6 +17,9 @@ from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 import config
+from product import accounts, api, sessions
+from product.accounts import AuthError, InsufficientCredits
+from product.db import init as init_db
 from .queue_manager import SessionQueue
 from .track import TryOnTrack
 
@@ -44,7 +47,26 @@ def backend():
 
 async def offer(request: web.Request) -> web.Response:
     body = await request.json()
-    sid = body.get("sid") or uuid.uuid4().hex[:12]
+
+    # A live session costs a credit, so it needs an account. The credit
+    # itself is taken later, when the GPU is actually granted.
+    try:
+        user = accounts.user_for_token(
+            request.headers.get("Authorization", "")[7:] or request.cookies.get("token", "")
+        )
+    except AuthError as exc:
+        raise web.HTTPUnauthorized(text=str(exc))
+    if accounts.balance(user["id"]) < sessions.SESSION_COST:
+        raise web.HTTPPaymentRequired(text="out of credits")
+
+    # aiortc accepts a malformed offer without complaint and produces an
+    # answer with no media at all. That connects, charges a credit, and
+    # then streams nothing — so reject it here instead.
+    sdp = body.get("sdp", "")
+    if "m=video" not in sdp:
+        raise web.HTTPBadRequest(text="offer carries no video track")
+
+    sid = sessions.open_session(user["id"], body.get("garment"), body.get("fabric"))
 
     pc = RTCPeerConnection()
     _peers[sid] = pc
@@ -53,7 +75,7 @@ async def offer(request: web.Request) -> web.Response:
     async def on_state() -> None:
         log.info("session %s connection %s", sid, pc.connectionState)
         if pc.connectionState in ("failed", "closed", "disconnected"):
-            await close_session(sid)
+            await close_session(sid, reason=pc.connectionState)
 
     @pc.on("track")
     def on_track(incoming) -> None:
@@ -70,11 +92,28 @@ async def offer(request: web.Request) -> web.Response:
     session = await _queue.acquire(sid)
     _sessions[sid] = session
 
-    await pc.setRemoteDescription(
-        RTCSessionDescription(sdp=body["sdp"], type=body["type"])
-    )
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+    # Charge only now. Someone who queued and left is not billed for a
+    # stream they never saw. If the charge fails, hand the slot straight
+    # back rather than holding a GPU for a session that cannot run.
+    try:
+        sessions.start_session(sid)
+    except InsufficientCredits as exc:
+        await close_session(sid)
+        raise web.HTTPPaymentRequired(text=str(exc))
+
+    # From here the credit is already spent, so any failure must give it
+    # back rather than leave the user paying for a session that never ran.
+    try:
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=body["sdp"], type=body["type"])
+        )
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+    except Exception as exc:
+        log.warning("session %s failed to negotiate: %s", sid, exc)
+        sessions.refund(sid, reason="negotiation failed")
+        await close_session(sid, reason="negotiation failed")
+        raise web.HTTPBadRequest(text="could not negotiate a connection")
 
     # Hand the slot back when the session runs out, even if the browser
     # never closes the connection.
@@ -99,15 +138,24 @@ async def _expire(sid: str) -> None:
         return
     await asyncio.sleep(session.seconds_left)
     log.info("session %s reached its time limit", sid)
-    await close_session(sid)
+    await close_session(sid, reason="time limit")
 
 
-async def close_session(sid: str) -> None:
+async def close_session(sid: str, reason: str = "completed") -> None:
     pc = _peers.pop(sid, None)
-    _tracks.pop(sid, None)
-    _sessions.pop(sid, None)
+    track = _tracks.pop(sid, None)
+    started = _sessions.pop(sid, None)
     if pc is not None:
         await pc.close()
+    if started is not None:
+        st = track.stats() if track is not None else {}
+        sessions.end_session(
+            sid, frames=st.get("frames_out", 0), fps=st.get("fps"),
+            backend=st.get("backend"), reason=reason,
+        )
+        # A session that produced nothing is our failure, not the user's.
+        if st.get("frames_out", 0) == 0:
+            sessions.refund(sid, reason="no frames delivered")
     await _queue.release(sid)
 
 
@@ -136,8 +184,10 @@ async def on_shutdown(app: web.Application) -> None:
 
 
 def build_app() -> web.Application:
+    init_db()
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
+    api.add_routes(app)
     app.router.add_post("/offer", offer)
     app.router.add_post("/hangup", hangup)
     app.router.add_get("/status", status)

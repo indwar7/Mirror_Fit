@@ -24,6 +24,14 @@ StreamDiffusionV2 on Wan 2.1 1.3B, the result streams back.
 | `training/dataset.py` | 4 | Paired loader |
 | `training/train.py` | 4 | LoRA fine-tune |
 | `training/eval.py` | 4 | PSNR / SSIM / LPIPS on held-out people, plus previews |
+| `product/db.py` | 5 | SQLite schema; the credit ledger is append-only |
+| `product/accounts.py` | 5 | Signup, tokens, credits |
+| `product/sessions.py` | 5 | Session records, captures, usage rollups |
+| `product/api.py` | 5 | HTTP routes for accounts, history and admin |
+| `product/admin_cli.py` | 5 | First admin, manual grants, usage report |
+| `client/auth.js` | 5 | Sign-in strip and credit count |
+| `client/admin.html` | 6 | Usage dashboard and the add-a-card verdict |
+| `product/monitor.py` | 6 | Queue and GPU report, peak wait vs budget |
 | `rig_jacket.py` | — | Produces `jacket_rigged.glb` from the FBX-derived GLB |
 
 ## Run the live pipeline
@@ -72,14 +80,37 @@ LIVE_LORA_PATH=runs/jacket-v1/final python -m server.app
 - Hold-out is by person. Frames from one person are near-copies, so a
   frame-level split scores memorisation.
 
+## Accounts and credits
+
+A live session costs one credit, charged when the GPU is actually
+granted — not when the user joins the queue, and refunded if the session
+delivers no frames. Everything else on the page works signed out.
+
+```bash
+python -m product.admin_cli make-admin --email you@example.com
+python -m product.admin_cli grant --email a@b.com --amount 20
+python -m product.admin_cli usage --hours 24
+```
+
+The admin dashboard is at `/admin.html`. It shows sessions, GPU
+utilisation, mean and peak wait, and says plainly whether the box needs
+a second card — the plan's threshold is a few seconds of peak wait.
+
+**No payment provider is wired in.** The ledger and its idempotency are
+built for one (`grant(..., ref=...)` is safe to replay, which is what a
+payment webhook needs), but credits are added by an admin for now.
+
 ## Status
 
-Phases 0-4 are written. Phase 5 (accounts, credits, Razorpay) and Phase
-6 (monitoring, scale) are not started; the 30-second session and queue
-they build on are in `server/`.
+Phases 0-6 are written, minus payments.
 
-Verified on this machine: queue behaviour including early leave, chroma
-keying and garment erasure, torso crop, evaluation metrics, dataset
-pairing. **Not yet run against a GPU or a real camera** — the model call
-in `worker/backend.py`, the training step, and the headless renderer
-need a box with CUDA and a first real footage clip.
+Verified on this machine: queue behaviour including early leave; credit
+ledger under 6 concurrent spends; refund idempotency; billing charged at
+GPU grant and not at queue join; API auth, validation and admin gating;
+rejection of offers carrying no video track; chroma keying and garment
+erasure; torso crop; evaluation metrics; dataset pairing.
+
+**Not yet run against a GPU or a real camera.** The model call in
+`worker/backend.py`, the training step, and the headless renderer need a
+box with CUDA and a first real footage clip. WebRTC has not been carried
+end to end through a browser.

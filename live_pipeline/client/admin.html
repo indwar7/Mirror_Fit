@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Live try-on — admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#111; --mut:#666; --line:#e4e4e7; --card:#fafafa; --warn:#b45309; --bad:#b91c1c; --ok:#15803d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0c0c0e; --fg:#f4f4f5; --mut:#a1a1aa; --line:#27272a; --card:#161618; } }
+  * { box-sizing: border-box }
+  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--fg);
+         font:14px/1.5 system-ui,-apple-system,sans-serif; }
+  main { max-width:840px; margin:0 auto }
+  h1 { font-size:19px; margin:0 0 2px }
+  .sub { color:var(--mut); margin-bottom:22px }
+  .grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); margin-bottom:18px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:9px; padding:12px 14px }
+  .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.4px }
+  .v { font-size:22px; font-variant-numeric:tabular-nums; margin-top:3px }
+  .verdict { padding:11px 14px; border-radius:9px; border:1px solid var(--line); margin-bottom:20px }
+  .verdict.ok { border-color:var(--ok); color:var(--ok) }
+  .verdict.warn { border-color:var(--warn); color:var(--warn) }
+  .verdict.bad { border-color:var(--bad); color:var(--bad) }
+  form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:10px 0 18px }
+  input,button,select { font:inherit; padding:7px 10px; border-radius:7px;
+          border:1px solid var(--line); background:var(--bg); color:var(--fg) }
+  button { cursor:pointer; background:var(--fg); color:var(--bg); border-color:var(--fg) }
+  #msg { color:var(--mut) }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line) }
+  th { color:var(--mut); font-weight:500; font-size:12px }
+  #login { max-width:300px }
+</style>
+<main>
+  <h1>Live try-on</h1>
+  <div class="sub" id="sub">admin</div>
+
+  <div id="login">
+    <form id="loginForm">
+      <input id="email" type="email" placeholder="email" required>
+      <input id="pw" type="password" placeholder="password" required>
+      <button>Sign in</button>
+    </form>
+    <div id="loginMsg"></div>
+  </div>
+
+  <div id="panel" hidden>
+    <div id="verdict" class="verdict"></div>
+    <div class="grid" id="stats"></div>
+
+    <h1 style="font-size:15px">Add credits</h1>
+    <form id="grantForm">
+      <input id="gEmail" type="email" placeholder="user email" required>
+      <input id="gAmount" type="number" value="10" min="1" style="width:90px">
+      <button>Grant</button>
+      <span id="msg"></span>
+    </form>
+
+    <h1 style="font-size:15px">GPU</h1>
+    <table id="gpu"><tbody></tbody></table>
+  </div>
+</main>
+<script type="module">
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem("admin_token") || "";
+
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json",
+               ...(token ? { Authorization: `Bearer ${token}` } : {}),
+               ...(opts.headers || {}) },
+  });
+  if (!r.ok) throw new Error(await r.text() || r.status);
+  return r.json();
+};
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const d = await api("/api/signin", { method: "POST",
+      body: JSON.stringify({ email: $("email").value, password: $("pw").value }) });
+    if (!d.is_admin) { $("loginMsg").textContent = "That account is not an admin."; return; }
+    token = d.token; localStorage.setItem("admin_token", token);
+    show();
+  } catch (err) { $("loginMsg").textContent = err.message; }
+};
+
+$("grantForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("msg").textContent = "…";
+  try {
+    const d = await api("/api/admin/grant", { method: "POST",
+      body: JSON.stringify({ email: $("gEmail").value, amount: +$("gAmount").value,
+                             reason: "admin grant" }) });
+    $("msg").textContent = `now ${d.balance} credits`;
+  } catch (err) { $("msg").textContent = err.message; }
+};
+
+const fmt = (v, unit = "") =>
+  v === null || v === undefined ? "—" : `${typeof v === "number" ? Math.round(v * 100) / 100 : v}${unit}`;
+
+async function refresh() {
+  let d;
+  try { d = await api("/api/admin/usage?hours=24"); }
+  catch { token = ""; localStorage.removeItem("admin_token"); location.reload(); return; }
+
+  const u = d.usage, p = d.peak;
+  $("stats").innerHTML = [
+    ["Sessions", u.sessions], ["Users", u.users],
+    ["GPU busy", `${(u.gpu_utilisation * 100).toFixed(1)}%`],
+    ["Mean fps", fmt(u.mean_fps)],
+    ["Mean wait", fmt(u.mean_wait, "s")],
+    ["Peak wait", fmt(p.worst_wait_s ?? null, "s")],
+    ["Abandoned", u.abandoned],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const v = $("verdict");
+  v.textContent = d.verdict;
+  v.className = "verdict " + (d.verdict.startsWith("add a card") ? "bad"
+                  : d.verdict.startsWith("watch") ? "warn"
+                  : d.verdict.startsWith("one card") ? "ok" : "");
+
+  const tb = $("gpu").querySelector("tbody");
+  tb.innerHTML = d.gpu
+    ? d.gpu.gpus.map(g => `<tr><td>${g.name}</td><td>${g.util_pct}% util</td>
+        <td>${g.vram_used_mb}/${g.vram_total_mb} MB</td><td>${g.temp_c}°C</td></tr>`).join("")
+    : `<tr><td colspan="4" style="color:var(--mut)">nvidia-smi not available on this host</td></tr>`;
+}
+
+function show() {
+  $("login").hidden = true;
+  $("panel").hidden = false;
+  $("sub").textContent = "admin · last 24 hours · refreshing every 10s";
+  refresh();
+  setInterval(refresh, 10000);
+}
+
+if (token) {
+  // A stored token may have expired; let refresh() find out rather than
+  // trusting it and rendering an empty page.
+  api("/api/me").then(d => d.is_admin ? show() : localStorage.removeItem("admin_token"))
+                .catch(() => localStorage.removeItem("admin_token"));
+}
+</script>
