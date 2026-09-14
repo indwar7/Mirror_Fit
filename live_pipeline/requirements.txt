@@ -1,6 +1,20 @@
-# Live try-on pipeline — Phase 1 (baseline, stock model)
+# Live try-on pipeline
+
+# --- serving (Phase 1) ---
 aiortc==1.9.0
 aiohttp==3.10.5
 av==12.3.0
 numpy>=1.24
 pillow>=10.0
+
+# --- training (Phases 3-4) ---
+# Install on the GPU box only; setup_gpu_box.sh adds torch with the
+# right CUDA build, which must not come from this file.
+opencv-python>=4.9
+playwright>=1.44        # drives mirror.html headless; run `playwright install chromium`
+diffusers>=0.30
+transformers>=4.44
+accelerate>=0.34
+peft>=0.12
+safetensors>=0.4
+lpips>=0.1.4            # optional: eval falls back to PSNR/SSIM without it

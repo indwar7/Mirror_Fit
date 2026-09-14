@@ -21,12 +21,25 @@
   button { background:var(--ink); color:var(--bg); border:0; padding:8px 14px; border-radius:6px; font-weight:600; cursor:pointer; }
   button.quiet { background:var(--panel); color:var(--ink); border:1px solid var(--line); }
   input[type=file] { display:none; }
+/* The model's output covers the guide canvas exactly. Hidden until a
+   stream arrives, so the user never sees a black rectangle. */
+#live { position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: cover; opacity: 0; transition: opacity .6s ease;
+        pointer-events: none; }
+#live.visible { opacity: 1; }
+#livestatus { position: absolute; left: 50%; bottom: 18px;
+              transform: translateX(-50%); padding: 6px 14px;
+              border-radius: 14px; background: rgba(0,0,0,.6);
+              color: #fff; font: 13px system-ui; pointer-events: none; }
+#livestatus:empty { display: none; }
 </style>
 </head>
 <body>
 <div id="stage">
   <canvas id="out"></canvas>
+  <video id="live" autoplay playsinline muted></video>
   <div id="status">Starting camera…</div>
+  <div id="livestatus"></div>
   <pre id="diagBox"></pre>
   <div id="panel">
     <div class="fabrics" id="fabrics"></div>
@@ -37,6 +50,7 @@
     <label><input type="checkbox" id="occl" checked> Hair and face in front</label>
     <label><input type="checkbox" id="showTrack"> Show tracking</label>
     <button id="capture">Capture photo</button>
+    <button id="golive">Go live</button>
   </div>
 </div>
 <video id="video" playsinline muted style="display:none"></video>
@@ -58,9 +72,18 @@ window.__diag = $("diagBox");
 const octx = out.getContext("2d");
 
 // ---------- camera ----------
-const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
-video.srcObject = stream; await video.play();
-const W = video.videoWidth, H = video.videoHeight;
+// Headless (?headless=1) drives this page from prep.py with still frames
+// instead of a webcam, so training renders come from the same rig and
+// maths as production rather than a second implementation that drifts.
+const HEADLESS = new URLSearchParams(location.search).has("headless");
+let W, H;
+if (HEADLESS) {
+  W = window.innerWidth; H = window.innerHeight;
+} else {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+  video.srcObject = stream; await video.play();
+  W = video.videoWidth; H = video.videoHeight;
+}
 out.width = W; out.height = H;
 
 // ---------- three.js ----------
@@ -132,12 +155,17 @@ $("tile").oninput = () => { if (mat.map) { const t = +$("tile").value; mat.map.r
 // ---------- MediaPipe ----------
 status.textContent = "Loading tracking models…";
 const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+// Headless feeds stills, which need IMAGE mode; VIDEO mode rejects
+// detectForImage outright. It also runs on software GL, where the GPU
+// delegate is slower than CPU and occasionally will not initialise.
+const MODE = HEADLESS ? "IMAGE" : "VIDEO";
+const DELEGATE = HEADLESS ? "CPU" : "GPU";
 const pose = await PoseLandmarker.createFromOptions(vision, {
-  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate: "GPU" },
-  runningMode: "VIDEO", numPoses: 1 });
+  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate: DELEGATE },
+  runningMode: MODE, numPoses: 1 });
 const seg = await ImageSegmenter.createFromOptions(vision, {
-  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite", delegate: "GPU" },
-  runningMode: "VIDEO", outputCategoryMask: true, outputConfidenceMasks: false });
+  baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite", delegate: DELEGATE },
+  runningMode: MODE, outputCategoryMask: true, outputConfidenceMasks: false });
 status.textContent = "";
 
 // ---------- pose → rig ----------
@@ -287,7 +315,45 @@ function frame() {
   }
   requestAnimationFrame(frame);
 }
-frame();
+if (!HEADLESS) frame();
+
+// ---------- headless hooks (used by training/render_guide.py) ----------
+if (HEADLESS) {
+  // One still frame through the same drive() the live loop uses. The
+  // calibration in drive() needs a few frames to settle, so each frame
+  // is run repeatedly until calib stops moving — the live path gets
+  // this for free from the camera.
+  window.__feedFrame = async (img) => {
+    const t = performance.now();
+    octx.drawImage(img, 0, 0, W, H);
+    const r = pose.detectForImage(img);
+    if (!r.landmarks.length) return false;
+    const segRes = seg.segmentForImage(img);
+    { const m = segRes.categoryMask; if (m) { maskData = m.getAsUint8Array(); maskW = m.width; maskH = m.height; } }
+    for (let i = 0; i < 20; i++) drive(r.landmarks[0], r.worldLandmarks[0]);
+    renderer.render(scene, cam);
+    octx.drawImage(renderer.domElement, 0, 0);
+    { const lm = r.landmarks[0]; const mouthY = (lm[9].y + lm[10].y) / 2 * H, shY = (lm[11].y + lm[12].y) / 2 * H;
+      drawOcclusion(segRes, mouthY + 0.45 * (shY - mouthY), true); }
+    return true;
+  };
+  window.__composite = () => out.toDataURL("image/png");
+  window.__setFit = (f) => { $("fit").value = f; };
+  window.__ready = true;
+}
+
+// ---------- live session (Phase 1) ----------
+// The model's output plays over the 3D canvas: same size, same place, so
+// the switch from guide to rendered is a crossfade rather than a jump.
+if (!HEADLESS) {
+  const { wireLiveButton } = await import("./session_ui.js");
+  wireLiveButton({
+    button: $("golive"),
+    canvas: out,
+    output: $("live"),
+    statusEl: $("livestatus"),
+  });
+}
 
 // ---------- capture ----------
 $("capture").onclick = () => {
