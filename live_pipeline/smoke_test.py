@@ -279,7 +279,7 @@ def main() -> int:
     args = ap.parse_args()
     print(f"\nLive pipeline smoke test — {args.width}x{args.height}, "
           f"{args.fps} fps, {args.seconds}s session\n")
-    return asyncio.get_event_loop().run_until_complete(run(args))
+    return asyncio.run(run(args))
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ class TryOnTrack(MediaStreamTrack):
         self._busy = False
         self._last: VideoFrame | None = None
         self._latencies: list[float] = []
+        self._started = time.monotonic()
 
     async def recv(self) -> VideoFrame:
         frame = await self.source.recv()
@@ -74,11 +75,16 @@ class TryOnTrack(MediaStreamTrack):
     def stats(self) -> dict:
         lat = self._latencies[-config.TARGET_FPS * 5 :] or [0.0]
         mean = sum(lat) / len(lat)
+        # Delivered frames over elapsed time, not 1/latency. The model is
+        # only one term: when it is faster than the camera or the encoder,
+        # 1/latency reports a rate nobody is actually seeing.
+        elapsed = max(time.monotonic() - self._started, 1e-6)
         return {
             "frames_in": self.frames_in,
             "frames_out": self.frames_out,
             "dropped": self.dropped,
             "mean_latency_ms": round(mean * 1000, 1),
-            "fps": round(1 / mean, 1) if mean else 0.0,
+            "model_fps": round(1 / mean, 1) if mean else 0.0,
+            "fps": round(self.frames_out / elapsed, 1),
             "backend": self.backend.name,
         }
