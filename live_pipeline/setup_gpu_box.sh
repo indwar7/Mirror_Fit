@@ -53,12 +53,16 @@ pip install -q -r "$(dirname "$0")/requirements.txt"
 pip install -q diffusers transformers accelerate peft safetensors lpips
 
 say "StreamDiffusionV2"
-if ! python -c "import streamdiffusionv2" 2>/dev/null; then
-  SD_DIR="$HOME/StreamDiffusionV2"
-  [ -d "$SD_DIR" ] || git clone --depth 1 \
-    https://github.com/chenxwh/StreamDiffusionV2.git "$SD_DIR"
-  pip install -q -e "$SD_DIR"
-fi
+# Published on PyPI (chenfengxu714/StreamDiffusionV2 upstream). It caps
+# Python at <3.13 and expects Linux + NVIDIA, so check before installing
+# rather than letting pip fail three minutes in.
+PYVER=$(python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+case "$PYVER" in
+  3.10|3.11|3.12) ;;
+  *) die "streamdiffusionv2 needs Python 3.10-3.12, this env has $PYVER.
+Create one:  conda create -n live python=3.11 -y && conda activate live" ;;
+esac
+python -c "import streamdiffusionv2" 2>/dev/null || pip install -q streamdiffusionv2
 
 say "Model weights: $MODEL_ID"
 python - <<PY
