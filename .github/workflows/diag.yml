@@ -47,6 +47,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Continue"
           Get-ChildItem C:\logs | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
+          "===== start_all_rdp.log (startup via RDP alternate shell) ====="
+          Get-Content C:\logs\start_all_rdp.log -ErrorAction SilentlyContinue
           foreach ($n in "try-on","face-swap") {
             "===== $n.err.log (tail 25) ====="
             Get-Content "C:\logs\$n.err.log" -Tail 25 -ErrorAction SilentlyContinue
