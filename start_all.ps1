@@ -105,12 +105,27 @@ foreach ($s in $selected) {
   New-NetFirewallRule -DisplayName ("Allow " + $s.port) -Direction Inbound `
       -LocalPort $s.port -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
+  # Start-Process does not surface a redirect target it cannot open for
+  # writing: the child still gets a PID, then dies on its first write, and
+  # the stale log from the previous boot sits there looking like output.
+  # That is exactly what happened when deploy.yml ran this as NETWORK
+  # SERVICE against logs owned by Administrator. Check before spawning.
+  $outLog = Join-Path $logDir ($s.name + ".log")
+  $errLog = Join-Path $logDir ($s.name + ".err.log")
+  try {
+    foreach ($f in $outLog, $errLog) { [IO.File]::Open($f, "OpenOrCreate", "Write", "ReadWrite").Dispose() }
+  } catch {
+    Write-Host ("  FAIL  {0,-14} :{1}  cannot write {2} as {3}\{4}" -f $s.name, $s.port, $logDir, [Environment]::UserDomainName, [Environment]::UserName) -ForegroundColor Red
+    Write-Host  "        run the runner service as the account that owns the box (setup_runner.ps1 -ServiceAccount)," -ForegroundColor DarkGray
+    Write-Host  "        or once, elevated:  icacls C:\logs /grant `"NT AUTHORITY\NETWORK SERVICE`":(OI)(CI)F /T" -ForegroundColor DarkGray
+    continue
+  }
+
   # -PassThru + try/catch: "START" used to print even when nothing had
   # started, which hid a silent spawn failure for three deploys in a row.
   try {
     $proc = Start-Process -FilePath $s.py -ArgumentList $s.entry -WorkingDirectory $dir `
-        -RedirectStandardOutput (Join-Path $logDir ($s.name + ".log")) `
-        -RedirectStandardError  (Join-Path $logDir ($s.name + ".err.log")) `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog `
         -WindowStyle Hidden -PassThru -ErrorAction Stop
   } catch {
     Write-Host ("  FAIL  {0,-14} :{1}  {2}" -f $s.name, $s.port, $_.Exception.Message) -ForegroundColor Red
@@ -124,7 +139,7 @@ foreach ($s in $selected) {
   Start-Sleep -Seconds 3
   if ($proc.HasExited) {
     Write-Host ("  DIED  {0,-14} :{1}  exit code {2} within 3s:" -f $s.name, $s.port, $proc.ExitCode) -ForegroundColor Red
-    Get-Content (Join-Path $logDir ($s.name + ".err.log")) -Tail 8 -ErrorAction SilentlyContinue |
+    Get-Content $errLog -Tail 8 -ErrorAction SilentlyContinue |
       ForEach-Object { Write-Host ("        " + $_) -ForegroundColor DarkGray }
   }
 }
