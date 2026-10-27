@@ -1,0 +1,67 @@
+# Read-only health check of the GPU box, run from a Mac:
+#
+#   gh workflow run diag.yml --ref main && gh run watch
+#
+# No inputs on purpose - it runs a fixed set of read-only commands, so it
+# cannot be used to run arbitrary code on the box. Use it to see what
+# deploy.yml actually left running (ports, processes, log tails), which the
+# deploy log alone cannot tell you because its tails may be stale.
+name: Diag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+      - name: Who and where
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          "user      : " + (whoami)
+          "ps        : " + $PSVersionTable.PSVersion
+          "profile   : " + $env:USERPROFILE
+          "hf cache  : " + (Test-Path "$env:USERPROFILE\.cache\huggingface\hub")
+          "HF_TOKEN  : job=" + [bool]$env:HF_TOKEN + " machine=" + [bool][Environment]::GetEnvironmentVariable("HF_TOKEN","Machine")
+          "tracking  : " + $env:RUNNER_TRACKING_ID
+          Get-CimInstance Win32_Service -Filter "Name like 'actions.runner%'" | Format-List Name,StartName,State,StartMode | Out-String
+
+      - name: Backends
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          "--- python processes ---"
+          Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,StartTime,Path | Format-Table -AutoSize | Out-String -Width 200
+          "--- listening on backend ports ---"
+          Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 7860,7862,8000,7863 } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize | Out-String
+          "--- GPU ---"
+          & nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv 2>&1 | Out-String
+          "--- interpreters ---"
+          "miniconda python : " + (Test-Path C:\miniconda3\python.exe)
+          "repo head        : " + (git -C C:\virtual-try-on log -1 --oneline)
+
+      - name: Logs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          Get-ChildItem C:\logs | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
+          foreach ($n in "try-on","face-swap") {
+            "===== $n.err.log (tail 25) ====="
+            Get-Content "C:\logs\$n.err.log" -Tail 25 -ErrorAction SilentlyContinue
+            "===== $n.log (tail 10) ====="
+            Get-Content "C:\logs\$n.log" -Tail 10 -ErrorAction SilentlyContinue
+          }
+
+      - name: Spawn test
+        shell: powershell
+        run: |
+          # Same Start-Process shape as start_all.ps1, with a harmless command,
+          # to see whether redirected spawning works at all under this account.
+          $ErrorActionPreference = "Continue"
+          Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+          Start-Process -FilePath cmd.exe -ArgumentList "/c echo spawned-ok-$(Get-Date -Format HHmmss)" -WorkingDirectory C:\ `
+            -RedirectStandardOutput C:\logs\diag.log -RedirectStandardError C:\logs\diag.err.log -WindowStyle Hidden -Wait
+          "diag.log: " + (Get-Content C:\logs\diag.log -ErrorAction SilentlyContinue)
+          "diag.err: " + (Get-Content C:\logs\diag.err.log -ErrorAction SilentlyContinue)
