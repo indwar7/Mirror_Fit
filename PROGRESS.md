@@ -6,6 +6,52 @@ credentials (passwords, tokens) are never written here, only where they live.
 
 ---
 
+## 2026-10-27
+
+### GPU box - why deploys never actually restarted anything
+
+- Box came back on a new public IP `52.66.250.134` (still no Elastic IP).
+  Only 3389 answers from outside until the backends are started; 8000/7860
+  closed means nothing is listening, not a firewall problem.
+- The Actions runner service
+  (`actions.runner.indwar7-Mirror_Fit.EC2AMAZ-28LTJ0Q`, startup Auto) runs as
+  **NT AUTHORITY\NETWORK SERVICE**, not Administrator. Three consequences,
+  all confirmed with the new `diag.yml` workflow:
+  1. `C:\logs\*.log` are owned by Administrator with `Users:RX`. Start-Process
+     still hands the child a PID; it dies on its first write; the stale log
+     from the previous boot sits there looking like output. The "4 of 4
+     listening in 27s" deploys on 2026-09-09 were only ever seeing backends
+     started by hand over RDP (NETWORK SERVICE cannot kill Administrator's
+     processes either, so `-Force` was a silent no-op).
+  2. That account has no Hugging Face cache (profile is
+     `C:\Windows\ServiceProfiles\NetworkService`), so even with writable logs
+     try-on would re-download every model on first start.
+  3. The runner kills every process still carrying `RUNNER_TRACKING_ID` when
+     the job ends ("Cleaning up orphan processes").
+- `start_all.ps1` now: clears the tracking id before spawning; test-opens both
+  log files first and prints `FAIL` with the fix; `-PassThru` plus a `DIED`
+  line with exit code and fresh log tail if the process exits within 3s.
+  `deploy.yml` has a verify step that lists real processes, listening ports
+  and `C:\logs` timestamps. `diag.yml` (workflow_dispatch, fixed read-only
+  commands) shows the account, processes, ports, GPU, log tails and a python
+  probe.
+- **Durable fix, needs RDP + elevation:** make the runner service log on as
+  Administrator. `services.msc` -> "GitHub Actions Runner (indwar7-Mirror_Fit.
+  EC2AMAZ-28LTJ0Q)" -> Properties -> Log On -> This account -> Administrator +
+  password -> OK -> restart the service. The dialog grants "Log on as a
+  service" itself; `sc.exe config obj=` does not. After that a push to main
+  really restarts the backends and shares Administrator's HF cache.
+- From the Mac: `gh workflow run deploy.yml --ref main`,
+  `gh workflow run diag.yml --ref main`, then `gh run watch`.
+
+### Open items
+
+- [ ] Switch the runner service to the Administrator account (above).
+- [ ] Rotate the Administrator RDP password (it was pasted into a chat).
+- [ ] Everything still open from 2026-09-03 below.
+
+---
+
 ## 2026-09-03
 
 ### Security
