@@ -102,15 +102,31 @@ foreach ($s in $selected) {
     Start-Sleep -Seconds 2
   }
 
-  $expected += $s
   New-NetFirewallRule -DisplayName ("Allow " + $s.port) -Direction Inbound `
       -LocalPort $s.port -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
-  Start-Process -FilePath $s.py -ArgumentList $s.entry -WorkingDirectory $dir `
-      -RedirectStandardOutput (Join-Path $logDir ($s.name + ".log")) `
-      -RedirectStandardError  (Join-Path $logDir ($s.name + ".err.log")) `
-      -WindowStyle Hidden
-  Write-Host ("  START {0,-14} :{1}  -> {2}\{3}.log" -f $s.name, $s.port, $logDir, $s.name) -ForegroundColor Cyan
+  # -PassThru + try/catch: "START" used to print even when nothing had
+  # started, which hid a silent spawn failure for three deploys in a row.
+  try {
+    $proc = Start-Process -FilePath $s.py -ArgumentList $s.entry -WorkingDirectory $dir `
+        -RedirectStandardOutput (Join-Path $logDir ($s.name + ".log")) `
+        -RedirectStandardError  (Join-Path $logDir ($s.name + ".err.log")) `
+        -WindowStyle Hidden -PassThru -ErrorAction Stop
+  } catch {
+    Write-Host ("  FAIL  {0,-14} :{1}  {2}" -f $s.name, $s.port, $_.Exception.Message) -ForegroundColor Red
+    continue
+  }
+  $expected += $s
+  Write-Host ("  START {0,-14} :{1}  pid {2} -> {3}\{4}.log" -f $s.name, $s.port, $proc.Id, $logDir, $s.name) -ForegroundColor Cyan
+
+  # A backend that dies in its first seconds (bad interpreter, missing
+  # module, port taken) should say so here, not 120s later as a bare DOWN.
+  Start-Sleep -Seconds 3
+  if ($proc.HasExited) {
+    Write-Host ("  DIED  {0,-14} :{1}  exit code {2} within 3s:" -f $s.name, $s.port, $proc.ExitCode) -ForegroundColor Red
+    Get-Content (Join-Path $logDir ($s.name + ".err.log")) -Tail 8 -ErrorAction SilentlyContinue |
+      ForEach-Object { Write-Host ("        " + $_) -ForegroundColor DarkGray }
+  }
 }
 
 # Models load lazily; give the heaviest a fair chance before reporting.

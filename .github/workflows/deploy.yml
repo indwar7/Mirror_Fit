@@ -33,3 +33,17 @@ jobs:
             Write-Host "::warning::HF_TOKEN secret is empty - Try-On will fall back to a tier that masks poorly."
           }
           & powershell -ExecutionPolicy Bypass -File "$env:APP_DIR\start_all.ps1" -Force
+
+      # The restart step's own status block can mislead: its error-log tails
+      # may be stale from a previous boot. This shows what is really there.
+      - name: What is actually running
+        if: always()
+        run: |
+          "--- python processes ---"
+          Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path | Format-Table -AutoSize | Out-String -Width 200
+          "--- listening on backend ports ---"
+          Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 7860,7862,8000,7863 } | Select-Object LocalPort,OwningProcess | Format-Table -AutoSize | Out-String
+          "--- C:\logs ---"
+          Get-ChildItem C:\logs -Filter *.log | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
+          "--- try-on.err.log (tail 15) ---"
+          Get-Content C:\logs\try-on.err.log -Tail 15 -ErrorAction SilentlyContinue
