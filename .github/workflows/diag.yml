@@ -65,3 +65,33 @@ jobs:
             -RedirectStandardOutput C:\logs\diag.log -RedirectStandardError C:\logs\diag.err.log -WindowStyle Hidden -Wait
           "diag.log: " + (Get-Content C:\logs\diag.log -ErrorAction SilentlyContinue)
           "diag.err: " + (Get-Content C:\logs\diag.err.log -ErrorAction SilentlyContinue)
+
+      - name: Python under this account
+        shell: powershell
+        run: |
+          # The backends spawn with a PID and die without writing a byte to
+          # their redirected logs. Find out whether python even runs here.
+          $ErrorActionPreference = "Continue"
+          "PATH: " + $env:PATH
+          "--- direct: python version ---"
+          & C:\miniconda3\python.exe -c "import sys; print(sys.version); print(sys.executable)" 2>&1 | Out-String
+          "exit: $LASTEXITCODE"
+          "--- direct: import torch ---"
+          & C:\miniconda3\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())" 2>&1 | Out-String
+          "exit: $LASTEXITCODE"
+          "--- Start-Process python with redirects, same shape as start_all.ps1 ---"
+          Set-Content -Path C:\logs\diag_probe.py -Value "import sys`nprint('out-ok')`nprint('err-ok', file=sys.stderr)"
+          $p = Start-Process -FilePath C:\miniconda3\python.exe -ArgumentList C:\logs\diag_probe.py `
+                 -WorkingDirectory C:\virtual-try-on\tryon_backend `
+                 -RedirectStandardOutput C:\logs\diag-py.log -RedirectStandardError C:\logs\diag-py.err.log `
+                 -WindowStyle Hidden -PassThru
+          $p.WaitForExit(30000) | Out-Null
+          "pid $($p.Id) exited=$($p.HasExited) code=$($p.ExitCode)"
+          "diag-py.log     : " + (Get-Content C:\logs\diag-py.log -Raw -ErrorAction SilentlyContinue)
+          "diag-py.err.log : " + (Get-Content C:\logs\diag-py.err.log -Raw -ErrorAction SilentlyContinue)
+          Get-Item C:\logs\diag-py*.log -ErrorAction SilentlyContinue | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
+          "--- ACLs ---"
+          & icacls C:\miniconda3\python.exe 2>&1 | Out-String
+          & icacls C:\virtual-try-on\tryon_backend 2>&1 | Select-Object -First 6 | Out-String
+          & icacls C:\logs\try-on.err.log 2>&1 | Out-String
+
