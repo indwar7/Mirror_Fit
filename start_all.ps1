@@ -67,6 +67,15 @@ if ($Only -and $selected.Count -eq 0) {
 # "3 of 4 listening" while nothing was ever going to change.
 $expected = @()
 
+# When this runs inside a GitHub Actions job (deploy.yml), every process the
+# step spawns inherits RUNNER_TRACKING_ID, and the runner kills every process
+# still carrying it the moment the job ends ("Cleaning up orphan processes"
+# in the run log). That is why a deploy from a cold box reported 0 of 4
+# listening and left nothing running. The backends must outlive the job, so
+# drop the marker before any Start-Process. Harmless when run by hand - the
+# variable is simply absent.
+Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+
 foreach ($s in $selected) {
 
   $dir = Join-Path $root $s.dir
