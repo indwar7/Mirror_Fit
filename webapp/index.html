@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mirror Fit — Virtual Try-On</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js" defer></script>
+<script type="module" src="/src/main.ts"></script>
+</head>
+<body class="landing-active">
+
+<!-- ══════════════ LANDING ══════════════ -->
+<div class="landing" id="landing">
+
+  <div class="lp-strip">Live virtual fitting · <b>10 credits</b> per session · Billed through Razorpay</div>
+
+  <!-- ══════════ MASTHEAD ══════════ -->
+  <div class="lp-bar">
+    <div class="lp-brand">
+      <svg class="mf-mark" viewBox="0 0 22 25" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+        <path d="M11 1.4C5.8 1.4 1.6 5.7 1.6 11v11.6c0 .6.4 1 1 1h16.8c.6 0 1-.4 1-1V11c0-5.3-4.2-9.6-9.4-9.6z"/>
+        <path d="M5.8 13.6 10.2 7.2" stroke-linecap="round" opacity=".55"/>
+        <path d="M8.4 17.4l2.8-4" stroke-linecap="round" opacity=".3"/>
+      </svg>
+      Mirror Fit
+    </div>
+    <div class="lp-bar-right">
+      <div class="mf-credits">
+        <span class="mf-coin">₹</span>
+        <span data-credit-balance>200</span>
+        <span class="mf-credits-l">Credits</span>
+      </div>
+      <button class="lp-bar-cta" onclick="enterFeature('tryon')">Enter fitting room</button>
+    </div>
+  </div>
+
+  <!-- ══════════ HERO ══════════ -->
+  <section class="lp-hero">
+    <div class="lp-hero-grid">
+      <div>
+        <span class="lp-tag is-live">Virtual fitting room</span>
+        <h1 class="lp-title">
+          See how it falls,<br>
+          <em>before it ships.</em>
+        </h1>
+        <p class="lp-sub">
+          Mirror Fit renders a garment onto a live camera feed — the drape, the
+          shoulder line, the way a fabric takes light — so a customer decides from
+          their own reflection rather than a size chart.
+        </p>
+        <div class="lp-hero-cta">
+          <button class="lp-btn lp-btn-solid" onclick="enterFeature('tryon')">
+            Enter the fitting room <span class="lp-arrow">→</span>
+          </button>
+          <button class="lp-btn lp-btn-line" onclick="document.getElementById('lp-how').scrollIntoView()">
+            How it works
+          </button>
+        </div>
+        <div class="lp-hero-stats">
+          <div>
+            <div class="lp-stat-n">6</div>
+            <div class="lp-stat-l">Live modes</div>
+          </div>
+          <div>
+            <div class="lp-stat-n">3</div>
+            <div class="lp-stat-l">Garment types</div>
+          </div>
+          <div>
+            <div class="lp-stat-n">12</div>
+            <div class="lp-stat-l">Fabric swatches</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Left: the flat product shot. Right: the same garment, worn. -->
+      <div class="lp-mirror" data-reveal>
+        <div class="lp-mirror-half is-raw">
+          <svg class="lp-garment" viewBox="0 0 200 250" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" aria-hidden="true">
+            <path d="M74 24 40 40 22 86l24 11 8-17v134h92V80l8 17 24-11-18-46-34-16a26 26 0 0 1-52 0z"/>
+          </svg>
+        </div>
+        <div class="lp-mirror-half is-fit">
+          <svg class="lp-garment" viewBox="0 0 200 250" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="100" cy="36" r="23"/>
+            <path d="M78 62 44 78 26 124l24 11 8-17v96h84v-96l8 17 24-11-18-46-34-16"/>
+            <path d="M100 62v26" opacity=".45"/>
+          </svg>
+        </div>
+        <div class="lp-mirror-seam"></div>
+        <span class="lp-mirror-chip tl">Product</span>
+        <span class="lp-mirror-chip tr">On body</span>
+        <span class="lp-mirror-chip bl">Body-tracked</span>
+        <span class="lp-mirror-chip br">10 credits</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ HOW IT WORKS ══════════ -->
+  <section class="lp-sec" id="lp-how" style="padding-top:0">
+    <div class="lp-wrap">
+      <span class="lp-tag" data-reveal>The fitting</span>
+      <h2 class="lp-h2" data-reveal data-d="1">Three steps to a fit.</h2>
+      <p class="lp-lede" data-reveal data-d="2">
+        No rig, no depth camera, no app to install. A webcam and one product
+        image is the whole setup.
+      </p>
+      <div class="lp-steps">
+        <div class="lp-step" data-reveal data-d="1">
+          <span class="lp-step-n">Step one</span>
+          <span class="lp-step-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 8.4h3.3l1.4-2.2h8.6l1.4 2.2H21v10.2H3z"/>
+              <circle cx="12" cy="13.2" r="3.5"/>
+            </svg>
+          </span>
+          <div class="lp-step-h">Step into frame</div>
+          <p class="lp-step-p">
+            Body tracking locks onto the shoulder line, torso and hands each frame,
+            so the garment follows the customer instead of floating over them.
+          </p>
+        </div>
+        <div class="lp-step" data-reveal data-d="2">
+          <span class="lp-step-n">Step two</span>
+          <span class="lp-step-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 7.5a2.1 2.1 0 1 1 2.1-2.1"/>
+              <path d="M12 7.5v2.1L3.6 15.7a1.2 1.2 0 0 0 .7 2.2h15.4a1.2 1.2 0 0 0 .7-2.2L12 9.6"/>
+            </svg>
+          </span>
+          <div class="lp-step-h">Hang the garment</div>
+          <p class="lp-step-p">
+            Upload a t-shirt, shirt or jacket. Layer a fabric over it to preview the
+            same cut in another material without a second sample.
+          </p>
+        </div>
+        <div class="lp-step" data-reveal data-d="3">
+          <span class="lp-step-n">Step three</span>
+          <span class="lp-step-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M11 3.4 12.6 8.8 18 10.4 12.6 12 11 17.4 9.4 12 4 10.4 9.4 8.8z"/>
+              <path d="M17.8 15.2l.7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7z"/>
+            </svg>
+          </span>
+          <div class="lp-step-h">Watch it settle</div>
+          <p class="lp-step-p">
+            The garment is painted onto the torso only. The face, the room and
+            everything beyond the mask stay exactly as the camera saw them.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ MODES ══════════ -->
+  <section class="lp-sec" id="lp-modes" style="padding-top:0">
+    <div class="lp-wrap">
+      <span class="lp-tag" data-reveal>The studio</span>
+      <h2 class="lp-h2" data-reveal data-d="1">Six ways to <em>work the mirror.</em></h2>
+      <p class="lp-lede" data-reveal data-d="2">
+        Four modes stream from the camera and return a rendered frame, at
+        10 credits a session. Fit Analyser and Returns Guard score on device
+        and are free.
+      </p>
+
+      <div class="lp-modes">
+        <button class="lp-mode" data-reveal data-d="1" onclick="enterFeature('tryon')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true">
+                <path d="M8.7 3.3 5 5.1 3.2 9.5l2.8 1.3.9-1.9v11.8h10.2V8.9l.9 1.9 2.8-1.3L19 5.1l-3.7-1.8a3.3 3.3 0 0 1-6.6 0z"/>
+              </svg>
+            </span>
+            <span class="lp-price"><span class="mf-coin">₹</span>10</span>
+          </div>
+          <div class="lp-mode-name">Live Try-On</div>
+          <p class="lp-mode-desc">
+            Upload a shirt, t-shirt or jacket and watch it track the body in real
+            time. Layer a fabric to preview the same cut in another material.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
+            <span class="lp-mode-port">Port 8000</span>
+          </div>
+        </button>
+
+        <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('liveswap')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="8.4" cy="8" r="3.6"/>
+                <circle cx="15.6" cy="16" r="3.6"/>
+                <path d="M13.6 6.4h4.2v4.2"/>
+                <path d="M10.4 17.6H6.2v-4.2"/>
+              </svg>
+            </span>
+            <span class="lp-price"><span class="mf-coin">₹</span>10</span>
+          </div>
+          <div class="lp-mode-name">Live Face Swap</div>
+          <p class="lp-mode-desc">
+            Choose an avatar and wear its face, frame by frame, straight from the
+            camera. Identity holds steady through movement.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
+            <span class="lp-mode-port">Port 7860</span>
+          </div>
+        </button>
+
+        <button class="lp-mode" data-reveal data-d="3" onclick="enterFeature('liveportrait')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="11.4" r="6"/>
+                <path d="M9.8 10h.01M14.2 10h.01"/>
+                <path d="M9.7 13.8a3.2 3.2 0 0 0 4.6 0"/>
+                <path d="M3.6 6.6C2.7 8 2.3 9.6 2.3 11.2M20.4 6.6c.9 1.4 1.3 3 1.3 4.6"/>
+              </svg>
+            </span>
+            <span class="lp-price"><span class="mf-coin">₹</span>10</span>
+          </div>
+          <div class="lp-mode-name">Live Portrait</div>
+          <p class="lp-mode-desc">
+            Blinks, smiles and head turns drive a still portrait in real time.
+            Upload any front-facing photograph and it animates.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
+            <span class="lp-mode-port">Port 7862</span>
+          </div>
+        </button>
+
+        <!-- AR Avatar is hidden. Reverse this commit to bring it back -- nothing was deleted and panel-ar is untouched.
+        <button class="lp-mode" data-reveal data-d="1" onclick="enterFeature('ar')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2.6 20.6 7.3v9.4L12 21.4 3.4 16.7V7.3z"/>
+                <path d="M12 12.1 20.6 7.3M12 12.1 3.4 7.3M12 12.1v9.3"/>
+              </svg>
+            </span>
+            <span class="lp-price"><span class="mf-coin">₹</span>10</span>
+          </div>
+          <div class="lp-mode-name">AR Avatar</div>
+          <p class="lp-mode-desc">
+            Place a rigged 3D avatar over the camera feed. Runs entirely in the
+            browser, so nothing leaves the device.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
+            <span class="lp-mode-port">In browser</span>
+          </div>
+        </button>
+        -->
+
+        <!-- AI Twin is hidden for now. Reverse this commit to bring it back:
+             nothing was deleted and panel-twin / twinWrap are untouched.
+        <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('twin')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2.8" y="5.6" width="13.2" height="12.8" rx="1.4"/>
+                <path d="M16 10.6l5.2-2.8v8.4L16 13.4z"/>
+              </svg>
+            </span>
+            <span class="lp-price"><span class="mf-coin">₹</span>10</span>
+          </div>
+          <div class="lp-mode-name">AI Twin</div>
+          <p class="lp-mode-desc">
+            Upload a photograph and a voice clip and receive a video of that face
+            speaking it — for size guides and product walkthroughs.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">→</span></span>
+            <span class="lp-mode-port">Port 7863</span>
+          </div>
+        </button>
+        -->
+
+        <button class="lp-mode" data-reveal data-d="2" onclick="enterFeature('fit')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3.6 8.4h16.8v7.2H3.6z"/>
+                <path d="M7.2 8.4v3M10.8 8.4v4.4M14.4 8.4v3M18 8.4v4.4"/>
+              </svg>
+            </span>
+            <span class="lp-price">No credits</span>
+          </div>
+          <div class="lp-mode-name">Fit Analyser</div>
+          <p class="lp-mode-desc">
+            Predicts whether an item will run small, true to size, or large for
+            this shopper. Trained on 192,544 real rentals.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">&rarr;</span></span>
+            <span class="lp-mode-port">In browser</span>
+          </div>
+        </button>
+
+        <button class="lp-mode" data-reveal data-d="3" onclick="enterFeature('returns')">
+          <div class="lp-mode-top">
+            <span class="lp-mode-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2.7 20 5.6v6c0 4.6-3.3 8.2-8 9.7-4.7-1.5-8-5.1-8-9.7v-6z"/>
+                <path d="M8.9 12.1 11.2 14.4 15.4 10"/>
+              </svg>
+            </span>
+            <span class="lp-price">No credits</span>
+          </div>
+          <div class="lp-mode-name">Returns Guard</div>
+          <p class="lp-mode-desc">
+            Score a return request for fraud risk. Flagged cases route to a human
+            reviewer — the system never denies a refund on its own.
+          </p>
+          <div class="lp-mode-foot">
+            <span class="lp-mode-cta">Open <span class="lp-arrow">&rarr;</span></span>
+            <span class="lp-mode-port">In browser</span>
+          </div>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ FABRIC ══════════ -->
+  <section class="lp-sec" style="padding-top:0">
+    <div class="lp-wrap">
+      <span class="lp-tag" data-reveal>The cloth</span>
+      <h2 class="lp-h2" data-reveal data-d="1">One cut. <em>Twelve cloths.</em></h2>
+      <p class="lp-lede" data-reveal data-d="2">
+        Lay a weave over the garment and the drape and shading hold, so a single
+        product photograph previews an entire range.
+      </p>
+      <div class="lp-swatches" data-reveal data-d="2">
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-1"></div><span class="lp-swatch-l">Twill</span><span class="lp-swatch-s">Cotton linen</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-2"></div><span class="lp-swatch-l">Bengal</span><span class="lp-swatch-s">Poplin</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-3"></div><span class="lp-swatch-l">Awning</span><span class="lp-swatch-s">Oxford</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-4"></div><span class="lp-swatch-l">Pin dot</span><span class="lp-swatch-s">Chambray</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-5"></div><span class="lp-swatch-l">Argyle</span><span class="lp-swatch-s">Merino</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-6"></div><span class="lp-swatch-l">Ombré</span><span class="lp-swatch-s">Silk crêpe</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-7"></div><span class="lp-swatch-l">Houndstooth</span><span class="lp-swatch-s">Wool</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-8"></div><span class="lp-swatch-l">Polka</span><span class="lp-swatch-s">Georgette</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-9"></div><span class="lp-swatch-l">Chevron</span><span class="lp-swatch-s">Tweed</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-10"></div><span class="lp-swatch-l">Banded</span><span class="lp-swatch-s">Jersey</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-11"></div><span class="lp-swatch-l">Check</span><span class="lp-swatch-s">Flannel</span></div>
+        <div class="lp-swatch"><div class="lp-swatch-sq sw-12"></div><span class="lp-swatch-l">Herringbone</span><span class="lp-swatch-s">Denim</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ CREDITS ══════════ -->
+  <section class="lp-sec" id="lp-credits" style="padding-top:0">
+    <div class="lp-wrap">
+      <div class="lp-credits-head">
+        <div>
+          <span class="lp-tag" data-reveal>Credits</span>
+          <h2 class="lp-h2" data-reveal data-d="1">Pay for what you render.</h2>
+          <p class="lp-lede" data-reveal data-d="2">
+            A session in any mode costs 10 credits. Browsing is free, and unused
+            credits stay on the account.
+          </p>
+        </div>
+        <div class="lp-balance" data-reveal data-d="2">
+          <span class="mf-coin mf-coin-lg">₹</span>
+          <div>
+            <div class="lp-balance-n"><span data-credit-balance>200</span></div>
+            <div class="lp-balance-l">Your balance</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lp-packs">
+        <div class="lp-pack" data-reveal data-d="1">
+          <div class="lp-pack-n">Starter</div>
+          <div class="lp-pack-c"><b>100</b><span>Credits</span></div>
+          <div class="lp-pack-p">₹199</div>
+          <p class="lp-pack-m">Ten sessions. Enough for a single fitting counter or a short pilot.</p>
+          <button class="lp-pack-b" onclick="mfBuy('Starter',100)">Add credits</button>
+        </div>
+        <div class="lp-pack is-best" data-reveal data-d="2">
+          <span class="lp-pack-flag">Most chosen</span>
+          <div class="lp-pack-n">Studio</div>
+          <div class="lp-pack-c"><b>500</b><span>Credits</span></div>
+          <div class="lp-pack-p">₹799</div>
+          <p class="lp-pack-m">Fifty sessions. Sized for a shop floor running fittings through the day.</p>
+          <button class="lp-pack-b is-primary" onclick="mfBuy('Studio',500)">Add credits</button>
+        </div>
+        <div class="lp-pack" data-reveal data-d="3">
+          <div class="lp-pack-n">Scale</div>
+          <div class="lp-pack-c"><b>2000</b><span>Credits</span></div>
+          <div class="lp-pack-p">₹2,499</div>
+          <p class="lp-pack-m">Two hundred sessions. For catalogue shoots and multi-store rollouts.</p>
+          <button class="lp-pack-b" onclick="mfBuy('Scale',2000)">Add credits</button>
+        </div>
+      </div>
+
+      <div class="lp-payline">
+        <span>Razorpay</span>
+        <span>UPI · Cards · Netbanking · Wallets</span>
+        <button class="lp-reset" onclick="mfResetCredits()">Reset demo balance</button>
+      </div>
+
+      <div class="lp-note">
+        <strong>Demo billing.</strong> Credits are held in this browser only and no
+        payment is taken. Connecting this to live Razorpay checkout needs API keys
+        and server-side order verification before it can accept real money.
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ SPECIFICATION ══════════ -->
+  <section class="lp-sec" style="padding-top:0">
+    <div class="lp-wrap">
+      <span class="lp-tag" data-reveal>Specification</span>
+      <h2 class="lp-h2" data-reveal data-d="1">Built to run live.</h2>
+      <div class="lp-specs" data-reveal data-d="2">
+        <div class="lp-spec-grid">
+          <div class="lp-spec">
+            <div class="lp-spec-k">Generator</div>
+            <div class="lp-spec-v">SD 1.5 Inpainting</div>
+            <div class="lp-spec-s">Garment painted into a torso mask, with IP-Adapter holding the reference.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Sampler</div>
+            <div class="lp-spec-v">Four-step LCM</div>
+            <div class="lp-spec-s">Latent consistency scheduling, tuned for interactive frame rates.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Body tracking</div>
+            <div class="lp-spec-v">MediaPipe Tasks</div>
+            <div class="lp-spec-s">Selfie segmentation with hand landmarks, so hands are never painted over.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Transport</div>
+            <div class="lp-spec-v">WebSocket</div>
+            <div class="lp-spec-s">Frame-drop gated — a stale frame is discarded rather than queued.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Preserved</div>
+            <div class="lp-spec-v">Face and background</div>
+            <div class="lp-spec-s">Everything outside the mask stays pixel-identical to the camera.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Garments</div>
+            <div class="lp-spec-v">Tee · Shirt · Jacket</div>
+            <div class="lp-spec-s">Each type carries its own neckline and hem geometry.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Fabric</div>
+            <div class="lp-spec-v">HSV overlay</div>
+            <div class="lp-spec-s">The weave takes hue and saturation; the render keeps its own shading.</div>
+          </div>
+          <div class="lp-spec">
+            <div class="lp-spec-k">Hardware</div>
+            <div class="lp-spec-v">NVIDIA A10G</div>
+            <div class="lp-spec-s">One GPU per node, one model held warm in process memory.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ CLOSER ══════════ -->
+  <section class="lp-final">
+    <div class="lp-final-box" data-reveal>
+      <h2 class="lp-final-h">Stand in front of it.</h2>
+      <p class="lp-final-p">
+        Open the fitting room, hang a garment, and see the fit on the person who is
+        actually going to wear it.
+      </p>
+      <div class="lp-hero-cta">
+        <button class="lp-btn lp-btn-line" onclick="enterFeature('tryon')">
+          Enter the fitting room <span class="lp-arrow">→</span>
+        </button>
+        <span class="lp-cost"><span class="mf-coin">₹</span>10 credits per session</span>
+      </div>
+    </div>
+    <div class="lp-foot">
+      <span>Mirror Fit</span>
+      <span>Credits billed through Razorpay</span>
+      <span>Real time · On-device camera</span>
+    </div>
+  </section>
+
+  <div class="mf-toast" id="mfToast" role="status" aria-live="polite"></div>
+</div>
+
+<header>
+  <div class="logo">
+    <svg class="mf-mark" viewBox="0 0 22 25" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+      <path d="M11 1.4C5.8 1.4 1.6 5.7 1.6 11v11.6c0 .6.4 1 1 1h16.8c.6 0 1-.4 1-1V11c0-5.3-4.2-9.6-9.4-9.6z"/>
+      <path d="M5.8 13.6 10.2 7.2" stroke-linecap="round" opacity=".55"/>
+      <path d="M8.4 17.4l2.8-4" stroke-linecap="round" opacity=".3"/>
+    </svg>
+    Mirror Fit
+  </div>
+  <div class="tabs">
+    <!-- switchTab() indexes .tab positionally against a fixed id list, so the
+         order of these buttons is load-bearing: removing or reordering one
+         silently points every later tab at the wrong panel. -->
+    <!-- Live Face Swap and Live Portrait are hidden. To bring them back:
+         drop the style/aria-hidden/tabindex attributes from the two buttons
+         below, put class="tab active" back on Live Face Swap, take it off
+         Live Try-On, and change the switchTab('tryon') init call at the
+         bottom of this file back to switchTab('liveswap'). Nothing was
+         deleted -- panel-liveswap and panel-liveportrait are untouched, and
+         hiding rather than removing keeps switchTab()'s positional id list
+         aligned with .tab. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('liveswap')">Live Face Swap</button>
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('liveportrait')">Live Portrait</button>
+    <button class="tab active" onclick="switchTab('tryon')">Live Try-On</button>
+    <!-- AR Avatar is hidden. Reverse this commit to bring it back -- nothing was deleted and panel-ar is untouched.
+         Hidden rather than removed: switchTab() pairs its id list with
+         querySelectorAll('.tab') by position, so dropping this node would
+         shift every later tab onto the wrong panel. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('ar')">Face Filter (3D)</button>
+    <!-- AI Twin is hidden. Hidden rather than removed: switchTab() pairs its
+         id list with .tab by position, so dropping the node shifts every tab
+         after it onto the wrong panel. -->
+    <button class="tab" style="display:none" aria-hidden="true" tabindex="-1"
+            onclick="switchTab('twin')">AI Twin</button>
+    <button class="tab" onclick="switchTab('fit')">Fit Analyser</button>
+    <button class="tab" onclick="switchTab('returns')">Returns Guard</button>
+    <!-- Appended, never inserted: switchTab indexes .tab positionally, so a
+         new tab is only safe at the end. -->
+    <button class="tab" onclick="switchTab('myavatar')">My Avatar</button>
+  </div>
+  <div style="width:120px"></div>
+</header>
+
+<div class="app">
+
+  <!-- ══════════════ SIDEBAR ══════════════ -->
+  <div class="sidebar">
+
+    <!-- LIVE FACE SWAP -->
+    <div class="panel active" id="panel-liveswap">
+      <!-- Step 1: Camera (always visible at top) -->
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="liveCamBtn" onclick="startLiveCamera()">Start camera</button>
+      </div>
+
+      <!-- Step 2: Avatar -->
+      <div class="card">
+        <div class="card-label">Step 2 · Choose Avatar</div>
+        <div class="cat-pills">
+          <button class="pill active" onclick="filterAvatars('all',this)">All</button>
+          <button class="pill" onclick="filterAvatars('AI',this)" style="background:#14110F;color:#FBF9F6;border-color:#14110F">AI</button>
+          <button class="pill" onclick="filterAvatars('Kids',this)">Kids</button>
+          <button class="pill" onclick="filterAvatars('Teens',this)">Teens</button>
+          <button class="pill" onclick="filterAvatars('Women',this)">Women</button>
+          <button class="pill" onclick="filterAvatars('Men',this)">Men</button>
+          <button class="pill" onclick="filterAvatars('Elderly',this)">Elderly</button>
+        </div>
+        <div class="avatar-grid" id="avatarGrid" style="max-height:230px;overflow-y:auto"></div>
+        <div class="divider" style="margin-top:12px"></div>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted);margin-bottom:8px">Or upload your own</div>
+        <div class="upload-zone" style="min-height:56px">
+          <input type="file" accept="image/*" onchange="previewFile(this,'lsp','lsph');setLiveSourceFile(this)">
+          <img id="lsp" style="display:none;max-height:50px">
+          <span class="upload-hint" id="lsph">Upload any face</span>
+        </div>
+      </div>
+
+      <!-- Voice card — voice now auto-starts with live swap; UI kept
+           hidden but elements remain so existing JS handlers don't crash -->
+      <div class="voice-card" id="voiceCard" style="display:none">
+        <div class="voice-avatar">Speaking as <strong id="voiceAvatarName">—</strong></div>
+        <button class="voice-btn" id="voiceBtn" onclick="toggleStreamingVoice()">
+          <span class="rec-pulse" id="recDot"></span>
+          <span id="voiceBtnLabel">Start live voice</span>
+        </button>
+        <div id="voiceStatus" class="status-msg"></div>
+      </div>
+
+      <!-- Step 3: Fit — how the swapped face is put back on the user -->
+      <div class="card">
+        <div class="card-label">Step 3 · Fit</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:8px">
+          <input type="checkbox" id="lsLockMask" checked>
+          <span>Lock mask to face
+            <span style="color:var(--muted)">— re-projects the swap onto your head every display frame instead of waiting for the server</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:8px">
+          <input type="checkbox" id="lsHair" checked>
+          <span>Swap hair too
+            <span style="color:var(--muted)">— warps the avatar's hairstyle on as well as its face; costs ~30 ms a frame</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;margin-bottom:10px">
+          <input type="checkbox" id="lsLiveMouth" checked>
+          <span>Live mouth
+            <span style="color:var(--muted)">— your real lips, at camera rate, so speech is not dubbed</span>
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <span style="font-weight:600">Detail</span>
+          <select id="lsQuality" style="flex:1;padding:5px 8px;font:inherit">
+            <option value="320">Fast — 320 px capture</option>
+            <option value="384" selected>Balanced — 384 px</option>
+            <option value="512">Sharp — 512 px, slower</option>
+          </select>
+        </label>
+      </div>
+
+      <!-- Step 4: Start (sticky to bottom of sidebar so always reachable) -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="lsDot"></div>
+            <span id="lsStatusText" style="font-size:12px">Not connected</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:11px;color:var(--ink-soft)">
+          <span style="font-weight:600;letter-spacing:.1em;text-transform:uppercase">Engine</span>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="radio" name="swapEngine" value="v1" checked> V1 (legacy)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="radio" name="swapEngine" value="v2"> V2 (Deep-Live-Cam)
+          </label>
+        </div>
+        <button class="btn btn-primary" id="liveSwapBtn" onclick="toggleLiveSwap()" disabled>Start Live Swap</button>
+        <div id="liveStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- LIVE PORTRAIT (expression-driven swap, port 7862) -->
+    <div class="panel" id="panel-liveportrait">
+      <!-- Step 1: Camera -->
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="lpCamBtn" onclick="startLpCamera()">Start camera</button>
+      </div>
+
+      <!-- Step 2: Source face upload -->
+      <div class="card">
+        <div class="card-label">Step 2 · Source face</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          Upload any front-facing portrait. Your expression drives this face in real-time.
+        </div>
+        <div class="upload-zone" style="min-height:56px">
+          <input type="file" accept="image/*" onchange="previewFile(this,'lpp','lpph');setLpSourceFile(this)">
+          <img id="lpp" style="display:none;max-height:50px">
+          <span class="upload-hint" id="lpph">Upload portrait</span>
+        </div>
+      </div>
+
+      <!-- Step 3: Motion -->
+      <div class="card">
+        <div class="card-label">Step 3 · Motion</div>
+        <label class="preview-toggle" style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <input type="checkbox" id="lpFollowHead" onchange="setLpFollowHead(this.checked)">
+          <span>Follow my head movement</span>
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin:6px 0 10px">
+          Off, only the face animates and the portrait holds its pose. On, the
+          portrait turns with you — best with a front-facing source photo.
+        </div>
+        <button class="btn btn-ghost" id="lpRecalBtn" onclick="lpRecalibrate()" disabled>
+          Recalibrate neutral face
+        </button>
+      </div>
+
+      <!-- Step 4: Start -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="lpDot"></div>
+            <span id="lpStatusText" style="font-size:12px">Not connected</span>
+          </div>
+          <span id="lpTelemetry" style="font-size:11px;color:var(--muted);align-self:center"></span>
+        </div>
+        <button class="btn btn-primary" id="lpStartBtn" onclick="toggleLp()" disabled>Start Live Portrait</button>
+        <div id="lpStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- LIVE TRY-ON -->
+    <div class="panel" id="panel-tryon">
+      <!-- Step 1: Camera -->
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="tryonCamBtn" onclick="startTryOnCamera()">Start camera</button>
+      </div>
+
+      <!-- Step 2: Garment -->
+      <div class="card">
+        <div class="card-label">Step 2 · Garment</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'gp','gph');setGarment(this)">
+          <img id="gp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="gph"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3.3 5 5.1 3.2 9.5l2.8 1.3.9-1.9v11.8h10.2V8.9l.9 1.9 2.8-1.3L19 5.1l-3.7-1.8a3.3 3.3 0 0 1-6.6 0z"/></svg></span>
+          <span class="upload-hint" id="gph2">Upload shirt, jacket, tshirt</span>
+        </div>
+      </div>
+
+      <!-- Step 2.1: Fabric / Design -->
+      <div class="card">
+        <div class="card-label">Step 2.1 · Fabric (optional)</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'fp','fph');setFabric(this)">
+          <img id="fp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="fph"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 3.4h17.2v17.2H3.4z"/><path d="M3.4 9.1h17.2M3.4 14.9h17.2M9.1 3.4v17.2M14.9 3.4v17.2"/></svg></span>
+          <span class="upload-hint" id="fph2">Upload fabric pattern / design</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearFabric()" style="font-size:11px;padding:6px;margin-top:6px;width:100%">
+          Remove fabric
+        </button>
+      </div>
+
+      <!-- Step 2.2: Back-view photo -->
+      <div class="card">
+        <div class="card-label">Step 2.2 · Back view (optional)</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" onchange="previewFile(this,'gbp','gbph');setGarmentBack(this)">
+          <img id="gbp" style="display:none;max-height:100px">
+          <span class="upload-icon" id="gbph"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3.3 5 5.1 3.2 9.5l2.8 1.3.9-1.9v11.8h10.2V8.9l.9 1.9 2.8-1.3L19 5.1l-3.7-1.8a3.3 3.3 0 0 1-6.6 0z"/></svg></span>
+          <span class="upload-hint" id="gbph2">Upload the garment's back — used when the wearer turns around</span>
+        </div>
+        <button class="btn btn-ghost" onclick="clearGarmentBack()" style="font-size:11px;padding:6px;margin-top:6px;width:100%">
+          Remove back view
+        </button>
+      </div>
+
+      <!-- Step 2.5: Garment Type -->
+      <div class="card">
+        <div class="card-label">Step 2.5 · Type</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost garment-type-btn active" data-type="tshirt"
+                  onclick="selectGarmentType('tshirt', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            T-shirt
+          </button>
+          <button class="btn btn-ghost garment-type-btn" data-type="shirt"
+                  onclick="selectGarmentType('shirt', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            Shirt
+          </button>
+          <button class="btn btn-ghost garment-type-btn" data-type="jacket"
+                  onclick="selectGarmentType('jacket', this)" style="flex:1;font-size:12px;padding:8px 4px">
+            Jacket
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 2.6: what the fit rating needs.
+           Fit cannot be read off the try-on render — CatVTON warps the garment
+           onto the torso mask, so the output always looks like it fits. The
+           rating comes from these numbers against the garment's declared size,
+           which is what fit_score actually models. Leave them blank and the
+           rating falls back to colour alone rather than inventing a fit call. -->
+      <!-- Step 2.6 hidden on request. The inputs stay in the DOM because
+     renderOutfitScore() reads osChest/osShoulder/osHeight directly and
+     would throw if they were removed. -->
+        <div class="card" style="display:none">
+        <div class="card-label">Step 2.6 · Your fit <span style="opacity:.55;font-weight:400">(optional)</span></div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <label style="flex:1;font-size:11px;opacity:.7">Chest cm
+            <input id="osChest" type="number" min="50" max="200" placeholder="98"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Shoulder cm
+            <input id="osShoulder" type="number" min="25" max="70" placeholder="45"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Height cm
+            <input id="osHeight" type="number" min="100" max="230" placeholder="175"
+                   oninput="renderOutfitScore()"
+                   style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+          </label>
+        </div>
+        <div style="display:flex;gap:6px">
+          <label style="flex:1;font-size:11px;opacity:.7">Garment size
+            <select id="osSize" onchange="renderOutfitScore()"
+                    style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+              <option value="">—</option>
+              <option>S</option><option selected>M</option><option>L</option>
+              <option>XL</option><option>XXL</option>
+            </select>
+          </label>
+          <label style="flex:1;font-size:11px;opacity:.7">Skin tone
+            <select id="osSkin" onchange="renderOutfitScore()"
+                    style="width:100%;padding:6px;margin-top:3px;font-size:13px">
+              <option value="light">Light</option>
+              <option value="medium" selected>Medium</option>
+              <option value="olive">Olive</option>
+              <option value="brown">Brown</option>
+              <option value="deep">Deep</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+
+      <!-- Step 3: Start (sticky) -->
+      <div class="sticky-action">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div class="status-row" style="flex:1">
+            <div class="dot" id="toDot"></div>
+            <span id="toStatusText" style="font-size:12px">Not connected</span>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="tryonBtn" onclick="toggleTryOn()" disabled>Start Live Try-On</button>
+        <!-- Fit readout. Lives in the pinned action bar so it is visible
+             the moment it lands, without scrolling. -->
+        <div class="fr-card" id="frCard">
+          <div class="fr-head">
+            <div>
+              <div class="fr-eyebrow" id="frEyebrow">Measuring fit</div>
+              <div class="fr-verdict" id="frVerdict">Hold still for a moment…</div>
+            </div>
+            <div class="fr-score"><b id="frScore">—</b><span>/10</span></div>
+          </div>
+          <div class="fr-bar"><i id="frBar"></i></div>
+          <div class="fr-rows" id="frRows"></div>
+          <!-- The score alone was the complaint: it said 8.4 and nothing
+               about why. This opens the Fit Analyser on this exact session
+               — no re-entering anything, no form. -->
+          <button class="btn btn-primary" id="frWhy" onclick="frExplain()"
+                  style="margin-top:12px;font-size:10px;padding:10px 12px" disabled>
+            Why this score
+          </button>
+          <button class="btn btn-ghost" id="frSend" onclick="frSendToReturns()"
+                  style="margin-top:6px;font-size:10px;padding:10px 12px" disabled>
+            Send score to Returns Guard
+          </button>
+          <div class="fr-foot" id="frFoot">Analysing</div>
+        </div>
+        <div id="tryonStatus" class="status-msg"></div>
+
+
+      </div>
+    </div>
+
+    <!-- AR AVATAR (MediaPipe + Three.js, browser-side, no backend) -->
+    <div class="panel" id="panel-ar">
+      <div class="card">
+        <div class="card-label">Step 1 · Camera</div>
+        <button class="btn btn-ghost" id="arCamBtn" onclick="startArCamera()">Start camera</button>
+        <div id="arCamStatus" class="status-msg"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Choose 3D Avatar</div>
+        <div class="avatar-grid" id="arAvatarGrid" style="max-height:280px;overflow-y:auto">
+          <!-- populated by JS arAvatars[] -->
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="status-row">
+          <div class="dot" id="arDot"></div>
+          <span id="arStatusText" style="font-size:12px">Not running</span>
+        </div>
+        <button class="btn btn-primary" id="arStartBtn" onclick="toggleArAvatar()" disabled>Start AR</button>
+        <div id="arStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- AI TWIN — SadTalker backend (port 7863), offline talking-head generation -->
+    <!-- ══════════════ MY AVATAR — one photo, one choice, done ══════════════ -->
+    <div class="panel" id="panel-myavatar">
+      <!-- Shown when the curated base-body set is incomplete. Without this the
+           tab just errors on Create and the try-on step never appears, with
+           nothing on screen saying which asset is missing. -->
+      <div class="card" id="avBlocker" style="display:none;
+           border-color:var(--red);background:rgba(180,30,60,.06)">
+        <div class="card-label" style="color:var(--red)">Not ready</div>
+        <div id="avBlockerText" style="font-size:12px;line-height:1.5"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 1 · Your photo</div>
+        <div class="upload-zone" onclick="document.getElementById('avPhotoInput').click()">
+          <input type="file" id="avPhotoInput" accept="image/*" hidden onchange="avSetPhoto(this)">
+          <img id="avPhotoPreview" style="display:none;max-height:120px">
+          <span class="upload-hint" id="avPhotoHint">Upload a clear, front-facing photo</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Body</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost av-gender-btn active" data-gender="male"
+                  onclick="avSetGender('male', this)" style="flex:1;font-size:13px;padding:9px 4px">
+            Male
+          </button>
+          <button class="btn btn-ghost av-gender-btn" data-gender="female"
+                  onclick="avSetGender('female', this)" style="flex:1;font-size:13px;padding:9px 4px">
+            Female
+          </button>
+        </div>
+        <!-- Optional: refines which of the eight curated bodies is used.
+             Left blank, the gender's average build is chosen. -->
+        <details style="margin-top:9px">
+          <summary style="font-size:11.5px;opacity:.65;cursor:pointer">
+            Measurements (optional — picks a closer build)
+          </summary>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <label style="flex:1;font-size:11px;opacity:.7">Chest cm
+              <input id="avChest" type="number" placeholder="102"
+                     style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+            <label style="flex:1;font-size:11px;opacity:.7">Waist cm
+              <input id="avWaist" type="number" placeholder="86"
+                     style="width:100%;padding:6px;margin-top:3px;font-size:13px"></label>
+          </div>
+          <div style="font-size:10.5px;opacity:.5;margin-top:6px;line-height:1.4">
+            Both or neither — one alone gives no ratio.
+          </div>
+        </details>
+      </div>
+
+      <!-- Try-on appears only once there is a body to dress. -->
+      <div class="card" id="avTryonCard" style="display:none">
+        <div class="card-label">Step 3 · Try a garment</div>
+        <div class="upload-zone" onclick="document.getElementById('avGarmentInput').click()"
+             style="min-height:78px">
+          <input type="file" id="avGarmentInput" accept="image/*" hidden onchange="avTryon(this)">
+          <span class="upload-hint">Upload a garment photo</span>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button class="btn btn-ghost av-cat-btn active" data-cat="upper"
+                  onclick="avSetCategory('upper', this)" style="flex:1;font-size:12px;padding:7px 4px">Top</button>
+          <button class="btn btn-ghost av-cat-btn" data-cat="lower"
+                  onclick="avSetCategory('lower', this)" style="flex:1;font-size:12px;padding:7px 4px">Bottom</button>
+          <button class="btn btn-ghost av-cat-btn" data-cat="dress"
+                  onclick="avSetCategory('dress', this)" style="flex:1;font-size:12px;padding:7px 4px">Dress</button>
+        </div>
+        <div id="avTryonStatus" class="status-msg"></div>
+      </div>
+
+      <div class="sticky-action">
+        <button class="btn btn-primary" style="width:100%" id="avCreateBtn"
+                onclick="avCreate()" disabled>Create my avatar</button>
+        <div id="avCreateStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-twin">
+      <div class="card">
+        <div class="card-label">Step 1 · Portrait Image</div>
+        <div class="upload-zone">
+          <input type="file" accept="image/*" id="twinImgInput"
+                 onchange="twinPreviewImg(this)">
+          <img id="twinImgPreview" style="display:none;max-height:120px;border-radius:8px">
+          <span class="upload-icon" id="twinImgPh"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="4.6" width="17.6" height="14.8" rx="1.4"/><circle cx="8.6" cy="9.6" r="1.7"/><path d="m3.6 16.4 4.8-4.2 3.6 3 3.2-2.4 5 4.2"/></svg></span>
+          <span class="upload-hint">Upload a clear face photo (jpg / png)</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Driving Audio</div>
+        <div class="upload-zone">
+          <input type="file" accept="audio/*" id="twinAudioInput"
+                 onchange="twinPreviewAudio(this)">
+          <audio id="twinAudioPreview" controls style="display:none;width:100%;margin-top:6px"></audio>
+          <span class="upload-icon" id="twinAudPh"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9.2" y="2.6" width="5.6" height="11" rx="2.8"/><path d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0M12 18v3.4"/></svg></span>
+          <span class="upload-hint">Upload a wav / mp3 of the voice (≤ 20 s)</span>
+        </div>
+        <button class="btn btn-ghost" id="twinRecBtn" onclick="twinToggleRecord()"
+                style="margin-top:8px;font-size:12px">Or record from mic</button>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 3 · Quality</div>
+        <div style="display:flex;gap:6px;font-size:12px">
+          <label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="twinSize" value="256"> 256 px · fast
+          </label>
+          <label style="flex:1;display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="twinSize" value="512" checked> 512 px · sharp
+          </label>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="twinEnhancer" checked> GFPGAN face enhancer
+        </label>
+      </div>
+
+      <div class="card">
+        <div class="status-row">
+          <div class="dot" id="twinDot"></div>
+          <span id="twinStatusText" style="font-size:12px">Idle</span>
+        </div>
+        <button class="btn btn-primary" id="twinGenBtn" onclick="twinGenerate()" disabled>
+          Generate Talking Avatar
+        </button>
+        <div id="twinStatus" class="status-msg"></div>
+      </div>
+    </div>
+
+
+
+    <!-- FIT ANALYSER — explains a score, does not collect one.
+
+         This panel used to be five cards of numbers: height, weight, band,
+         cup, age, body type, and four history sliders. A shopper who has
+         just been handed "8.4" does not want a form; they want to know why
+         it was not 10, and where. So the sidebar is now a picker — which
+         session or garment do you want explained — and the answer lives on
+         the right. Nothing here asks for a body measurement. -->
+    <div class="panel" id="panel-fit">
+      <div class="card">
+        <div class="card-label">Step 1 · What to explain</div>
+        <button class="btn btn-primary" id="faUseLive" onclick="faExplainLive()" disabled>
+          Explain my live try-on
+        </button>
+        <div class="fx-hint" id="faLiveHint">
+          Run a live try-on and the score it gives you opens here, broken down
+          by where the garment actually sat.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Or open a garment</div>
+        <div class="fx-list" id="faGarments"></div>
+      </div>
+
+      <div class="sticky-action">
+        <div class="status-row" style="margin-bottom:10px">
+          <div class="dot on" id="faDot"></div>
+          <span id="faStatusText">Reads the session · asks you nothing</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- RETURNS GUARD — a case file, not a calculator.
+
+         The person on this screen is an operations engineer holding a
+         garment that came back. They have an ID on the return label and one
+         question: this shopper says it did not fit — so what did we already
+         know? Every input this panel used to ask for (fit slider, order
+         value, account age, discount, prior orders) is a field the system
+         already holds against that ID. Asking a human to retype them was the
+         demo showing its working, not the product. -->
+    <div class="panel" id="panel-returns">
+      <div class="card">
+        <div class="card-label">Step 1 · Look up a return</div>
+        <div class="fx-lookup">
+          <input id="rgQuery" placeholder="MF-SHR-4471" spellcheck="false"
+                 autocomplete="off" aria-label="Garment ID">
+          <button onclick="rgFind()">Find</button>
+        </div>
+        <div class="fx-hint">
+          The garment ID printed on the return label. Any ID opens a case —
+          unknown ones are generated for the demo and say so on the report.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Step 2 · Open cases</div>
+        <div class="fx-list" id="rgCases"></div>
+      </div>
+
+      <div class="sticky-action">
+        <div class="status-row" style="margin-bottom:10px">
+          <div class="dot on" id="rgDot"></div>
+          <span id="rgStatusText">Scored on device · no data leaves the browser</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ MAIN DISPLAY ══════════════ -->
+  <div class="main">
+
+    <!-- Live face swap: camera + result side by side -->
+    <div id="liveWrap" style="display:none;width:100%">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="livePreviewToggle" onchange="setPreview('live', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="liveGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="liveCameraPane" style="max-width:100%;display:none">
+          <video id="liveVideo" autoplay muted playsinline></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">Your camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <canvas id="liveCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="lsDot2"></div>
+              <span id="lsLabel">Face Swapped</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Portrait: expression-driven swap (port 7862) -->
+    <div id="lpWrap" style="display:none;width:100%">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="lpPreviewToggle" onchange="setPreview('lp', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="lpGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="lpCameraPane" style="max-width:100%;display:none">
+          <video id="lpVideo" autoplay muted playsinline></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">Your camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <canvas id="lpCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="lpDot2"></div>
+              <span>Live Portrait</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live try-on: camera + result side by side -->
+    <div id="tryonWrap" style="display:none;width:100%;display:none">
+      <div class="preview-toolbar" style="max-width:1100px;width:100%;margin-bottom:10px">
+        <label class="preview-toggle">
+          <input type="checkbox" id="tryonPreviewToggle" onchange="setPreview('tryon', this.checked)">
+          <span>Enable preview (show my camera)</span>
+        </label>
+      </div>
+      <div id="tryonGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" id="tryonCameraPane" style="max-width:100%;display:none">
+          <video id="tryonVideo" autoplay muted playsinline></video>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">Your camera</div>
+          </div>
+        </div>
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <canvas id="tryonCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="toDot2"></div>
+              <span>Live Result</span>
+            </div>
+          </div>
+
+
+
+          <!-- Outfit rating. Sits over the result but is driven entirely by
+               the measurements + declared size, never by the rendered pixels. -->
+          <div id="osPanel" style="display:none;position:absolute;left:14px;bottom:14px;
+               max-width:min(330px,calc(100% - 28px));padding:12px 14px;border-radius:14px;
+               background:rgba(251,249,246,0.94);backdrop-filter:blur(8px);
+               -webkit-backdrop-filter:blur(8px);border:1px solid rgba(15,23,42,.10);
+               box-shadow:0 6px 22px rgba(0,0,0,.10);z-index:6">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span id="osEmoji" style="font-size:20px;line-height:1"></span>
+              <span id="osOverall" style="font-family:'Fraunces',serif;font-size:30px;
+                    font-weight:600;letter-spacing:-.02em;line-height:1"></span>
+              <span id="osGrade" style="font-size:10.5px;letter-spacing:.16em;
+                    text-transform:uppercase;opacity:.6"></span>
+            </div>
+            <div id="osFit" style="font-size:13px;font-weight:600;margin-top:7px"></div>
+            <div id="osFitNote" style="font-size:11.5px;opacity:.72;line-height:1.45;margin-top:2px"></div>
+            <div id="osColour" style="font-size:11.5px;opacity:.72;line-height:1.45;margin-top:5px;
+                 display:flex;align-items:center;gap:6px"></div>
+            <div id="osNotes" style="font-size:11px;opacity:.6;line-height:1.45;margin-top:6px"></div>
+            <button id="osToReturns" class="btn btn-ghost" style="display:none;margin-top:9px;
+                    width:100%;font-size:11.5px;padding:7px" onclick="sendTryOnToReturns()">
+              Send this fit to Returns Guard →
+            </button>
+          </div>
+          <!-- Processing spinner — visible while CatVTON is running -->
+          <div id="toSpinner" style="display:none;position:absolute;inset:0;
+               background:rgba(251,249,246,0.86);backdrop-filter:blur(3px);
+               -webkit-backdrop-filter:blur(6px);border-radius:18px;
+               display:none;align-items:center;justify-content:center;
+               flex-direction:column;gap:10px;pointer-events:none">
+            <div style="width:36px;height:36px;border:3px solid rgba(20,17,15,0.12);
+                 border-top-color:#A8194E;border-radius:50%;
+                 animation:spin 0.8s linear infinite"></div>
+            <span style="color:#6E665D;font-size:11px;font-weight:400;letter-spacing:.1em" id="toSpinnerMs"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AR Avatar: composite of camera + Three.js GLB overlay -->
+    <div id="arWrap" style="display:none;width:100%">
+      <div id="arGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:1100px">
+        <div class="canvas-wrap" style="max-width:100%;position:relative">
+          <!-- Mirrored camera feed sits underneath, the WebGL canvas is layered above -->
+          <video id="arVideo" autoplay muted playsinline
+                 style="transform:scaleX(-1);width:100%;display:block;border-radius:12px"></video>
+          <canvas id="arCanvas"
+                  style="position:absolute;inset:0;width:100%;height:100%;
+                         transform:scaleX(-1);border-radius:12px;pointer-events:none"></canvas>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="arDot2"></div>
+              <span>AR Avatar (browser-side)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI TWIN — result video player -->
+    <div id="myAvatarWrap" style="display:none;width:100%;max-width:820px">
+      <div class="canvas-wrap" style="max-width:100%;min-height:420px;position:relative;
+           display:flex;align-items:center;justify-content:center">
+        <div class="canvas-overlay"><div class="overlay-badge"><span>Your avatar</span></div></div>
+        <img id="avBodyImg" style="display:none;max-width:100%;max-height:560px;border-radius:12px">
+        <div id="avBodyPlaceholder" style="opacity:.45;font-size:13px;padding:32px;text-align:center">
+          Upload a photo, pick a body, press Create
+        </div>
+      </div>
+      <div id="avSelection" style="margin-top:12px;font-size:12px;opacity:.7;line-height:1.5"></div>
+    </div>
+
+    <div id="twinWrap" style="display:none;width:100%">
+      <div id="twinGrid" style="display:grid;grid-template-columns:1fr;gap:16px;width:100%;max-width:900px" class="twin-grid">
+        <div class="canvas-wrap" style="max-width:100%;position:relative;
+                                         border-radius:18px;min-height:300px;display:flex;
+                                         align-items:center;justify-content:center;flex-direction:column;gap:14px">
+          <div id="twinPlaceholder" style="text-align:center;color:var(--muted)">
+            <div style="font-size:34px;opacity:0.3">◻</div>
+            <div style="font-size:14px;margin-top:10px">Upload photo + audio, click Generate</div>
+            <div style="font-size:11px;opacity:0.6;margin-top:4px">
+              ~30–80 s on A10G for a 5 s clip
+            </div>
+          </div>
+          <video id="twinResultVideo" controls style="display:none;max-width:100%;
+                                                      max-height:560px;border-radius:12px"></video>
+          <div id="twinSpinner" style="display:none;flex-direction:column;align-items:center;gap:12px">
+            <div style="width:48px;height:48px;border:3px solid rgba(20,17,15,0.12);
+                        border-top-color:#A8194E;border-radius:50%;
+                        animation:spin 0.9s linear infinite"></div>
+            <div id="twinSpinnerMsg" style="font-size:13px;color:var(--ink-soft)">
+              Generating talking avatar…
+            </div>
+            <div id="twinSpinnerSub" style="font-size:11px;color:var(--muted)"></div>
+          </div>
+          <div class="canvas-overlay">
+            <div class="overlay-badge">
+              <div class="dot" id="twinDot2"></div>
+              <span>AI Twin</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+
+    <!-- FIT ANALYSER — result.
+
+         Answer first: the verdict, then the three places a garment is felt.
+         The distribution bars, the raw JSON and the gate economics have not
+         been deleted — they moved into the folded panel at the bottom,
+         because a shopper reading "why was it 8.4" is not helped by a
+         softmax and a reviewer looking for one knows where to click. -->
+    <div id="fitWrap" style="display:none;width:100%">
+      <div class="fx-wrap">
+
+        <div class="fx-card">
+          <div class="fx-top">
+            <div style="flex:1;min-width:260px">
+              <div class="fx-eyebrow" id="faWhat">No session yet</div>
+              <div class="fx-verdict" id="faVerdict">Nothing to explain</div>
+              <div class="fx-sub" id="faHeadline">
+                Run a live try-on, or pick a garment on the left, and this
+                screen says exactly why the score came out where it did.
+              </div>
+            </div>
+            <div class="fx-dial">
+              <svg width="132" height="132" viewBox="0 0 132 132" aria-hidden="true">
+                <circle cx="66" cy="66" r="58" fill="none" stroke="#E8E4DD" stroke-width="9"/>
+                <circle cx="66" cy="66" r="58" fill="none" stroke="#A8194E" stroke-width="9"
+                        stroke-linecap="butt" id="faDialArc"
+                        stroke-dasharray="364.4" stroke-dashoffset="364.4"/>
+              </svg>
+              <div class="fa-dial-num fx-dial-num"><b id="faScore">—</b><span>Fit score</span></div>
+            </div>
+          </div>
+
+          <div class="fx-h" style="margin-top:34px">
+            Where it sat on you
+          </div>
+          <div class="fx-areas" id="faAreas"></div>
+          <div class="fx-rows" id="faRows"></div>
+
+          <div class="fx-answer" id="faAnswer"></div>
+
+          <button class="lp-btn lp-btn-solid" id="faSend"
+                  style="margin-top:20px;display:none" onclick="faSendToReturns()">
+            Send this fit to Returns Guard <span class="lp-arrow">&rarr;</span>
+          </button>
+        </div>
+
+        <details class="fx-tech" id="faTech" style="display:none">
+          <summary>The numbers behind this</summary>
+          <div class="fx-tech-body">
+            <div>
+              <div class="fx-h">Deviation from the cut, per point</div>
+              <div class="fa-devs" id="faDevs" style="margin-top:0;padding-top:0;border-top:none"></div>
+            </div>
+            <div class="fa-json" id="faJson" style="margin-top:0"></div>
+            <div class="fa-handoff" id="faHandoff" style="margin-top:0"></div>
+            <div class="fa-metrics" id="faMetrics" style="margin-top:0"></div>
+            <div class="fa-cap" id="faCap"></div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+
+    <!-- RETURNS GUARD — result.
+
+         Written as a case file an engineer can read top to bottom: what came
+         back, what the shopper said, what we already knew, and the one
+         paragraph that reconciles the two. The probability, the reason
+         codes, the threshold table and the cost matrix are all still here —
+         folded away at the bottom, where they belong for the reviewer who
+         wants to audit the call rather than act on it. -->
+    <div id="returnsWrap" style="display:none;width:100%">
+      <div class="fx-wrap">
+
+        <div class="fx-card" id="rgEmptyCard">
+          <div class="fx-eyebrow">Returns Guard</div>
+          <div class="fx-verdict" style="font-size:34px">Open a return</div>
+          <div class="fx-sub">
+            Type a garment ID on the left, or pick one of the open cases. The
+            report answers a single question: this garment came back — given
+            what the mirror already measured and what condition it arrived in,
+            does the reason hold up?
+          </div>
+        </div>
+
+        <div id="rgReport" style="display:none">
+
+          <div class="fx-card">
+            <div class="fx-case">
+              <div style="flex:1;min-width:260px">
+                <div class="fx-case-id" id="rgCaseId"></div>
+                <div class="fx-case-name" id="rgCaseName"></div>
+                <div class="fx-case-meta" id="rgCaseMeta"></div>
+              </div>
+              <div class="fx-decision is-approve" id="rgDecision">—</div>
+            </div>
+
+            <div class="fx-quote" id="rgSaid" style="margin-top:22px"></div>
+            <div class="fx-answer" id="rgAnswer"></div>
+          </div>
+
+          <div class="fx-card">
+            <div class="fx-h" id="rgFitH">What the mirror measured at purchase</div>
+            <div class="fx-facts" id="rgFacts"></div>
+            <div class="fx-areas" id="rgAreas" style="margin-top:20px"></div>
+            <div class="fx-rows" id="rgRows"></div>
+          </div>
+
+          <div class="fx-card">
+            <div class="fx-h">What stands out on this return</div>
+            <div class="fx-finds" id="rgFinds"></div>
+          </div>
+
+          <details class="fx-tech" id="rgTech">
+            <summary>The numbers behind this decision</summary>
+            <div class="fx-tech-body">
+              <div>
+                <div class="fx-h">Probability of fraud</div>
+                <div class="rg-top" style="align-items:center">
+                  <div class="rg-score" id="rgScore">0.000</div>
+                  <div class="rg-verdict is-approve" id="rgVerdict">Approve refund</div>
+                </div>
+                <div class="rg-bar-wrap">
+                  <div class="rg-bar">
+                    <div class="rg-bar-fill" id="rgFill" style="width:0%"></div>
+                    <div class="rg-bar-mark" id="rgMark" style="left:78.7%"></div>
+                  </div>
+                  <div class="rg-bar-ends">
+                    <span>0 · certainly genuine</span>
+                    <span>certainly fraud · 1</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rg-split" style="margin-top:26px;padding-top:24px">
+                <div>
+                  <div class="rg-h">Returned payload</div>
+                  <div class="rg-json" id="rgJson"></div>
+                </div>
+                <div>
+                  <div class="rg-h">Reason codes for the reviewer</div>
+                  <div class="rg-codes" id="rgCodes"></div>
+                </div>
+              </div>
+
+              <div class="rg-truth" id="rgTruth" style="display:none"></div>
+
+              <div class="rg-guard">
+                <b>This screen cannot deny a refund.</b> The only two outcomes are
+                <em>approve&nbsp;refund</em> and <em>route&nbsp;to&nbsp;review</em>, so a wrongly
+                flagged customer loses time, never their money. The threshold is set where
+                flagging costs less than not flagging, given a false positive is treated as
+                5× worse than a false negative.
+              </div>
+
+              <div class="rg-metrics" id="rgMetrics"></div>
+              <table class="rg-table" id="rgCandidates"></table>
+              <div class="rg-cap" id="rgCap"></div>
+            </div>
+          </details>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Placeholder -->
+    <div id="placeholder" style="display:flex;flex-direction:column;align-items:center;gap:16px">
+      <div style="font-size:34px;opacity:0.28">◻</div>
+      <div style="font-size:15px;font-weight:500;color:var(--ink)">Select a mode and get started</div>
+      <div style="font-size:13px;opacity:0.6">Live Face Swap · Virtual Try-On · Live Portrait</div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

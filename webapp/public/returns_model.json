@@ -1,0 +1,263 @@
+{
+ "_comment": "Trained on SYNTHETIC data \u2014 see returns_risk/README.md. Scores a return request and routes to human review; it can never deny a refund.",
+ "generated_from": {
+  "seed": 20260821,
+  "model": "logreg",
+  "n_train": 7200,
+  "fp_fn_ratio": 5.0
+ },
+ "features": {
+  "numeric": [
+   "fit_mismatch_score",
+   "days_since_purchase",
+   "order_value_inr",
+   "prior_orders_12m",
+   "prior_returns_12m",
+   "prior_return_rate",
+   "account_age_days",
+   "discount_pct"
+  ],
+  "categorical": [
+   "garment_type",
+   "return_reason"
+  ],
+  "boolean": [
+   "used_tryon"
+  ]
+ },
+ "preprocess": {
+  "impute_medians": [
+   0.30203796459255894,
+   9.0,
+   1696.0,
+   4.0,
+   1.0,
+   0.2,
+   428.0,
+   20.2
+  ],
+  "indicator_features": [
+   "fit_mismatch_score"
+  ],
+  "scaler_mean": [
+   0.3099757722402017,
+   11.01388888888889,
+   2167.1398611111113,
+   4.195833333333334,
+   1.2101388888888889,
+   0.25740212855408934,
+   511.43833333333333,
+   21.88323611111111,
+   0.5398611111111111
+  ],
+  "scaler_scale": [
+   0.11619949147599638,
+   7.2956095159949825,
+   1618.2495367148288,
+   2.296249206133051,
+   1.7635609439234299,
+   0.29489760467183573,
+   370.8606316956097,
+   12.424816042672486,
+   0.4984085591369672
+  ],
+  "categories": {
+   "garment_type": [
+    "dress",
+    "jacket",
+    "shirt",
+    "trousers",
+    "tshirt"
+   ],
+   "return_reason": [
+    "changed_mind",
+    "damaged",
+    "doesnt_fit",
+    "not_as_described",
+    "wrong_item"
+   ]
+  }
+ },
+ "model": {
+  "coef": [
+   -0.30995292888163906,
+   0.02399120206626988,
+   0.14623524920929798,
+   -0.0788162780924543,
+   0.6757799991344149,
+   0.5205326231676694,
+   -0.6844232847695204,
+   0.05307978722517834,
+   0.025703475815481602,
+   -0.12335395412729187,
+   0.27352598113455057,
+   -0.06140027745756337,
+   -0.017357484592995166,
+   -0.06808941362184259,
+   -0.46027492966916245,
+   0.3361145304270214,
+   0.1576426615357411,
+   0.5359476981463533,
+   -0.5661051091051356,
+   -0.011280938947074957
+  ],
+  "intercept": -3.333925265212468
+ },
+ "decision": {
+  "threshold": 0.7870969696341261,
+  "break_even": 0.8333333333333334,
+  "cost_per_launch": 10
+ },
+ "test_metrics": {
+  "n": 2400,
+  "precision": 0.9655172413793104,
+  "recall": 0.13793103448275862,
+  "fpr": 0.0004551661356395084,
+  "flag_rate": 0.012083333333333333,
+  "total_cost": 180.0,
+  "tp": 28,
+  "fp": 1,
+  "fn": 175,
+  "tn": 2196
+ },
+ "candidates": [
+  {
+   "label": "default 0.5",
+   "threshold": 0.5,
+   "precision": 0.8103448276,
+   "recall": 0.2655367232,
+   "fpr": 0.0049482681,
+   "flag_rate": 0.0241666667,
+   "f1": 0.4,
+   "tp": 47,
+   "fp": 11,
+   "fn": 130,
+   "tn": 2212,
+   "total_cost": 185.0,
+   "cost_per_case": 0.0770833333
+  },
+  {
+   "label": "max-F1",
+   "threshold": 0.322944397,
+   "precision": 0.6216216216,
+   "recall": 0.3898305085,
+   "fpr": 0.0188933873,
+   "flag_rate": 0.04625,
+   "f1": 0.4791666667,
+   "tp": 69,
+   "fp": 42,
+   "fn": 108,
+   "tn": 2181,
+   "total_cost": 318.0,
+   "cost_per_case": 0.1325
+  },
+  {
+   "label": "precision>=0.6",
+   "threshold": 0.3153066189,
+   "precision": 0.6,
+   "recall": 0.3898305085,
+   "fpr": 0.0206927575,
+   "flag_rate": 0.0479166667,
+   "f1": 0.4726027397,
+   "tp": 69,
+   "fp": 46,
+   "fn": 108,
+   "tn": 2177,
+   "total_cost": 338.0,
+   "cost_per_case": 0.1408333333
+  },
+  {
+   "label": "cost-optimal",
+   "threshold": 0.7870969696,
+   "precision": 1.0,
+   "recall": 0.1468926554,
+   "fpr": 0.0,
+   "flag_rate": 0.0108333333,
+   "f1": 0.2561576355,
+   "tp": 26,
+   "fp": 0,
+   "fn": 151,
+   "tn": 2223,
+   "total_cost": 151.0,
+   "cost_per_case": 0.0629166667
+  }
+ ],
+ "presets": [
+  {
+   "label": "False positive",
+   "note": "A GENUINE return the model wrongly flagged \u2014 its most confident mistake. Watch it route to review, not denial.",
+   "truth": 0,
+   "expected_probability": 0.8291322935656069,
+   "values": {
+    "fit_mismatch_score": null,
+    "days_since_purchase": 10.0,
+    "order_value_inr": 1091.0,
+    "prior_orders_12m": 11,
+    "prior_returns_12m": 9,
+    "prior_return_rate": 0.8181818181818182,
+    "account_age_days": 146.0,
+    "discount_pct": 41.9,
+    "garment_type": "tshirt",
+    "return_reason": "not_as_described",
+    "used_tryon": false
+   }
+  },
+  {
+   "label": "Caught fraud",
+   "note": "A fraudulent return the model flagged correctly.",
+   "truth": 1,
+   "expected_probability": 0.9568798149365795,
+   "values": {
+    "fit_mismatch_score": 0.031638406496433846,
+    "days_since_purchase": 13.0,
+    "order_value_inr": 1862.0,
+    "prior_orders_12m": 10,
+    "prior_returns_12m": 10,
+    "prior_return_rate": 1.0,
+    "account_age_days": 60.0,
+    "discount_pct": 15.0,
+    "garment_type": "tshirt",
+    "return_reason": "not_as_described",
+    "used_tryon": true
+   }
+  },
+  {
+   "label": "Clean return",
+   "note": "An ordinary genuine return. Approved with no friction.",
+   "truth": 0,
+   "expected_probability": 0.0002485947769491564,
+   "values": {
+    "fit_mismatch_score": null,
+    "days_since_purchase": 17.0,
+    "order_value_inr": 1877.0,
+    "prior_orders_12m": 4,
+    "prior_returns_12m": 0,
+    "prior_return_rate": 0.0,
+    "account_age_days": 2402.0,
+    "discount_pct": 27.5,
+    "garment_type": "shirt",
+    "return_reason": "wrong_item",
+    "used_tryon": false
+   }
+  },
+  {
+   "label": "Missed fraud",
+   "note": "Fraud that slipped through. Accepted deliberately: under a 5:1 cost matrix, flagging borderline cases costs more than absorbing this.",
+   "truth": 1,
+   "expected_probability": 0.7817706884859571,
+   "values": {
+    "fit_mismatch_score": null,
+    "days_since_purchase": 21.0,
+    "order_value_inr": 6025.0,
+    "prior_orders_12m": 12,
+    "prior_returns_12m": 9,
+    "prior_return_rate": 0.75,
+    "account_age_days": 372.0,
+    "discount_pct": 4.8,
+    "garment_type": "dress",
+    "return_reason": "not_as_described",
+    "used_tryon": false
+   }
+  }
+ ]
+}
