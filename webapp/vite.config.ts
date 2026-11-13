@@ -12,7 +12,8 @@ export default defineConfig({
   define: { __BUILD__: JSON.stringify('build ' + gitStamp()) },
   server: { port: 5173 },
   build: {
-    target: 'es2022',
+    // iOS 14 Safari is the oldest phone browser worth supporting.
+    target: ['es2020', 'safari14'],
     sourcemap: true,
     rollupOptions: {
       output: {

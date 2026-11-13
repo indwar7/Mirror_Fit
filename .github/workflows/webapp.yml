@@ -1,0 +1,37 @@
+# Builds the web app and runs its headless smoke test on every push and PR
+# that touches it. This is the gate for "nothing broke": strict TypeScript,
+# a production build, and the browser-only screens exercised in Chromium.
+name: Web app
+
+on:
+  push:
+    paths: ['webapp/**', '.github/workflows/webapp.yml']
+  pull_request:
+    paths: ['webapp/**', '.github/workflows/webapp.yml']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke test the built app
+        run: npm run smoke

@@ -5,7 +5,7 @@
 // the same way. Status messages (calibrating / no_face / dropped / error)
 // stay JSON.
 import { LIVEPORTRAIT_WS, LUCY_SESSION_ID } from './config';
-import { MIRROR, drawCam } from './camera';
+import { MIRROR, attachStream, cameraErrorText, cameraUnavailableReason, drawCam } from './camera';
 import { avatarState } from './avatar-state';
 import { byId } from './dom';
 import { setDot, setStatus } from './ui';
@@ -37,14 +37,16 @@ function checkLpReady(): void {
 }
 
 export async function startLpCamera(): Promise<void> {
+  const blocked = cameraUnavailableReason();
+  if (blocked) { setStatus('lpStatus', 'error', blocked); return; }
   try {
     lpStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-    byId<HTMLVideoElement>('lpVideo').srcObject = lpStream;
+    await attachStream(byId<HTMLVideoElement>('lpVideo'), lpStream);
     const btn = byId('lpCamBtn');
     btn.textContent = 'Camera on';
     btn.className = 'btn btn-success';
     checkLpReady();
-  } catch (e) { setStatus('lpStatus', 'error', 'Camera blocked: ' + (e as Error).message); }
+  } catch (e) { setStatus('lpStatus', 'error', cameraErrorText(e)); }
 }
 
 export function setLpSourceFile(inp: HTMLInputElement): void {

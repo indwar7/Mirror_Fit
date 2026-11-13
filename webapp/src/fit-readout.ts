@@ -16,7 +16,7 @@ import { maybe } from './dom';
 import { FitReport, type FitReading } from './fit-report-types';
 import { fitSession } from './fit-session';
 import { readBody, readSize } from './measurements';
-import { getGarmentName, getGarmentType } from './tryon';
+import { getGarmentName, getGarmentType, onTryOnSession } from './tryon';
 import { faExplainLive, faNoteLiveSession } from './fit-analyser';
 import { rgOpenFromFit } from './returns-guard';
 import { onTabSwitch, switchTab } from './ui';
@@ -120,13 +120,8 @@ export function frSendToReturns(): void {
 }
 
 export function installFitReadout(): void {
-  const btn = $('tryonBtn');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      setTimeout(() => {
-        if (/stop/i.test(btn.textContent || '')) start(); else stop();
-      }, 120);
-    });
-  }
+  // Follows the session itself: starts when the socket opens, stops when it
+  // closes for any reason, not only when the user presses Stop.
+  onTryOnSession((running) => { if (running) start(); else stop(); });
   onTabSwitch((t) => { if (t !== 'tryon') stop(); });
 }

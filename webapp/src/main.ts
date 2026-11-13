@@ -12,7 +12,10 @@ import {
 } from './tryon';
 import { avCreate, avSetCategory, avSetGender, avSetPhoto, avTryon } from './my-avatar';
 import { twinGenerate, twinPreviewAudio, twinPreviewImg, twinToggleRecord } from './ai-twin';
-import { populateArGrid, selectArAvatar, startArCamera, toggleArAvatar } from './ar-avatar';
+import { populateArGrid, selectArAvatar } from './ar-presets';
+
+// three.js + MediaPipe are only needed by the hidden AR tab: fetched on first use.
+const loadAr = () => import('./ar-avatar');
 import { installCredits, mfBuy, mfResetCredits } from './credits';
 import { initReturnsGuard, rgFind } from './returns-guard';
 import { faExplainLive, faSendToReturns, initFitAnalyser } from './fit-analyser';
@@ -30,7 +33,9 @@ const handlers = {
   startTryOnCamera, setGarment, setFabric, clearFabric, setGarmentBack, clearGarmentBack,
   selectGarmentType, renderOutfitScore, toggleTryOn, sendTryOnToReturns,
   frExplain, frSendToReturns,
-  startArCamera, toggleArAvatar, _selectArAvatar: selectArAvatar,
+  startArCamera: () => loadAr().then((ar) => ar.startArCamera()),
+  toggleArAvatar: () => loadAr().then((ar) => ar.toggleArAvatar()),
+  _selectArAvatar: selectArAvatar,
   avSetPhoto, avSetGender, avSetCategory, avTryon, avCreate,
   twinPreviewImg, twinPreviewAudio, twinToggleRecord, twinGenerate,
   faExplainLive, faSendToReturns, rgFind,

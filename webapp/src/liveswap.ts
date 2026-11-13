@@ -14,7 +14,7 @@
 // waits for the server. Everywhere outside the oval is the live camera.
 import type { FaceLandmarker } from '@mediapipe/tasks-vision';
 import { LUCY_SESSION_ID, selectedSwapWs } from './config';
-import { MIRROR, drawCam } from './camera';
+import { MIRROR, attachStream, cameraErrorText, cameraUnavailableReason, drawCam } from './camera';
 import { avatarState } from './avatar-state';
 import { byId } from './dom';
 import { createFaceLandmarker } from './mediapipe';
@@ -81,6 +81,13 @@ let lsHairNote = '';   // why hair is off, when the user asked for it
 // A result older than this is not worth pasting on a live face any more.
 const LS_MAX_STALE_MS = 1500;
 
+// Safari only gained CanvasRenderingContext2D.filter in version 18. Where it
+// is missing the feathered mask degrades to a hard edge instead of throwing.
+const CANVAS_FILTER = typeof CanvasRenderingContext2D !== 'undefined' && 'filter' in CanvasRenderingContext2D.prototype;
+function setBlur(x: CanvasRenderingContext2D, px: number): void {
+  if (CANVAS_FILTER) x.filter = px > 0 ? `blur(${px}px)` : 'none';
+}
+
 function lsOpt(id: string, dflt: boolean): boolean {
   const el = document.getElementById(id) as HTMLInputElement | null;
   return el ? el.checked : dflt;
@@ -95,9 +102,11 @@ export function checkLiveReady(): void {
 }
 
 export async function startLiveCamera(): Promise<void> {
+  const blocked = cameraUnavailableReason();
+  if (blocked) { setStatus('liveStatus', 'error', blocked); return; }
   try {
     liveStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
-    byId<HTMLVideoElement>('liveVideo').srcObject = liveStream;
+    await attachStream(byId<HTMLVideoElement>('liveVideo'), liveStream);
     const btn = byId('liveCamBtn');
     btn.textContent = 'Camera on'; btn.className = 'btn btn-active';
     checkLiveReady();
@@ -106,7 +115,7 @@ export async function startLiveCamera(): Promise<void> {
     // between the mask locking on immediately and the first few seconds
     // looking like the old behaviour.
     void lsInitTracker();
-  } catch (e) { alert('Camera error: ' + (e as Error).message); }
+  } catch (e) { setStatus('liveStatus', 'error', cameraErrorText(e)); }
 }
 
 async function lsInitTracker(): Promise<FaceLandmarker | null> {
@@ -205,11 +214,11 @@ function lsBuildPatch(img: HTMLImageElement, lm: Landmarks, maskImg: HTMLImageEl
   if (maskImg && maskImg.width) {
     x.drawImage(lsAlphaFrom(lm, maskImg, R), 0, 0);
   } else {
-    x.filter = 'blur(' + Math.max(4, Math.round(R * 0.03)) + 'px)';
+    setBlur(x, Math.max(4, Math.round(R * 0.03)));
     x.fillStyle = '#fff';
     lsPath(x, lm, LS_OVAL, R, 0.94);
     x.fill();
-    x.filter = 'none';
+    setBlur(x, 0);
   }
   x.globalCompositeOperation = 'source-over';
   return c;
@@ -223,16 +232,16 @@ function lsAlphaFrom(lm: Landmarks, maskImg: HTMLImageElement, R: number): HTMLC
   if (c.width !== R) { c.width = R; c.height = R; }
   x.setTransform(1, 0, 0, 1, 0, 0);
   x.globalCompositeOperation = 'source-over';
-  x.filter = 'none';
+  setBlur(x, 0);
   x.fillStyle = '#000';
   x.fillRect(0, 0, R, R);
   x.drawImage(maskImg, 0, 0, R, R);
   x.globalCompositeOperation = 'lighter';           // union, not replace
-  x.filter = 'blur(' + Math.max(4, Math.round(R * 0.03)) + 'px)';
+  setBlur(x, Math.max(4, Math.round(R * 0.03)));
   x.fillStyle = '#fff';
   lsPath(x, lm, LS_OVAL, R, 0.94);
   x.fill();
-  x.filter = 'none';
+  setBlur(x, 0);
   x.globalCompositeOperation = 'source-over';
   const d = x.getImageData(0, 0, R, R), px = d.data;
   for (let i = 0; i < px.length; i += 4) {
@@ -251,11 +260,11 @@ function lsDrawLiveMouth(ctx: CanvasRenderingContext2D, video: HTMLVideoElement,
   x.clearRect(0, 0, sz, sz);
   drawCam(x, video, sz, MIRROR.ls);
   x.globalCompositeOperation = 'destination-in';
-  x.filter = 'blur(' + Math.max(3, Math.round(sz * 0.012)) + 'px)';
+  setBlur(x, Math.max(3, Math.round(sz * 0.012)));
   x.fillStyle = '#fff';
   lsPath(x, lm, LS_LIPS, sz, 1.18);
   x.fill();
-  x.filter = 'none';
+  setBlur(x, 0);
   x.globalCompositeOperation = 'source-over';
   ctx.drawImage(c, 0, 0);
 }

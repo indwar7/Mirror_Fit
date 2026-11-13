@@ -1,6 +1,6 @@
 // Live Try-On (port 8000) plus the outfit rating that sits over it.
 import { TRYON_WS } from './config';
-import { MIRROR, drawCam } from './camera';
+import { MIRROR, attachStream, cameraErrorText, cameraUnavailableReason, drawCam } from './camera';
 import { byId, maybe } from './dom';
 import { OutfitScore } from './outfit-score';
 import { FitReport, type FitCall } from './fit-report-types';
@@ -32,6 +32,18 @@ interface TryOnMsg {
 // Read by the live fit readout.
 export function getGarmentName(): string { return toGarment ? toGarment.name : ''; }
 export function getGarmentType(): string { return toGarmentType; }
+
+// Session lifecycle, for the fit readout. The demo had it watch the Start
+// button's text 120 ms after a click, which missed a programmatic start and
+// kept saying "measuring" after the server dropped the socket.
+type SessionListener = (running: boolean) => void;
+const sessionListeners: SessionListener[] = [];
+export function onTryOnSession(fn: SessionListener): void { sessionListeners.push(fn); }
+function setRunning(running: boolean): void {
+  if (toRunning === running) return;
+  toRunning = running;
+  for (const fn of sessionListeners) fn(running);
+}
 
 function checkTryOnReady(): void {
   // Enable Start only when BOTH garment uploaded AND camera on.
@@ -217,18 +229,22 @@ function resendTryOnInit(): void {
 
 // ── Session ──────────────────────────────────────────────────────────────
 export async function startTryOnCamera(): Promise<void> {
+  const blocked = cameraUnavailableReason();
+  if (blocked) { setStatus('tryonStatus', 'error', blocked); return; }
   try {
     toStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
-    byId<HTMLVideoElement>('tryonVideo').srcObject = toStream;
+    await attachStream(byId<HTMLVideoElement>('tryonVideo'), toStream);
     const btn = byId('tryonCamBtn');
     btn.textContent = 'Camera on'; btn.className = 'btn btn-active';
+    setStatus('tryonStatus', 'info', toGarment ? 'Camera on — press Start' : 'Camera on — upload a garment');
     checkTryOnReady();
-  } catch (e) { alert('Camera error: ' + (e as Error).message); }
+  } catch (e) { setStatus('tryonStatus', 'error', cameraErrorText(e)); }
 }
 
 export function toggleTryOn(): void { if (toRunning) stopTryOn(); else startTryOn(); }
 
 let toProcessing = false, toFrameSentAt = 0, toResultAt = 0;
+let toNextSend: number | null = null;
 
 function toSpinner(on: boolean): void {
   byId('toSpinner').style.display = on ? 'flex' : 'none';
@@ -249,7 +265,7 @@ export function startTryOn(): void {
     const btn = byId('tryonBtn');
     btn.textContent = 'Stop';
     btn.className = 'btn btn-stop';
-    toRunning = true;
+    setRunning(true);
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data as string) as TryOnMsg;
@@ -287,20 +303,23 @@ export function startTryOn(): void {
       setStatus('tryonStatus', 'error', msg.message ?? 'error');
     }
   };
-  ws.onclose = () => { setDot('to', false); stopToTimer(); stopToRender(); toRunning = false; toSpinner(false); };
+  ws.onclose = () => { setDot('to', false); stopToTimer(); stopToRender(); setRunning(false); toSpinner(false); };
   ws.onerror = () => { setStatus('tryonStatus', 'error', 'Connection error'); stopTryOn(); };
 }
 
 export function stopTryOn(): void {
   if (toWs) toWs.close();
-  stopToTimer(); stopToRender(); toRunning = false;
+  stopToTimer(); stopToRender(); setRunning(false);
   const btn = byId('tryonBtn');
   btn.textContent = 'Start Live Try-On';
   btn.className = 'btn btn-primary';
 }
 
 function startToTimer(): void { if (toSendTimer) clearInterval(toSendTimer); toSendTimer = window.setInterval(sendToFrame, 800); }
-function stopToTimer(): void { if (toSendTimer) { clearInterval(toSendTimer); toSendTimer = null; } }
+function stopToTimer(): void {
+  if (toSendTimer) { clearInterval(toSendTimer); toSendTimer = null; }
+  if (toNextSend) { clearTimeout(toNextSend); toNextSend = null; }
+}
 
 function startToRender(): void {
   if (toRafId) cancelAnimationFrame(toRafId);
@@ -324,9 +343,17 @@ function stopToRender(): void { if (toRafId) { cancelAnimationFrame(toRafId); to
 // One frame on the wire at a time. The watchdog is what stops a reply that
 // never comes from wedging the stream permanently.
 const TO_STALL_MS = 6000;
+// Floor between sends. The loop is reply-driven, so a backend faster than the
+// JPEG encode would otherwise peg the main thread; the diffusion server takes
+// ~600 ms a frame and never hits this, but an on-device tier would.
+const TO_MIN_INTERVAL_MS = 66;
 function sendToFrame(): void {
   if (!toWs || toWs.readyState !== WebSocket.OPEN) return;
   if (toProcessing && (Date.now() - toFrameSentAt) < TO_STALL_MS) return;
+  if ((Date.now() - toFrameSentAt) < TO_MIN_INTERVAL_MS) {
+    if (!toNextSend) toNextSend = window.setTimeout(() => { toNextSend = null; sendToFrame(); }, TO_MIN_INTERVAL_MS);
+    return;
+  }
   const video = byId<HTMLVideoElement>('tryonVideo');
   const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
   const sz = Math.min(vw, vh);

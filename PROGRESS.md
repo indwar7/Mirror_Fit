@@ -6,6 +6,31 @@ credentials (passwords, tokens) are never written here, only where they live.
 
 ---
 
+## 2026-11-13
+
+### Web app hardened for web-only delivery (branch `webapp-typescript`)
+
+- Decision stands: product ships as the web app; Flutter app on hold.
+- `webapp/` fixes: every backend URL now follows the page scheme (an HTTPS
+  deployment would otherwise have mixed-content-blocked the sockets and
+  fetches silently); unused Tone.js CDN script removed; three.js + MediaPipe
+  load on first use instead of at boot (initial JS 665 kB → 76 kB); canvas
+  blur degrades gracefully on Safari < 18; camera start gives real messages
+  (permission denied / no camera / insecure page) and calls play() for iOS;
+  PWA manifest + icons + mobile meta; build target includes iOS 14 Safari;
+  vite 7 + playwright 1.56 (npm audit clean).
+- Live Try-On: fit readout now follows the session (socket open/close) rather
+  than a button click; 66 ms floor on frame sends (reply-driven loop would
+  otherwise spin against a fast backend).
+- Smoke test (`npm run smoke`, 50 checks) drives the WHOLE Live Try-On loop
+  with a fake camera and a mocked `/ws/tryon`: camera, garment gating, init
+  payload, frame pacing, result drawn, garment switch re-init, readout, stop.
+  Also checks phone-width layout and that heavy chunks are not fetched at boot.
+  `.github/workflows/webapp.yml` runs build + smoke on every push to webapp/.
+- Still needs: a real-server pass by hand (box must be up), then merge.
+
+---
+
 ## 2026-10-27
 
 ### GPU box - why deploys never actually restarted anything

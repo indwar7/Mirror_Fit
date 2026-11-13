@@ -41,3 +41,35 @@ VITE_BACKEND_HOST=52.66.250.134
 Shared mutable state that the demo kept in globals lives in small import-free
 modules (`avatar-state.ts`, `fit-session.ts`) so no two feature modules import
 each other in a cycle.
+
+## Hosting
+
+Static site. On Vercel or Cloudflare Pages set the project root to `webapp/`;
+the build command is `npm run build` and the output directory is `dist/`.
+
+Two things change when the page is served over HTTPS:
+
+- Every backend URL follows the page's scheme, so the box is reached as
+  `https://` and `wss://`. The backends speak plain HTTP, so put TLS in front
+  of them (Caddy with a domain) before pointing a hosted build at the box.
+  The dev server on `localhost` is plain http and talks to the box directly.
+- Phones can open the camera. Browsers only allow `getUserMedia` on `https://`
+  or `localhost`, which is why the old insecure-origin Chrome flag was needed.
+
+`public/manifest.webmanifest` and the icons make the site installable to the
+home screen. Regenerate the PNGs with `npm run icons` after editing `icon.svg`.
+
+## Checks
+
+```
+npm run typecheck   # strict TypeScript, no emit
+npm run smoke       # builds nothing; serves dist/ and drives it in headless Chromium
+```
+
+The smoke test opens a fake camera and mocks the try-on WebSocket, so the
+whole Live Try-On loop (init payload, frame pacing, result drawing, garment
+switch mid-session, fit readout, stop) is exercised without the GPU box. It
+also loads the page at phone width and checks nothing overflows, and that
+three.js and MediaPipe are not downloaded until a feature needs them.
+`.github/workflows/webapp.yml` runs build + smoke on every push touching
+`webapp/`.

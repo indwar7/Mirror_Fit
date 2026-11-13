@@ -37,3 +37,40 @@ export function drawCam(
     ctx.drawImage(video, sx, sy, side, side, 0, 0, sz, sz);
   }
 }
+
+// Can this page open a camera at all? getUserMedia only exists on a secure
+// context: https://, or http://localhost. A plain-http LAN address has no
+// navigator.mediaDevices, and the demo surfaced that as a bare TypeError.
+export function cameraUnavailableReason(): string | null {
+  // lib.dom types these as always present; on an insecure origin they are not.
+  const md = (navigator as { mediaDevices?: MediaDevices }).mediaDevices;
+  if (md && typeof md.getUserMedia === 'function') return null;
+  return 'Camera needs a secure page: open this over https:// or on localhost.';
+}
+
+// getUserMedia rejects with a DOMException whose name is the useful part.
+export function cameraErrorText(e: unknown): string {
+  const err = e as { name?: string; message?: string };
+  switch (err.name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'Camera permission was denied. Allow the camera for this site and try again.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+    case 'OverconstrainedError':
+      return 'No camera found on this device.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'The camera is already in use by another app or tab.';
+    default:
+      return 'Camera error: ' + (err.message || String(e));
+  }
+}
+
+// Attach a stream to a <video>. iOS Safari does not start playback on
+// srcObject alone, and play() can reject harmlessly when autoplay already
+// kicked in, so the rejection is swallowed.
+export async function attachStream(video: HTMLVideoElement, stream: MediaStream): Promise<void> {
+  video.srcObject = stream;
+  try { await video.play(); } catch { /* autoplay already running */ }
+}
