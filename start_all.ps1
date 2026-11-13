@@ -39,6 +39,15 @@ $svc = @(
 
 function Norm($t) { ($t -replace '[^a-z0-9]', '').ToLower() }
 
+# Start-Process does not surface a redirect target it cannot open for
+# writing: the child still gets a PID, then dies on its first write.
+function Test-LogWritable([string[]]$files) {
+  try {
+    foreach ($f in $files) { [IO.File]::Open($f, "OpenOrCreate", "Write", "ReadWrite").Dispose() }
+    $true
+  } catch { $false }
+}
+
 function Test-Port($p) {
   try { (New-Object Net.Sockets.TcpClient).Connect("127.0.0.1", $p); $true } catch { $false }
 }
@@ -66,6 +75,7 @@ if ($Only -and $selected.Count -eq 0) {
 # was skipped (no conda env) burned the whole 120s timeout printing
 # "3 of 4 listening" while nothing was ever going to change.
 $expected = @()
+$errLogs  = @{}
 
 # When this runs inside a GitHub Actions job (deploy.yml), every process the
 # step spawns inherits RUNNER_TRACKING_ID, and the runner kills every process
@@ -105,21 +115,24 @@ foreach ($s in $selected) {
   New-NetFirewallRule -DisplayName ("Allow " + $s.port) -Direction Inbound `
       -LocalPort $s.port -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
 
-  # Start-Process does not surface a redirect target it cannot open for
-  # writing: the child still gets a PID, then dies on its first write, and
-  # the stale log from the previous boot sits there looking like output.
-  # That is exactly what happened when deploy.yml ran this as NETWORK
-  # SERVICE against logs owned by Administrator. Check before spawning.
+  # The logs under C:\logs were written by Administrator by hand, and a
+  # service account (deploy.yml runs as NETWORK SERVICE) cannot open them.
+  # It gets its own folder, C:\logs\<account>\, instead of not starting.
   $outLog = Join-Path $logDir ($s.name + ".log")
   $errLog = Join-Path $logDir ($s.name + ".err.log")
-  try {
-    foreach ($f in $outLog, $errLog) { [IO.File]::Open($f, "OpenOrCreate", "Write", "ReadWrite").Dispose() }
-  } catch {
-    Write-Host ("  FAIL  {0,-14} :{1}  cannot write {2} as {3}\{4}" -f $s.name, $s.port, $logDir, [Environment]::UserDomainName, [Environment]::UserName) -ForegroundColor Red
-    Write-Host  "        run the runner service as the account that owns the box (setup_runner.ps1 -ServiceAccount)," -ForegroundColor DarkGray
-    Write-Host  "        or once, elevated:  icacls C:\logs /grant `"NT AUTHORITY\NETWORK SERVICE`":(OI)(CI)F /T" -ForegroundColor DarkGray
-    continue
+  if (-not (Test-LogWritable $outLog, $errLog)) {
+    $altDir = Join-Path $logDir (Norm ([Environment]::UserName))
+    New-Item -ItemType Directory -Force -Path $altDir -ErrorAction SilentlyContinue | Out-Null
+    $outLog = Join-Path $altDir ($s.name + ".log")
+    $errLog = Join-Path $altDir ($s.name + ".err.log")
+    if (-not (Test-LogWritable $outLog, $errLog)) {
+      Write-Host ("  FAIL  {0,-14} :{1}  cannot write {2} or {3} as {4}\{5}" -f $s.name, $s.port, $logDir, $altDir, [Environment]::UserDomainName, [Environment]::UserName) -ForegroundColor Red
+      Write-Host  "        once, elevated:  icacls C:\logs /grant `"NT AUTHORITY\NETWORK SERVICE`":(OI)(CI)F /T" -ForegroundColor DarkGray
+      continue
+    }
+    Write-Host ("  NOTE  {0,-14} :{1}  C:\logs\{0}.log is owned by another account; logging to {2}" -f $s.name, $s.port, $altDir) -ForegroundColor DarkYellow
   }
+  $errLogs[$s.name] = $errLog
 
   # -PassThru + try/catch: "START" used to print even when nothing had
   # started, which hid a silent spawn failure for three deploys in a row.
@@ -132,7 +145,7 @@ foreach ($s in $selected) {
     continue
   }
   $expected += $s
-  Write-Host ("  START {0,-14} :{1}  pid {2} -> {3}\{4}.log" -f $s.name, $s.port, $proc.Id, $logDir, $s.name) -ForegroundColor Cyan
+  Write-Host ("  START {0,-14} :{1}  pid {2} -> {3}" -f $s.name, $s.port, $proc.Id, $outLog) -ForegroundColor Cyan
 
   # A backend that dies in its first seconds (bad interpreter, missing
   # module, port taken) should say so here, not 120s later as a bare DOWN.
@@ -160,7 +173,7 @@ foreach ($s in $selected) {
   Write-Host ("  {0,-14} :{1}  {2,-8} {3}" -f $s.name, $s.port,
               $(if ($ok) { "UP" } else { "DOWN" }), $s.tabs) -ForegroundColor $c
   if (-not $ok) {
-    $err = Join-Path $logDir ($s.name + ".err.log")
+    $err = if ($errLogs.ContainsKey($s.name)) { $errLogs[$s.name] } else { Join-Path $logDir ($s.name + ".err.log") }
     if (Test-Path $err) {
       Get-Content $err -Tail 3 | ForEach-Object { Write-Host ("        " + $_) -ForegroundColor DarkGray }
     }

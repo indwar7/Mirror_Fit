@@ -43,7 +43,8 @@ jobs:
           Get-Process python* -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path | Format-Table -AutoSize | Out-String -Width 200
           "--- listening on backend ports ---"
           Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 7860,7862,8000,7863 } | Select-Object LocalPort,OwningProcess | Format-Table -AutoSize | Out-String
-          "--- C:\logs ---"
-          Get-ChildItem C:\logs -Filter *.log | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
-          "--- try-on.err.log (tail 15) ---"
-          Get-Content C:\logs\try-on.err.log -Tail 15 -ErrorAction SilentlyContinue
+          "--- C:\logs (and per-account subfolders) ---"
+          Get-ChildItem C:\logs -Recurse -Filter *.log | Select-Object FullName,Length,LastWriteTime | Sort-Object LastWriteTime | Format-Table -AutoSize | Out-String -Width 160
+          "--- newest try-on.err.log (tail 15) ---"
+          $e = Get-ChildItem C:\logs -Recurse -Filter try-on.err.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+          if ($e) { $e.FullName; Get-Content $e.FullName -Tail 15 -ErrorAction SilentlyContinue }

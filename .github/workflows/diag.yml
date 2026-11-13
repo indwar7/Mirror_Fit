@@ -46,14 +46,20 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
-          Get-ChildItem C:\logs | Select-Object Name,Length,LastWriteTime | Format-Table -AutoSize | Out-String
+          "===== interactive sessions (an existing Administrator session swallows an RDP alternate shell) ====="
+          & query session 2>&1 | Out-String
+          Get-ChildItem C:\logs -Recurse | Select-Object FullName,Length,LastWriteTime | Sort-Object LastWriteTime | Format-Table -AutoSize | Out-String -Width 160
           "===== start_all_rdp.log (startup via RDP alternate shell) ====="
           Get-Content C:\logs\start_all_rdp.log -ErrorAction SilentlyContinue
           foreach ($n in "try-on","face-swap") {
-            "===== $n.err.log (tail 25) ====="
-            Get-Content "C:\logs\$n.err.log" -Tail 25 -ErrorAction SilentlyContinue
-            "===== $n.log (tail 10) ====="
-            Get-Content "C:\logs\$n.log" -Tail 10 -ErrorAction SilentlyContinue
+            foreach ($f in (Get-ChildItem C:\logs -Recurse -Filter "$n.err.log" -ErrorAction SilentlyContinue)) {
+              "===== $($f.FullName) (tail 25) ====="
+              Get-Content $f.FullName -Tail 25 -ErrorAction SilentlyContinue
+            }
+            foreach ($f in (Get-ChildItem C:\logs -Recurse -Filter "$n.log" -ErrorAction SilentlyContinue)) {
+              "===== $($f.FullName) (tail 10) ====="
+              Get-Content $f.FullName -Tail 10 -ErrorAction SilentlyContinue
+            }
           }
 
       - name: Spawn test
