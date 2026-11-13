@@ -62,6 +62,30 @@ jobs:
             }
           }
 
+      - name: Disk and model caches
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          "--- disk ---"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name,@{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}},@{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}} | Format-Table -AutoSize | Out-String
+          "--- machine env ---"
+          foreach ($v in "HF_HOME","HF_HUB_CACHE","HUGGINGFACE_HUB_CACHE","HF_TOKEN") {
+            $x = [Environment]::GetEnvironmentVariable($v, "Machine")
+            if ($v -eq "HF_TOKEN") { $x = if ($x) { "set" } else { "" } }
+            "$v = $x"
+          }
+          function DirGB($d) { if (Test-Path $d) { [math]::Round(((Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum)/1GB,1) } else { "missing" } }
+          "--- candidate HF caches (GB) ---"
+          foreach ($d in "C:\Users\Administrator\.cache\huggingface","C:\Windows\ServiceProfiles\NetworkService\.cache\huggingface","C:\hf-cache","C:\huggingface","C:\virtual-try-on\hf-cache","C:\models") {
+            "$d : " + (DirGB $d)
+            if (Test-Path "$d\hub") { "   hub: " + ((Get-ChildItem "$d\hub" -Directory -ErrorAction SilentlyContinue | ForEach-Object Name) -join ", ") }
+          }
+          "--- can this account read the Administrator cache? ---"
+          try { $n = (Get-ChildItem C:\Users\Administrator\.cache\huggingface\hub -ErrorAction Stop | Measure-Object).Count; "yes, $n entries" } catch { "no: " + $_.Exception.Message }
+          & icacls C:\Users\Administrator 2>&1 | Out-String
+          "--- biggest top-level folders on C: (GB) ---"
+          Get-ChildItem C:\ -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Dir=$_.FullName; GB=(DirGB $_.FullName) } } | Sort-Object { [double]($_.GB -replace 'missing','0') } -Descending | Select-Object -First 12 | Format-Table -AutoSize | Out-String
+
       - name: Spawn test
         shell: powershell
         run: |
