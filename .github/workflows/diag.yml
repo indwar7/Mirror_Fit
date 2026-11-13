@@ -83,8 +83,10 @@ jobs:
           "--- can this account read the Administrator cache? ---"
           try { $n = (Get-ChildItem C:\Users\Administrator\.cache\huggingface\hub -ErrorAction Stop | Measure-Object).Count; "yes, $n entries" } catch { "no: " + $_.Exception.Message }
           & icacls C:\Users\Administrator 2>&1 | Out-String
-          "--- biggest top-level folders on C: (GB) ---"
-          Get-ChildItem C:\ -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Dir=$_.FullName; GB=(DirGB $_.FullName) } } | Sort-Object { [double]($_.GB -replace 'missing','0') } -Descending | Select-Object -First 12 | Format-Table -AutoSize | Out-String
+          "--- known big folders (GB) ---"
+          foreach ($d in "C:\\Users\\Administrator","C:\\Windows\\ServiceProfiles\\NetworkService","C:\\virtual-try-on","C:\\miniconda3","C:\\actions-runner","C:\\logs","C:\\Users\\Administrator\\Downloads") {
+            "$d : " + (DirGB $d)
+          }
 
       - name: Spawn test
         shell: powershell
