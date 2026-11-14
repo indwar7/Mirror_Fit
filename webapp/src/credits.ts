@@ -49,11 +49,11 @@ export function mfResetCredits(): void {
 export function installCredits(): void {
   /* Charge on launch. */
   onEnterFeature((name) => {
-    // Returns Guard and Fit Analyser score in the browser and consume no GPU
-    // time, so they are free. Credits pay for generation, not risk scoring.
+    // Fit Analyser scores in the browser and consumes no GPU time, so it is
+    // free. Credits pay for generation, not risk scoring.
     // Live Face Swap is disabled: the :7860 backend is not running.
     if (name === 'liveswap') return false;
-    if (name === 'returns' || name === 'fit') return true;
+    if (name === 'fit') return true;
     const v = read();
     if (v < COST) {
       toast('Not enough credits — each launch costs ' + COST + '.');

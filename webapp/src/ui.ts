@@ -2,12 +2,12 @@ import { byId, maybe } from './dom';
 import { avCheckReady } from './my-avatar';
 
 export type TabId =
-  | 'liveswap' | 'liveportrait' | 'tryon' | 'ar' | 'twin' | 'fit' | 'returns' | 'myavatar';
+  | 'liveswap' | 'liveportrait' | 'tryon' | 'ar' | 'twin' | 'fit' | 'myavatar';
 
 // switchTab() indexes .tab positionally against this list, so the order of
 // the buttons in index.html is load-bearing: removing or reordering one
 // silently points every later tab at the wrong panel.
-const TAB_IDS: TabId[] = ['liveswap', 'liveportrait', 'tryon', 'ar', 'twin', 'fit', 'returns', 'myavatar'];
+const TAB_IDS: TabId[] = ['liveswap', 'liveportrait', 'tryon', 'ar', 'twin', 'fit', 'myavatar'];
 
 // In the single-file demo two later scripts *wrapped* window.switchTab and
 // window.enterFeature to bolt on behaviour (the fit readout stops when you
@@ -37,7 +37,6 @@ export function switchTab(t: TabId): void {
   byId('arWrap').style.display      = t === 'ar'           ? 'grid' : 'none';
   byId('twinWrap').style.display    = t === 'twin'         ? 'grid' : 'none';
   byId('fitWrap').style.display     = t === 'fit'          ? 'block' : 'none';
-  byId('returnsWrap').style.display = t === 'returns'      ? 'block' : 'none';
   byId('placeholder').style.display = 'none';
 }
 

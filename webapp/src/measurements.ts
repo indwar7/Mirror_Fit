@@ -1,6 +1,6 @@
 // The Step 2.6 measurement inputs (chest, shoulder, height) are hidden on the
 // Try-On sidebar but stay in the DOM: the outfit rating, the live fit readout
-// and the Returns Guard handoff all read them from here.
+// all read them from here.
 import type { BodyInput } from './outfit-score';
 
 export function osNum(id: string): number {

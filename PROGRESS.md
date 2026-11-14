@@ -6,6 +6,37 @@ credentials (passwords, tokens) are never written here, only where they live.
 
 ---
 
+## 2026-11-14
+
+### Box back up, first real-server Live Try-On pass, Returns Guard removed
+
+- New box IP 13.233.158.170. Deploys had died because NETWORK SERVICE could
+  not open the Administrator-owned `C:\logs\*.log`; `start_all.ps1` now
+  falls back to `C:\logs\<account>\` (commit 5548370). Face Swap, Live
+  Portrait and AI Twin came up from a deploy for the first time. Try-On did
+  not: the service account has no Hugging Face cache, re-downloaded 3.5 GB
+  of weights and filled the disk (0.4 GB free), which also crashed the
+  runner. `tools/box-ops.ps1` (run by the user as Administrator over RDP)
+  deleted that partial cache, restarted the runner and started Try-On under
+  Administrator. All four backends up; web app tested against the real
+  server end to end.
+- Live Try-On verdict from the user: works, but the cloth twitches and
+  fades while standing still. `tryon_backend/model.py` (commit 9f4c3b4,
+  main) adds a per-frame motion estimate and makes every EMA on the tier-3
+  path motion-aware (still → heavy prev weight, moving → light), and
+  normalises the fabric overlay to the painted shirt's own mean brightness.
+  Not yet restarted on the box: needs `git pull` + `start_all.ps1 -Only
+  tryon -Force` there.
+- Returns Guard removed from the web app completely (tab, landing card,
+  panel, report, the three handoff buttons, `returns-guard.ts`,
+  `returns_model.json`, its CSS). Smoke test updated and green.
+- Still open: a push to main redeploys everything under NETWORK SERVICE,
+  which will try to re-download the Try-On weights and fill the disk again.
+  Until the runner service runs as Administrator (services.msc → Log On),
+  push with `[skip ci]` and restart Try-On by hand. Disk is at 3.9 GB free;
+  the Administrator HF cache holds ~50 GB incl. unused SDXL base/inpaint,
+  SmolLM, InstantID. Rotate the Administrator RDP password.
+
 ## 2026-11-13
 
 ### Web app hardened for web-only delivery (branch `webapp-typescript`)

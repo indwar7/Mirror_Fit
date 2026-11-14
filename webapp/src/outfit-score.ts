@@ -398,8 +398,8 @@ export const OutfitScore = {
   get model(): FitModel | null { return MODEL; },
 };
 
-/* Everything that sizes a garment — the Fit Analyser, the Returns Guard case
-   files, the live readout — needs the size charts that arrive with
+/* Everything that sizes a garment — the Fit Analyser, the live readout —
+   needs the size charts that arrive with
    fit_model.json. They poll for it rather than racing it, but the poll gives
    up after ~6s and calls onFail, so a missing model surfaces as a named
    failure instead of a screen that never finishes loading. */

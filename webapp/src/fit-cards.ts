@@ -1,6 +1,5 @@
-// The per-area cards and rows shared by the Fit Analyser and the Returns
-// Guard case file, so both screens draw a chest/shoulder/neck reading the
-// same way.
+// The per-area cards and rows of the Fit Analyser, so every screen draws
+// a chest/shoulder/neck reading the same way.
 import { esc } from './dom';
 import type { FitRow } from './fit-report';
 

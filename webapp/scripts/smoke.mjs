@@ -1,7 +1,7 @@
 // Headless check of the built app. Serves dist/ with `vite preview`, opens it
 // in Chromium with a fake camera, and verifies:
 //   - main.ts boots and the tabs wire up
-//   - the browser-only screens (Fit Analyser, Returns Guard, handoffs) work
+//   - the browser-only screen (Fit Analyser) works
 //   - the WHOLE Live Try-On loop works against a mocked try-on WebSocket:
 //     camera opens, garment enables Start, init carries the garment, frames
 //     flow one-at-a-time, results are drawn, a garment-type change re-inits,
@@ -159,28 +159,10 @@ try {
   check('Fit Analyser lists 6 cases', (await page.locator('#faGarments .fx-item').count()) === 6);
   check('Fit Analyser explains case 1', await page.evaluate(() => /Oxford shirt/.test(document.getElementById('faWhat').textContent)));
   check('Fit Analyser area cards rendered', (await page.locator('#faAreas .fx-area').count()) === 3);
-
-  await page.evaluate(() => window.enterFeature('returns'));
-  await page.waitForFunction(() => document.querySelectorAll('#rgCases .fx-item').length === 6, null, { timeout: 10000 });
-  await page.fill('#rgQuery', 'MF-TEE-1180');
-  await page.evaluate(() => window.rgFind());
-  check('Returns Guard renders a decision', await page.evaluate(() =>
-    /Route to review|Approve refund/.test(document.getElementById('rgDecision').textContent)));
-  check('Returns Guard case id shown', await page.evaluate(() => document.getElementById('rgCaseId').textContent.startsWith('MF-TEE-1180')));
-  // 6.9/10 sits between the two fit thresholds, so this case fires no code.
-  check('Returns Guard says nothing unusual for the tee', (await page.locator('#rgCodes .rg-none').count()) === 1);
-  await page.fill('#rgQuery', 'MF-SHR-4471');
-  await page.evaluate(() => window.rgFind());
-  check('Returns Guard reason codes present for the shirt', await page.evaluate(() =>
-    /FIT_CLAIM_CONTRADICTS_TRYON/.test(document.getElementById('rgCodes').textContent)));
-
-  await page.evaluate(() => window.switchTab('fit'));
-  await page.evaluate(() => window.faSendToReturns());
-  check('Fit → Returns handoff opens a live case', await page.evaluate(() =>
-    document.getElementById('panel-returns').classList.contains('active') &&
-    document.getElementById('rgCaseId').textContent.startsWith('MF-LIVE-')));
-  await page.evaluate(() => window.frSendToReturns());
-  check('Readout → Returns handoff works', await page.evaluate(() => document.getElementById('rgCaseId').textContent.startsWith('MF-LIVE-')));
+  check('Returns Guard is gone', await page.evaluate(() =>
+    !document.getElementById('panel-returns') && !document.getElementById('returnsWrap') &&
+    !document.getElementById('frSend') && !document.getElementById('faSend') && !window.rgFind));
+  check('tab buttons match the tab list', (await page.locator('.tab').count()) === 7);
 
   await page.evaluate(() => window.switchTab('tryon'));
   await page.evaluate(() => window.setPreview('tryon', true));
@@ -205,9 +187,9 @@ try {
   check('try-on screen has no horizontal overflow at 390px', (await overflow(phone)) <= 1, (await overflow(phone)) + 'px');
   check('camera button is visible on the phone', await phone.locator('#tryonCamBtn').isVisible());
   check('Start button is reachable on the phone', await phone.locator('#tryonBtn').isVisible());
-  await phone.evaluate(() => window.enterFeature('returns'));
+  await phone.evaluate(() => window.enterFeature('fit'));
   await sleep(200);
-  check('returns screen has no horizontal overflow at 390px', (await overflow(phone)) <= 1, (await overflow(phone)) + 'px');
+  check('fit screen has no horizontal overflow at 390px', (await overflow(phone)) <= 1, (await overflow(phone)) + 'px');
 } catch (e) {
   check('smoke run completed', false, String(e));
 } finally {

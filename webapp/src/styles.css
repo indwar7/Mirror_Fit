@@ -691,10 +691,10 @@ body.landing-active .app { display: none !important; }
    auto margins only absorb leftover space. Tall content (the analytics
    screens) starts at the top and scrolls normally. */
 #liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #placeholder { margin-block: 0; }
-#fitWrap, #returnsWrap { margin-block: 0; width: 100%; }
+#fitWrap { margin-block: 0; width: 100%; }
 /* Every feature pane, present and future. A pane must never introduce its
    own clip — .main owns the scrolling for this column. */
-#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #fitWrap, #returnsWrap {
+#liveWrap, #lpWrap, #tryonWrap, #arWrap, #twinWrap, #fitWrap {
   width: 100%; max-width: 100%; min-height: 0; overflow: visible;
 }
 .main > * { flex-shrink: 0; }
@@ -733,111 +733,6 @@ body.landing-active .app { display: none !important; }
 * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 
 /* ══════════════════════════════════════════════════════════════════
-   RETURNS GUARD — cost-sensitive return-fraud triage
-   ══════════════════════════════════════════════════════════════════ */
-.rg-field { margin-bottom: 14px; }
-.rg-field:last-child { margin-bottom: 0; }
-.rg-label {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
-  font-size: 10px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--muted); margin-bottom: 7px;
-}
-.rg-label b { font-family: 'Jost', sans-serif; font-size: 12px; font-weight: 500; color: var(--ink); letter-spacing: 0.02em; }
-.rg-field select, .rg-field input[type="number"] {
-  width: 100%; padding: 9px 11px;
-  font-family: 'Jost', sans-serif; font-size: 13px; color: var(--ink);
-  background: var(--white); border: 1px solid var(--line-2); border-radius: var(--r);
-}
-.rg-field select:focus, .rg-field input[type="number"]:focus { outline: none; border-color: var(--berry); }
-.rg-field input[type="range"] { width: 100%; accent-color: var(--berry); cursor: pointer; }
-.rg-field.is-off { opacity: 0.4; pointer-events: none; }
-.rg-check { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 12.5px; color: var(--ink); }
-.rg-check input { accent-color: var(--berry); cursor: pointer; }
-.rg-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.rg-preset {
-  font-family: 'Jost', sans-serif; font-size: 10px; font-weight: 500;
-  letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 9px 8px; cursor: pointer; text-align: center;
-  background: var(--white); color: var(--ink);
-  border: 1px solid var(--line-2); border-radius: var(--r);
-  transition: background 0.2s, color 0.2s, border-color 0.2s;
-}
-.rg-preset:hover { background: var(--ink); color: var(--ivory); border-color: var(--ink); }
-.rg-preset.active { background: var(--berry); color: var(--white); border-color: var(--berry); }
-
-/* ── Result panel ── */
-.rg-wrap { width: 100%; max-width: 1040px; margin: 0 auto; padding-bottom: 28px; }
-.rg-card { background: var(--white); border: 1px solid var(--line); padding: 30px 32px; }
-.rg-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
-.rg-score { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 68px; line-height: 1; color: var(--ink); }
-.rg-score-l { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
-.rg-verdict {
-  font-family: 'Jost', sans-serif; font-size: 11px; font-weight: 500;
-  letter-spacing: 0.18em; text-transform: uppercase;
-  padding: 11px 20px; border-radius: var(--r); white-space: nowrap;
-}
-.rg-verdict.is-review { background: var(--berry); color: var(--white); }
-.rg-verdict.is-approve { background: transparent; color: var(--ok); border: 1px solid rgba(30,122,82,0.45); }
-
-/* ── Risk bar ── */
-.rg-bar-wrap { margin-top: 26px; }
-.rg-bar { position: relative; height: 8px; background: var(--ivory-2); border: 1px solid var(--line); }
-.rg-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--ink); transition: width 0.35s cubic-bezier(.2,.7,.3,1); }
-.rg-bar-fill.is-review { background: var(--berry); }
-.rg-bar-mark { position: absolute; top: -7px; bottom: -7px; width: 1.5px; background: var(--gold); transition: left 0.2s; }
-.rg-bar-mark::after {
-  content: 'THRESHOLD'; position: absolute; top: -17px; left: 50%; transform: translateX(-50%);
-  font-size: 8px; letter-spacing: 0.16em; color: var(--gold-ink); white-space: nowrap;
-}
-.rg-bar-ends { display: flex; justify-content: space-between; margin-top: 9px; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
-
-/* ── Payload + codes ── */
-.rg-split { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--line); }
-.rg-h { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
-.rg-json {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.7;
-  background: var(--ivory-2); border: 1px solid var(--line); padding: 14px 16px;
-  color: var(--ink); white-space: pre; overflow-x: auto;
-}
-.rg-json .k { color: var(--muted); }
-.rg-json .s { color: var(--berry); }
-.rg-json .n { color: var(--gold-ink); }
-.rg-codes { display: flex; flex-wrap: wrap; gap: 7px; }
-.rg-code {
-  font-size: 9.5px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase;
-  padding: 6px 10px; border: 1px solid var(--line-2); border-radius: var(--r); color: var(--ink-2);
-}
-.rg-code.is-clear { border-color: rgba(30,122,82,0.4); color: var(--ok); }
-.rg-none { font-size: 12.5px; color: var(--muted); font-weight: 300; }
-
-.rg-truth { margin-top: 26px; padding: 14px 18px; border-left: 2px solid var(--gold); background: var(--ivory-2); font-size: 13px; line-height: 1.65; color: var(--ink-2); font-weight: 300; }
-.rg-truth b { font-weight: 500; color: var(--ink); }
-.rg-truth.is-wrong { border-left-color: var(--berry); }
-
-.rg-guard { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.7; color: var(--ink-2); font-weight: 300; }
-.rg-guard b { font-weight: 500; color: var(--ink); }
-
-/* ── Metrics + candidates ── */
-.rg-metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 20px; }
-.rg-metric { background: var(--white); padding: 18px 16px; }
-.rg-metric-v { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 27px; color: var(--ink); line-height: 1; }
-.rg-metric-l { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
-.rg-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: var(--white); }
-.rg-table th, .rg-table td { padding: 11px 12px; text-align: right; border-bottom: 1px solid var(--line); font-size: 12px; }
-.rg-table th { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
-.rg-table th:first-child, .rg-table td:first-child { text-align: left; }
-.rg-table tr.is-pick td { background: var(--ivory-2); font-weight: 500; }
-.rg-table tr.is-pick td:first-child { box-shadow: inset 2px 0 0 var(--berry); }
-.rg-cap { font-size: 12px; color: var(--muted); font-weight: 300; line-height: 1.65; margin-top: 14px; }
-
-@media (max-width: 900px) {
-  .rg-split { grid-template-columns: 1fr; }
-  .rg-metrics { grid-template-columns: repeat(2,1fr); }
-  .rg-card { padding: 22px 20px; }
-  .rg-score { font-size: 54px; }
-}
-
-/* ══════════════════════════════════════════════════════════════════
    FIT ANALYSER — garment vs body geometry
    ══════════════════════════════════════════════════════════════════ */
 .fa-wrap { width: 100%; max-width: 1040px; margin: 0 auto; padding-bottom: 28px; }
@@ -868,7 +763,7 @@ body.landing-active .app { display: none !important; }
 .fa-dev-v.is-out { color: var(--berry); }
 .fa-scale { display: flex; justify-content: space-between; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; padding-left: 106px; padding-right: 88px; }
 
-/* Handoff to the returns model */
+/* Provenance note under the evidence panel */
 .fa-handoff { margin-top: 26px; padding: 16px 20px; background: var(--ivory-2); border-left: 2px solid var(--gold); font-size: 13px; line-height: 1.7; color: var(--ink-2); font-weight: 300; }
 .fa-handoff b { font-weight: 500; color: var(--ink); }
 .fa-handoff code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--berry); }
@@ -898,7 +793,6 @@ body.landing-active .app { display: none !important; }
   .fa-scale { padding-left: 84px; padding-right: 72px; }
 }
 
-
 /* ── Fit readout, inside the pinned action bar ─────────────────────── */
 .fr-card {
   margin-top: 12px; padding: 14px 15px;
@@ -922,14 +816,12 @@ body.landing-active .app { display: none !important; }
 .fr-row b { font-weight: 500; color: var(--ink); }
 .fr-foot { margin-top: 9px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
 .fr-card.is-wait .fr-score b, .fr-card.is-wait .fr-verdict { color: var(--muted); }
-.fr-card #frSend:disabled, .fr-card #frWhy:disabled { opacity: .45; cursor: not-allowed; }
-
+.fr-card #frWhy:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ══════════════════════════════════════════════════════════════════
-   FIT REPORT — the answer-first surface shared by Fit Analyser and
-   Returns Guard.
+   FIT REPORT — the answer-first surface of the Fit Analyser.
 
-   Both screens used to open on a form. They now open on a finding: a
+   It used to open on a form. It now opens on a finding: a
    verdict, then the three places a garment is actually felt — chest,
    shoulder, neck — each with the one sentence that explains it. Every
    number that produced the finding still exists; it lives inside
@@ -985,34 +877,9 @@ body.landing-active .app { display: none !important; }
 .fx-row-line { font-size: 12.5px; line-height: 1.6; color: var(--ink-2); font-weight: 300; }
 
 /* ── Findings: plain sentences, not reason codes ── */
-.fx-finds { display: grid; gap: 12px; }
-.fx-find { display: grid; grid-template-columns: 17px 1fr; gap: 12px; align-items: start; }
-.fx-find-t { font-size: 13.5px; line-height: 1.65; color: var(--ink-2); font-weight: 300; }
-.fx-find-t b { font-weight: 500; color: var(--ink); }
-
-/* ── Answer blocks in the returns report ── */
-.fx-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
-            border: 1px solid var(--line); margin-top: 4px; }
-.fx-fact { background: var(--white); padding: 18px 18px 20px; }
-.fx-fact-l { font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
-.fx-fact-v { font-size: 16px; font-weight: 500; color: var(--ink); margin-top: 9px; line-height: 1.35; }
-.fx-fact-n { font-size: 12px; line-height: 1.6; color: var(--ink-2); font-weight: 300; margin-top: 7px; }
-
-/* ── Case header ── */
-.fx-case { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
-.fx-case-id { font-family: ui-monospace, Menlo, monospace; font-size: 13px; letter-spacing: .06em; color: var(--berry); }
-.fx-case-name { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 32px; line-height: 1.1; color: var(--ink); margin-top: 7px; }
-.fx-case-meta { font-size: 12.5px; color: var(--muted); font-weight: 300; margin-top: 9px; line-height: 1.6; }
-.fx-decision { padding: 10px 18px; font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
-               border-radius: var(--r); white-space: nowrap; }
-.fx-decision.is-review  { background: var(--berry); color: var(--white); }
-.fx-decision.is-approve { background: transparent; color: var(--ok); border: 1px solid rgba(30,122,82,0.45); }
 
 /* ── Said / found contrast ── */
-.fx-quote { margin-top: 4px; padding: 16px 20px; border-left: 2px solid var(--line-2);
-            background: var(--ivory-2); font-size: 14px; line-height: 1.65; color: var(--ink); font-weight: 300; }
-.fx-quote span { display: block; font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase;
-                 color: var(--muted); margin-bottom: 7px; }
+
 .fx-answer { margin-top: 22px; padding: 18px 20px; border-left: 2px solid var(--gold);
              background: var(--gold-tint); font-size: 14px; line-height: 1.75; color: var(--ink-2); font-weight: 300; }
 .fx-answer b { font-weight: 500; color: var(--ink); }
@@ -1029,19 +896,7 @@ body.landing-active .app { display: none !important; }
 .fx-tech-body > * + * { margin-top: 20px; }
 
 /* ── Sidebar: lookup + session card ── */
-.fx-lookup { display: flex; gap: 7px; }
-.fx-lookup input {
-  flex: 1; min-width: 0; padding: 10px 11px; font-family: ui-monospace, Menlo, monospace;
-  font-size: 12.5px; letter-spacing: .05em; color: var(--ink); background: var(--white);
-  border: 1px solid var(--line-2); border-radius: var(--r); text-transform: uppercase;
-}
-.fx-lookup input:focus { outline: none; border-color: var(--berry); }
-.fx-lookup button {
-  padding: 10px 15px; font-family: 'Jost', sans-serif; font-size: 11px; letter-spacing: .12em;
-  text-transform: uppercase; background: var(--ink); color: var(--ivory);
-  border: 1px solid var(--ink); border-radius: var(--r); cursor: pointer;
-}
-.fx-lookup button:hover { background: var(--berry); border-color: var(--berry); color: var(--white); }
+
 .fx-hint { font-size: 11px; line-height: 1.6; color: var(--muted); font-weight: 300; margin-top: 10px; }
 .fx-list { display: grid; gap: 6px; }
 .fx-item {
@@ -1054,15 +909,13 @@ body.landing-active .app { display: none !important; }
 .fx-item-id { font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: .05em; color: var(--berry); }
 .fx-item-t { font-size: 12.5px; margin-top: 4px; }
 .fx-item-s { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
-.fx-empty { font-size: 13px; line-height: 1.7; color: var(--muted); font-weight: 300; }
 
 @media (max-width: 900px) {
-  .fx-areas, .fx-facts { grid-template-columns: 1fr; }
+  .fx-areas { grid-template-columns: 1fr; }
   .fx-card { padding: 22px 20px; }
   .fx-verdict { font-size: 34px; }
   .fx-row { grid-template-columns: 78px 96px 1fr; gap: 10px; }
 }
-
 
 /* ══════════════════════════════════════════════════════════════════
    RESPONSIVE

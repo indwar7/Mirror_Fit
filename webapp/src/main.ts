@@ -8,7 +8,7 @@ import { releaseInFlightIfRunning, startLiveCamera, toggleLiveSwap } from './liv
 import { lpRecalibrate, setLpFollowHead, setLpSourceFile, startLpCamera, toggleLp } from './liveportrait';
 import {
   clearFabric, clearGarmentBack, initTryOn, pauseForHiddenTab, renderOutfitScore, resumeIfRunning,
-  selectGarmentType, sendTryOnToReturns, setFabric, setGarment, setGarmentBack, startTryOnCamera, toggleTryOn,
+  selectGarmentType, setFabric, setGarment, setGarmentBack, startTryOnCamera, toggleTryOn,
 } from './tryon';
 import { avCreate, avSetCategory, avSetGender, avSetPhoto, avTryon } from './my-avatar';
 import { twinGenerate, twinPreviewAudio, twinPreviewImg, twinToggleRecord } from './ai-twin';
@@ -17,10 +17,9 @@ import { populateArGrid, selectArAvatar } from './ar-presets';
 // three.js + MediaPipe are only needed by the hidden AR tab: fetched on first use.
 const loadAr = () => import('./ar-avatar');
 import { installCredits, mfBuy, mfResetCredits } from './credits';
-import { initReturnsGuard, rgFind } from './returns-guard';
-import { faExplainLive, faSendToReturns, initFitAnalyser } from './fit-analyser';
+import { faExplainLive, initFitAnalyser } from './fit-analyser';
 import { installBuildStamp } from './build-stamp';
-import { frExplain, frSendToReturns, installFitReadout } from './fit-readout';
+import { frExplain, installFitReadout } from './fit-readout';
 
 // index.html keeps the demo's inline onclick/onchange handlers unchanged, so
 // every name they use is published here. This is the one place the markup and
@@ -31,14 +30,14 @@ const handlers = {
   startLiveCamera, toggleLiveSwap,
   startLpCamera, setLpSourceFile, setLpFollowHead, lpRecalibrate, toggleLp,
   startTryOnCamera, setGarment, setFabric, clearFabric, setGarmentBack, clearGarmentBack,
-  selectGarmentType, renderOutfitScore, toggleTryOn, sendTryOnToReturns,
-  frExplain, frSendToReturns,
+  selectGarmentType, renderOutfitScore, toggleTryOn,
+  frExplain,
   startArCamera: () => loadAr().then((ar) => ar.startArCamera()),
   toggleArAvatar: () => loadAr().then((ar) => ar.toggleArAvatar()),
   _selectArAvatar: selectArAvatar,
   avSetPhoto, avSetGender, avSetCategory, avTryon, avCreate,
   twinPreviewImg, twinPreviewAudio, twinToggleRecord, twinGenerate,
-  faExplainLive, faSendToReturns, rgFind,
+  faExplainLive,
   mfBuy, mfResetCredits,
 };
 Object.assign(window, handlers);
@@ -64,7 +63,6 @@ document.addEventListener('visibilitychange', () => {
 });
 
 installCredits();
-initReturnsGuard();
 initFitAnalyser();
 installBuildStamp();
 installFitReadout();

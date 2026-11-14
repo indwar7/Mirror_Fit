@@ -3,10 +3,8 @@ import { TRYON_WS } from './config';
 import { MIRROR, attachStream, cameraErrorText, cameraUnavailableReason, drawCam } from './camera';
 import { byId, maybe } from './dom';
 import { OutfitScore } from './outfit-score';
-import { FitReport, type FitCall } from './fit-report-types';
 import { readBody, readSize } from './measurements';
-import { setDot, setStatus, switchTab } from './ui';
-import { rgOpenFromFit } from './returns-guard';
+import { setDot, setStatus } from './ui';
 
 let toStream: MediaStream | null = null;
 let toWs: WebSocket | null = null;
@@ -81,7 +79,6 @@ export function selectGarmentType(type: string, btn: HTMLElement): void {
 // Flip this back to false to bring the panel straight back.
 const OS_PANEL_HIDDEN = true;
 
-let osLastFit: FitCall | null = null;
 
 export function renderOutfitScore(): void {
   const panel = maybe('osPanel');
@@ -133,22 +130,6 @@ export function renderOutfitScore(): void {
 
   byId('osNotes').textContent = result.notes.join(' ');
 
-  // The handoff only exists when there is a measured fit behind it.
-  osLastFit = result.fit;
-  byId('osToReturns').style.display = result.fit ? 'block' : 'none';
-}
-
-/// Live try-on → Returns Guard, the same join Fit Analyser uses.
-export function sendTryOnToReturns(): void {
-  if (!osLastFit) return;
-  const reading = FitReport.fromMeasurements({
-    garmentType: toGarmentType || 'tshirt',
-    size: readSize(),
-    body: readBody(),
-  });
-  if (!reading) return;
-  rgOpenFromFit(reading, { garment: 'Live try-on garment' });
-  switchTab('returns');
 }
 
 // ── Fabric / back view ───────────────────────────────────────────────────

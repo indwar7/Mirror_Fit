@@ -13,7 +13,6 @@ import { FitReport, type FitReading, type CaseFile } from './fit-report-types';
 import { whenOutfitScoreReady } from './outfit-score';
 import { areaCard, secondaryRow } from './fit-cards';
 import { fitSession } from './fit-session';
-import { rgOpenFromFit } from './returns-guard';
 import { switchTab } from './ui';
 
 interface RealModel {
@@ -74,7 +73,6 @@ function show(r: FitReading | null, ctx: Context): void {
   $('faRows').innerHTML = r.secondary.map(secondaryRow).join('');
   $('faAnswer').innerHTML = advice(r);
 
-  $('faSend').style.display = 'block';
   $('faTech').style.display = 'block';
   paintTech(r, ctx);
 
@@ -83,8 +81,8 @@ function show(r: FitReading | null, ctx: Context): void {
     : 'Reconstructed from the session score';
 }
 
-/* Evidence panel: the per-point deviations, the payload the returns desk
-   receives, and the honest read on how good this family of models is. */
+/* Evidence panel: the per-point deviations, the payload a downstream
+   system would receive, and the honest read on how good this family of models is. */
 function paintTech(r: FitReading, ctx: Context): void {
   $('faDevs').innerHTML = r.rows.map((row) => {
     const pct = Math.min(100, Math.abs(row.dev) / 0.20 * 50);
@@ -167,13 +165,6 @@ function explainCase(c: CaseFile, btn: Element | null): void {
   document.querySelectorAll('#faGarments .fx-item').forEach((b) => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   show(FitReport.readingForCase(c), { label: c.garment + ' · size ' + c.size, garment: c.garment });
-}
-
-/* Carry the measured mismatch to the returns desk. */
-export function faSendToReturns(): void {
-  if (!reading || !context) return;
-  rgOpenFromFit(reading, context);
-  switchTab('returns');
 }
 
 function boot(): void {

@@ -34,7 +34,7 @@ VITE_BACKEND_HOST=52.66.250.134
 | `src/liveswap.ts`, `src/liveportrait.ts`, `src/tryon.ts`, `src/my-avatar.ts`, `src/ai-twin.ts` | The server-backed features. |
 | `src/ar-avatar.ts` | Browser-only face filter (MediaPipe + three.js). |
 | `src/outfit-score.ts`, `src/fit-report.ts` | The fit models, ported from `demo/outfit-score.js` and `demo/fit-report.js`. |
-| `src/fit-analyser.ts`, `src/returns-guard.ts`, `src/fit-readout.ts` | The three screens that share a fit reading. |
+| `src/fit-analyser.ts`, `src/fit-readout.ts` | The two screens that share a fit reading. |
 | `src/credits.ts`, `src/build-stamp.ts` | Demo credit meter; console build stamp and scroll audit. |
 | `public/*.json` | The model files, served next to the page as before. |
 

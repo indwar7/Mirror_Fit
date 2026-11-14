@@ -7,8 +7,8 @@
    score is a DEMO score, held in the 8-9 band — seeded from the garment and
    size, so the same garment always scores the same and the Fit Analyser can
    explain a number that will still be there when the shopper switches tabs.
-   It publishes fitSession.frReading, the same per-area reading the Fit
-   Analyser and Returns Guard read.
+   It publishes fitSession.frReading, the per-area reading the Fit Analyser
+   explains.
 
    Fill in chest and shoulder and this card silently becomes real.
    ────────────────────────────────────────────────────────────────── */
@@ -18,7 +18,6 @@ import { fitSession } from './fit-session';
 import { readBody, readSize } from './measurements';
 import { getGarmentName, getGarmentType, onTryOnSession } from './tryon';
 import { faExplainLive, faNoteLiveSession } from './fit-analyser';
-import { rgOpenFromFit } from './returns-guard';
 import { onTabSwitch, switchTab } from './ui';
 
 const REVEAL_MS = 10000;
@@ -74,7 +73,6 @@ function reveal(): void {
   $('frFoot')!.textContent = r.source === 'measured'
     ? 'Measured against the size chart'
     : 'Demo score · not a measurement';
-  const b = $<HTMLButtonElement>('frSend'); if (b) b.disabled = false;
   const w = $<HTMLButtonElement>('frWhy'); if (w) w.disabled = false;
   publish(r);
   timer = null;
@@ -91,7 +89,6 @@ function start(): void {
   $('frRows')!.innerHTML = '';
   $('frBar')!.style.width = '0%';
   $('frFoot')!.textContent = 'Analysing';
-  const b = $<HTMLButtonElement>('frSend'); if (b) b.disabled = true;
   const w = $<HTMLButtonElement>('frWhy'); if (w) w.disabled = true;
   timer = window.setTimeout(reveal, REVEAL_MS);
 }
@@ -101,7 +98,6 @@ function stop(): void {
   timer = null;
   const card = $('frCard');
   if (card) card.classList.remove('is-in', 'is-wait');
-  const b = $<HTMLButtonElement>('frSend'); if (b) b.disabled = true;
   const w = $<HTMLButtonElement>('frWhy'); if (w) w.disabled = true;
 }
 
@@ -110,13 +106,6 @@ export function frExplain(): void {
   if (!fitSession.frReading) return;
   switchTab('fit');
   faExplainLive();
-}
-
-/* Hand the same reading to Returns Guard and follow it there. */
-export function frSendToReturns(): void {
-  const r = build();
-  rgOpenFromFit(r, { garment: garmentName() });
-  switchTab('returns');
 }
 
 export function installFitReadout(): void {
