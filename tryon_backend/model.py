@@ -2350,6 +2350,17 @@ class TryOnModel:
                     **ip_kw,
                 ).images[0]
 
+            # ── Crisp edge for everything the viewer sees ─────────────────
+            # torso_mask keeps its 19 px feather because the sampler needs a
+            # soft boundary to denoise into. Compositing through that same
+            # feather left a wide half-transparent band around the garment
+            # ("edges clear cut nahi hain"). Pull the transition back to
+            # ~4 px around the 0.5 contour; the EMA upstream keeps that
+            # contour steady, so the edge is sharp AND still.
+            edge_mask = np.clip((torso_mask - 0.40) / 0.20, 0.0, 1.0)
+            edge_mask = edge_mask * edge_mask * (3.0 - 2.0 * edge_mask)   # smoothstep
+            edge_mask = cv2.GaussianBlur(edge_mask, (3, 3), 0)
+
             # ── Fabric overlay (post-SD) ─────────────────────────────────
             # Multiply blend: take the fabric's own RGB pixels and modulate
             # them by the SD result's local luminance (body folds /
@@ -2402,21 +2413,24 @@ class TryOnModel:
                     # down to clavicle (~80 px). A linear ramp 0->1 lets
                     # the fabric fade in at the clavicle so there's no
                     # hard edge.
-                    fabric_mask = torso_mask.copy()
+                    fabric_mask = edge_mask.copy()
                     H_im = fabric_mask.shape[0]
                     band_top = max(0, int(face_cutoff_y))
                     # Back-facing: the cutoff already IS the shoulder line
                     # (no chin/neck above it to clear), so the fabric only
-                    # needs a short fade-in there, not the chin->collarbone
-                    # gap that would push it well below the shoulders.
+                    # needs a short gap there, not the chin->collarbone gap
+                    # that would push it well below the shoulders.
                     neck_gap = 20 if self._back_facing else getattr(self, "_neck_gap_px", 80)
                     band_bot = min(H_im, band_top + neck_gap)
-                    if band_bot > band_top:
-                        ramp = np.linspace(0, 1, band_bot - band_top,
-                                           dtype=np.float32)
-                        fabric_mask[band_top:band_bot] = \
-                            fabric_mask[band_top:band_bot] * ramp[:, None]
-                        fabric_mask[:band_top] = 0
+                    # The fabric used to ramp in over the whole neck gap, so
+                    # the collar area sat half-covered and translucent. Now
+                    # it is absent above the collar line and starts there
+                    # with a 10 px edge.
+                    ramp_top = max(band_top, band_bot - 10)
+                    fabric_mask[:ramp_top] = 0
+                    if band_bot > ramp_top:
+                        ramp = np.linspace(0, 1, band_bot - ramp_top, dtype=np.float32)
+                        fabric_mask[ramp_top:band_bot] *= ramp[:, None]
                     m = fabric_mask[:, :, np.newaxis]
                     mixed = (0.80 * out_rgb + 0.20 * r_arr.astype(np.float32)) * m \
                             + r_arr.astype(np.float32) * (1.0 - m)
@@ -2443,7 +2457,7 @@ class TryOnModel:
             # the face region. Old order (zero, then blur 7x7) was
             # smearing the chin row by 7 px and making the collar look
             # half-transparent.
-            blend_mask = cv2.GaussianBlur(torso_mask, (3, 3), 0)
+            blend_mask = edge_mask.copy()
             # Soft fade above the cutoff instead of a hard 0.0 cut.
             # The hard cut produced a visible horizontal line on the
             # chin (user: "face p chin ko ek line cut kr rhi hai").
