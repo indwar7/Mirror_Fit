@@ -242,6 +242,9 @@ class TryOnModel:
         self._prev_face_cut    = None      # held face box for the chin row + collar
         self._neck_gap_px = 80   # fallback until a face is detected
         self._prev_torso_mask  = None      # EMA-smoothed final torso_mask (kills jitter)
+        self._prev_frame_small = None      # 64x64 grey of the last processed frame
+        self._motion           = 1.0       # 0 = wearer still, 1 = moving (see _measure_motion)
+        self._prev_shade       = None      # EMA-smoothed fabric shading map
         self._fixed_mask_cache = None
         # Live geometric tier: last face-anchored torso box, and how many
         # consecutive frames we've gone without a face. Held so the shirt
@@ -911,6 +914,9 @@ class TryOnModel:
         self._prev_face_bbox   = None
         self._prev_face_cut    = None
         self._prev_torso_mask  = None
+        self._prev_frame_small = None
+        self._motion           = 1.0
+        self._prev_shade       = None
         self._live_last_face_box   = None
         self._live_face_miss_count = 0
         self._live_prev_box        = None
@@ -1109,6 +1115,28 @@ class TryOnModel:
 
         # ── Geometric warp fallback — no model required ───────────────────────
         return self._infer_live_geometric(person_image, force_back=back_facing)
+
+    # ── Temporal stability ───────────────────────────────────────────────────
+    # How much did the camera frame change since the last processed one?
+    # 0.0 = wearer holding still (sensor noise only), 1.0 = clearly moving.
+    # Every EMA on the live path reads it through _prev_weight(), so a still
+    # wearer gets a near-frozen garment and a moving one gets a responsive
+    # mask instead of a ghost trail. A fixed EMA weight could only ever be
+    # one of those: 0.45 prev shook when still and smeared when moving.
+    # One number per frame from a 64x64 grey thumbnail, so it costs nothing.
+    def _measure_motion(self, frame_rgb: np.ndarray) -> float:
+        small = cv2.resize(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY), (64, 64),
+                           interpolation=cv2.INTER_AREA).astype(np.float32)
+        prev = self._prev_frame_small
+        self._prev_frame_small = small
+        if prev is None or prev.shape != small.shape:
+            return 1.0
+        diff = float(np.abs(small - prev).mean())
+        # Under ~2 grey levels is webcam noise; 12+ is unmistakable motion.
+        return float(np.clip((diff - 2.0) / 10.0, 0.0, 1.0))
+
+    def _prev_weight(self, still: float, moving: float) -> float:
+        return still + (moving - still) * self._motion
 
     # ── Helpers: hand + skin exclusion ────────────────────────────────────────
 
@@ -1572,6 +1600,10 @@ class TryOnModel:
     def reset_temporal(self):
         self._prev_result      = None
         self._prev_silhouette  = None
+        self._prev_torso_mask  = None
+        self._prev_frame_small = None
+        self._motion           = 1.0
+        self._prev_shade       = None
         self._frame_buffer     = []
         self._video_results    = []
         self._video_result_idx = 0
@@ -2115,7 +2147,12 @@ class TryOnModel:
         # little responsiveness to real movement for a steadier garment.
         if (self._prev_torso_mask is not None
                 and self._prev_torso_mask.shape == torso_mask.shape):
-            torso_mask = (0.55 * torso_mask + 0.45 * self._prev_torso_mask).clip(0, 1)
+            # Motion-aware (see _measure_motion): a wearer holding still
+            # gets a near-frozen mask, real movement drops the prev weight
+            # so the garment follows the body within a couple of frames.
+            prev_w = self._prev_weight(still=0.85, moving=0.30)
+            torso_mask = ((1.0 - prev_w) * torso_mask
+                          + prev_w * self._prev_torso_mask).clip(0, 1)
         self._prev_torso_mask = torso_mask
 
         # NOTE: hand exclusion was tried here (subtracting MediaPipe Hands +
@@ -2206,6 +2243,7 @@ class TryOnModel:
                                     (pw + sq) // 2, (ph + sq) // 2))
         person = person.resize((LIVE_SIZE, LIVE_SIZE), Image.LANCZOS)
         orig_arr = np.array(person)
+        self._motion = self._measure_motion(orig_arr)
 
         ip_kwargs = (
             {"ip_adapter_image_embeds": self._ip_embeds}
@@ -2340,15 +2378,25 @@ class TryOnModel:
                             interpolation=cv2.INTER_LINEAR,
                         ).astype(np.uint8)
                     r_gray = cv2.cvtColor(r_arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
-                    # Normalized around mid-gray (128) so average lighting
-                    # neither darkens nor brightens the fabric's own
-                    # colours - only the local shading VARIATION (shadow
-                    # under the arm, highlight on the chest) does. Clipped
-                    # to a moderate range so deep shadow doesn't crush the
-                    # pattern to black or a blown highlight wash it to
-                    # white.
-                    shade = np.clip(r_gray / 128.0, 0.45, 1.55)[:, :, np.newaxis]
-                    out_rgb = np.clip(f_arr.astype(np.float32) * shade, 0, 255)
+                    # Normalised to the painted shirt's OWN mean brightness
+                    # inside the mask, not a fixed 128. Each SD frame paints
+                    # the shirt a little lighter or darker than the last,
+                    # and dividing by a constant carried that straight into
+                    # the fabric as a brightness pulse ("cloth fades"). Now
+                    # only the local shading VARIATION (shadow under the
+                    # arm, highlight on the chest) survives. Clipped so deep
+                    # shadow doesn't crush the pattern to black or a blown
+                    # highlight wash it to white.
+                    inside = torso_mask > 0.5
+                    ref = max(float(r_gray[inside].mean()), 40.0) if inside.any() else 128.0
+                    shade = np.clip(r_gray / ref, 0.45, 1.55)
+                    # And held over time, heavily while the wearer is still,
+                    # so the folds stop re-drawing themselves every frame.
+                    if self._prev_shade is not None and self._prev_shade.shape == shade.shape:
+                        pw = self._prev_weight(still=0.80, moving=0.20)
+                        shade = (1.0 - pw) * shade + pw * self._prev_shade
+                    self._prev_shade = shade
+                    out_rgb = np.clip(f_arr.astype(np.float32) * shade[:, :, np.newaxis], 0, 255)
                     # Fabric mask = torso_mask with the neck strip zeroed
                     # out. The 'neck band' is the region from face_cutoff_y
                     # down to clavicle (~80 px). A linear ramp 0->1 lets
@@ -2453,14 +2501,15 @@ class TryOnModel:
             # go. Body movement still shows because the silhouette mask
             # itself is updating per frame from MediaPipe.
             if self._prev_result is not None and self._prev_result.shape == composed.shape:
-                # 0.7 (was 0.45) — new frame now dominates. The heavier
-                # 55% prev term was smearing a visible ghost/double-edge at
-                # the garment boundary whenever the body moved between
-                # frames. Still keeps some damping against flicker.
-                alpha_new = 0.7
+                # Motion-aware. A fixed weight could not satisfy both
+                # cases: 0.55 prev smeared a ghost/double-edge whenever
+                # the body moved, 0.30 prev let the shirt twitch while the
+                # wearer stood still. Still -> 0.75 prev (rock steady),
+                # moving -> 0.20 prev (no trail).
+                prev_w = self._prev_weight(still=0.75, moving=0.20)
                 ema = (
-                    composed.astype(np.float32) * alpha_new
-                    + self._prev_result.astype(np.float32) * (1.0 - alpha_new)
+                    composed.astype(np.float32) * (1.0 - prev_w)
+                    + self._prev_result.astype(np.float32) * prev_w
                 ).astype(np.uint8)
                 stable_region = (a > 0.05)
                 composed = np.where(stable_region, ema, composed)
