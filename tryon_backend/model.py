@@ -2164,66 +2164,83 @@ class TryOnModel:
         # as "definite background", and the face area as "definite
         # foreground" — then finds the real body silhouette. Downscale
         # to 256x256 for speed (iterCount=1 ≈ 30 ms at that size).
-        try:
-            small_size = 256
-            small_rgb  = cv2.resize(frame_rgb, (small_size, small_size))
-            small_poly = cv2.resize(safety, (small_size, small_size))
-            gc_mask = np.full((small_size, small_size),
-                              cv2.GC_PR_BGD, dtype=np.uint8)
-            gc_mask[small_poly > 0.30] = cv2.GC_PR_FGD
-            # Definite background: 25 px at each corner.
-            bc = 25
-            gc_mask[:bc, :bc]  = cv2.GC_BGD
-            gc_mask[:bc, -bc:] = cv2.GC_BGD
-            gc_mask[-bc:, :bc] = cv2.GC_BGD
-            gc_mask[-bc:, -bc:] = cv2.GC_BGD
-            # Definite foreground: face bbox + a chest band BELOW the
-            # face. The chest band guarantees GrabCut keeps the neck/
-            # upper chest as foreground — without it the neck-skin region
-            # sometimes got classified as background and the painted
-            # garment dropped to mid-chest with a visible gap above.
-            if len(safety_faces) > 0:
-                s = small_size / float(h)
-                sfx = int(fx2 * s); sfy = int(fy2 * s)
-                sfw = int(fw2 * s); sfh = int(fh2 * s)
-                gc_mask[sfy:sfy+sfh, sfx:sfx+sfw] = cv2.GC_FGD
-                # Chest stripe: half-face-width wide, from chin down 1.5x
-                # face height. Definite foreground hint.
-                cx_s = sfx + sfw // 2
-                stripe_l = max(0, cx_s - sfw // 2)
-                stripe_r = min(small_size, cx_s + sfw // 2)
-                stripe_t = sfy + sfh
-                stripe_b = min(small_size, stripe_t + int(sfh * 1.5))
-                gc_mask[stripe_t:stripe_b, stripe_l:stripe_r] = cv2.GC_FGD
-            bgd_model = np.zeros((1, 65), np.float64)
-            fgd_model = np.zeros((1, 65), np.float64)
-            cv2.grabCut(small_rgb, gc_mask, None, bgd_model, fgd_model,
-                        iterCount=2, mode=cv2.GC_INIT_WITH_MASK)
-            body = np.where(
-                (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
-                1.0, 0.0
-            ).astype(np.float32)
-            body = cv2.resize(body, (w, h), interpolation=cv2.INTER_LINEAR)
-            # Tight body silhouette: 3x3 dilation (was 9x9) so the
-            # painted garment hugs the body edge without extending into
-            # background. 9x9 was over-dilating and leaving a soft halo
-            # past the body — user: "stick to body no extra square".
-            body = cv2.dilate(
-                body,
-                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
-                iterations=1,
-            )
-            body = cv2.GaussianBlur(body, (7, 7), 0).clip(0, 1)
-            # Temporal EMA on the body mask — body doesn't change shape
-            # per frame, so blending the previous body mask kills the
-            # 1-2 px GrabCut wobble that otherwise jiggles the garment.
+        if self._back_facing:
+            # From the back there is no face to seed GrabCut with, and its
+            # no-face fallback rectangle starts at 0.32 H, below the
+            # shoulders, so it classified the upper back as background and
+            # the garment came out with the shoulders and part of the back
+            # missing. The segmentation silhouette is already body-tight
+            # from behind: undo its sampler margin and use it as the body.
+            core = (silhouette > 0.5).astype(np.float32)
+            core = cv2.erode(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=3)
+            core = cv2.GaussianBlur(core, (7, 7), 0).clip(0, 1)
             if (getattr(self, "_prev_body_mask", None) is not None
-                    and self._prev_body_mask.shape == body.shape):
-                body = (0.6 * body + 0.4 * self._prev_body_mask).clip(0, 1)
-            self._prev_body_mask = body
-            torso_mask = torso_mask * body
-        except Exception as e:
-            log.debug(f"grabcut body extraction skipped: {e}")
+                    and self._prev_body_mask.shape == core.shape):
+                pw = self._prev_weight(still=0.80, moving=0.30)
+                core = ((1.0 - pw) * core + pw * self._prev_body_mask).clip(0, 1)
+            self._prev_body_mask = core
+            torso_mask = torso_mask * core
+        else:
+            try:
+                small_size = 256
+                small_rgb  = cv2.resize(frame_rgb, (small_size, small_size))
+                small_poly = cv2.resize(safety, (small_size, small_size))
+                gc_mask = np.full((small_size, small_size),
+                                  cv2.GC_PR_BGD, dtype=np.uint8)
+                gc_mask[small_poly > 0.30] = cv2.GC_PR_FGD
+                # Definite background: 25 px at each corner.
+                bc = 25
+                gc_mask[:bc, :bc]  = cv2.GC_BGD
+                gc_mask[:bc, -bc:] = cv2.GC_BGD
+                gc_mask[-bc:, :bc] = cv2.GC_BGD
+                gc_mask[-bc:, -bc:] = cv2.GC_BGD
+                # Definite foreground: face bbox + a chest band BELOW the
+                # face. The chest band guarantees GrabCut keeps the neck/
+                # upper chest as foreground — without it the neck-skin region
+                # sometimes got classified as background and the painted
+                # garment dropped to mid-chest with a visible gap above.
+                if len(safety_faces) > 0:
+                    s = small_size / float(h)
+                    sfx = int(fx2 * s); sfy = int(fy2 * s)
+                    sfw = int(fw2 * s); sfh = int(fh2 * s)
+                    gc_mask[sfy:sfy+sfh, sfx:sfx+sfw] = cv2.GC_FGD
+                    # Chest stripe: half-face-width wide, from chin down 1.5x
+                    # face height. Definite foreground hint.
+                    cx_s = sfx + sfw // 2
+                    stripe_l = max(0, cx_s - sfw // 2)
+                    stripe_r = min(small_size, cx_s + sfw // 2)
+                    stripe_t = sfy + sfh
+                    stripe_b = min(small_size, stripe_t + int(sfh * 1.5))
+                    gc_mask[stripe_t:stripe_b, stripe_l:stripe_r] = cv2.GC_FGD
+                bgd_model = np.zeros((1, 65), np.float64)
+                fgd_model = np.zeros((1, 65), np.float64)
+                cv2.grabCut(small_rgb, gc_mask, None, bgd_model, fgd_model,
+                            iterCount=2, mode=cv2.GC_INIT_WITH_MASK)
+                body = np.where(
+                    (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD),
+                    1.0, 0.0
+                ).astype(np.float32)
+                body = cv2.resize(body, (w, h), interpolation=cv2.INTER_LINEAR)
+                # Tight body silhouette: 3x3 dilation (was 9x9) so the
+                # painted garment hugs the body edge without extending into
+                # background. 9x9 was over-dilating and leaving a soft halo
+                # past the body — user: "stick to body no extra square".
+                body = cv2.dilate(
+                    body,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+                    iterations=1,
+                )
+                body = cv2.GaussianBlur(body, (7, 7), 0).clip(0, 1)
+                # Temporal EMA on the body mask — body doesn't change shape
+                # per frame, so blending the previous body mask kills the
+                # 1-2 px GrabCut wobble that otherwise jiggles the garment.
+                if (getattr(self, "_prev_body_mask", None) is not None
+                        and self._prev_body_mask.shape == body.shape):
+                    body = (0.6 * body + 0.4 * self._prev_body_mask).clip(0, 1)
+                self._prev_body_mask = body
+                torso_mask = torso_mask * body
+            except Exception as e:
+                log.debug(f"grabcut body extraction skipped: {e}")
 
         # Feather so SD has a smooth boundary to denoise into. 19px (was
         # 11) - the neck/collar and sleeve/arm boundaries read as a hard
