@@ -245,6 +245,7 @@ class TryOnModel:
         self._prev_frame_small = None      # 64x64 grey of the last processed frame
         self._motion           = 1.0       # 0 = wearer still, 1 = moving (see _measure_motion)
         self._prev_shade       = None      # EMA-smoothed fabric shading map
+        self._prev_fab_box     = None      # EMA-smoothed garment box the fabric is mapped onto
         self._fixed_mask_cache = None
         # Live geometric tier: last face-anchored torso box, and how many
         # consecutive frames we've gone without a face. Held so the shirt
@@ -917,6 +918,7 @@ class TryOnModel:
         self._prev_frame_small = None
         self._motion           = 1.0
         self._prev_shade       = None
+        self._prev_fab_box     = None
         self._live_last_face_box   = None
         self._live_face_miss_count = 0
         self._live_prev_box        = None
@@ -1137,6 +1139,58 @@ class TryOnModel:
 
     def _prev_weight(self, still: float, moving: float) -> float:
         return still + (moving - still) * self._motion
+
+    # ── Fabric mapped onto the body ──────────────────────────────────────────
+    # The fabric overlay used to be the swatch resized to the whole frame and
+    # multiplied through the mask: a flat wallpaper at a fixed scale, which
+    # never followed the shoulders, stayed the same size whether the wearer
+    # was near or far, and read as "pasted on" - worst from the back, where
+    # there is no collar or placket from the sampler to sell the shape. The
+    # swatch is now sized to the garment's own box (shoulder span x garment
+    # height from the mask), tapered at collar and hem the way the geometric
+    # tier does, and shaded darker toward both sides so it reads as cloth
+    # wrapped around a torso. The box is EMA'd with the motion estimate so
+    # the pattern is pinned to the body instead of swimming.
+    def _fabric_for_frame(self, fabric: np.ndarray, mask: np.ndarray,
+                          top_row: int, shape) -> np.ndarray:
+        H, W = shape[:2]
+        base = cv2.resize(fabric, (W, H), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        m = mask > 0.5
+        rows = np.where(m.any(axis=1))[0]
+        if rows.size < 8:
+            return base
+        top, bottom = int(max(top_row, rows[0])), int(rows[-1]) + 1
+        if bottom - top < 16:
+            return base
+        # Shoulder span: the widest rows of the garment's upper third.
+        upper = m[top:top + max(8, (bottom - top) // 3)]
+        cols = np.where(upper.any(axis=0))[0]
+        if cols.size < 8:
+            return base
+        box = np.array([top, bottom, int(cols[0]), int(cols[-1]) + 1], np.float32)
+        if self._prev_fab_box is not None:
+            pw = self._prev_weight(still=0.85, moving=0.35)
+            box = pw * self._prev_fab_box + (1.0 - pw) * box
+        self._prev_fab_box = box
+        top, bottom, left, right = [int(round(v)) for v in box]
+        top, bottom = max(0, top), min(H, bottom)
+        left, right = max(0, left), min(W, right)
+        tw, th = right - left, bottom - top
+        if tw < 8 or th < 8:
+            return base
+        tile = cv2.resize(fabric, (tw, th), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        taper_top, taper_bot = max(1, int(tw * 0.10)), max(1, int(tw * 0.06))
+        src = np.float32([[0, 0], [tw, 0], [tw, th], [0, th]])
+        dst = np.float32([[taper_top, 0], [tw - taper_top, 0], [tw - taper_bot, th], [taper_bot, th]])
+        tile = cv2.warpPerspective(tile, cv2.getPerspectiveTransform(src, dst), (tw, th),
+                                   flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        edge_w = max(1, int(tw * 0.07))
+        sh = np.ones((th, tw), np.float32)
+        sh[:, :edge_w]  *= np.linspace(0.55, 1.0, edge_w, dtype=np.float32)
+        sh[:, -edge_w:] *= np.linspace(1.0, 0.55, edge_w, dtype=np.float32)
+        sh *= np.linspace(1.06, 0.94, th, dtype=np.float32)[:, None]
+        base[top:bottom, left:right] = tile * sh[:, :, None]
+        return np.clip(base, 0, 255)
 
     # ── Helpers: hand + skin exclusion ────────────────────────────────────────
 
@@ -1604,6 +1658,7 @@ class TryOnModel:
         self._prev_frame_small = None
         self._motion           = 1.0
         self._prev_shade       = None
+        self._prev_fab_box     = None
         self._frame_buffer     = []
         self._video_results    = []
         self._video_result_idx = 0
@@ -2395,7 +2450,12 @@ class TryOnModel:
             # ("edges clear cut nahi hain"). Pull the transition back to
             # ~4 px around the 0.5 contour; the EMA upstream keeps that
             # contour steady, so the edge is sharp AND still.
-            edge_mask = np.clip((torso_mask - 0.40) / 0.20, 0.0, 1.0)
+            # Centred on 0.72, not 0.5: the silhouette is dilated ~12 px so
+            # the sampler has margin, and the 0.5 contour of the blurred mask
+            # sits on that dilated edge, i.e. on the wall next to the
+            # shoulder. 0.72 pulls the visible edge ~5 px back toward the
+            # body.
+            edge_mask = np.clip((torso_mask - 0.62) / 0.20, 0.0, 1.0)
             edge_mask = edge_mask * edge_mask * (3.0 - 2.0 * edge_mask)   # smoothstep
             edge_mask = cv2.GaussianBlur(edge_mask, (3, 3), 0)
 
@@ -2418,14 +2478,9 @@ class TryOnModel:
             if self._fabric_overlay is not None:
                 try:
                     r_arr = np.array(result).astype(np.uint8)
-                    if self._fabric_overlay.shape == r_arr.shape:
-                        f_arr = self._fabric_overlay.astype(np.uint8)
-                    else:
-                        f_arr = cv2.resize(
-                            self._fabric_overlay,
-                            (r_arr.shape[1], r_arr.shape[0]),
-                            interpolation=cv2.INTER_LINEAR,
-                        ).astype(np.uint8)
+                    f_arr = self._fabric_for_frame(
+                        self._fabric_overlay.astype(np.uint8), edge_mask,
+                        int(face_cutoff_y), r_arr.shape)
                     r_gray = cv2.cvtColor(r_arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
                     # Normalised to the painted shirt's OWN mean brightness
                     # inside the mask, not a fixed 128. Each SD frame paints
