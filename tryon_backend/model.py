@@ -1688,35 +1688,73 @@ class TryOnModel:
     @staticmethod
     def _shoulder_row_from_silhouette(sil: np.ndarray):
         """
-        Find the shoulder line on a person silhouette without a face:
-        start at the top of the mask (hair/head), measure head width a
-        few rows down, then scan downward for the first row where the
-        silhouette widens well past that - the shoulders. Returns
-        (row, (left, right)) or (None, None) if the mask is empty or
-        never widens (e.g. only a head in frame).
+        Find the shoulder line on a person silhouette without a face.
+        Returns (row, (left, right)) or (None, None) if the mask is empty
+        or never widens (e.g. only a head in frame).
 
-        Same idea the geometric tier uses for its back-view box; here it
-        gives the AI tier's mask builder a garment-top row when the
-        wearer is back-facing, instead of holding the last FRONT face's
-        chin row forever (which stops tracking the moment they move).
+        Works on the per-row width profile. The old version measured the
+        head six rows below the top of the mask and took the first row
+        wider than 1.35x that. The top of a round head is only a few
+        pixels wide, so "1.35x wider" was true a dozen rows later, still
+        on the head, and the garment was painted over the wearer's hair
+        from the crown down. Now the head is located by where the profile
+        stops widening (its widest row), the neck by the narrowest row
+        below that, and the shoulders by the first row after the neck
+        that is clearly wider than both. Dilation widens every row by the
+        same amount, so the ratios still hold on the dilated mask.
         """
         H, W = sil.shape[:2]
         b = sil > 0.5
-        ys = np.where(b.any(axis=1))[0]
+        widths = b.sum(axis=1).astype(np.float32)
+        ys = np.where(widths > 0)[0]
         if ys.size == 0:
             return None, None
         top = int(ys[0])
+
+        # Smooth the profile so a hair strand or a dilation artefact does
+        # not pass for a feature.
+        k = 5
+        sm = np.convolve(widths, np.ones(k, dtype=np.float32) / k, mode="same")
 
         def span(y):
             xs = np.where(b[y])[0]
             return (int(xs[0]), int(xs[-1])) if xs.size else None
 
-        hs = span(min(top + 6, H - 1))
-        head_w = (hs[1] - hs[0]) if hs else int(W * 0.08)
-        for y in range(top, min(top + int(H * 0.55), H)):
-            s = span(y)
-            if s and (s[1] - s[0]) > head_w * 1.35:
-                return y, s
+        # Head: scan down until the profile has stopped widening for a
+        # while. That row is the widest part of the head (ears / hair).
+        limit = min(H - 1, top + int(H * 0.45))
+        head_row, head_w = top, sm[top]
+        flat = 0
+        for y in range(top + 1, limit + 1):
+            if sm[y] > head_w:
+                head_row, head_w = y, sm[y]
+                flat = 0
+            else:
+                flat += 1
+                if flat >= 8:
+                    break
+        if head_w <= 0:
+            return None, None
+
+        # Neck: narrowest row in the stretch below the head's widest row.
+        neck_end = min(H - 1, head_row + int(H * 0.30))
+        if neck_end <= head_row:
+            return None, None
+        seg = sm[head_row:neck_end + 1]
+        neck_row = head_row + int(np.argmin(seg))
+        neck_w = sm[neck_row]
+
+        # Shoulders: first row after the neck clearly wider than both the
+        # neck and the head. A real neck dip makes the 1.5x test easy; a
+        # hoodie or long hair hides the dip, and the 1.45x head test
+        # still finds the shoulders a little lower down.
+        has_dip = neck_w < 0.85 * head_w
+        for y in range(neck_row if has_dip else head_row + 1, min(H, top + int(H * 0.65))):
+            wide_vs_neck = (not has_dip) or sm[y] > 1.5 * neck_w
+            if wide_vs_neck and sm[y] > 1.45 * head_w:
+                sp = span(y)
+                if sp is not None:
+                    return y, sp
         return None, None
 
     def _build_body_mask(self, frame_rgb: np.ndarray):
@@ -2463,7 +2501,11 @@ class TryOnModel:
             # chin (user: "face p chin ko ek line cut kr rhi hai").
             # 25-pixel linear ramp blends paint smoothly into face.
             blend_mask[:face_cutoff_y] = 0.0
-            fade_band = int(np.clip(getattr(self, "_neck_gap_px", 80) * 0.33, 12, 90))
+            # Back-facing: the cutoff is the shoulder line, not the chin,
+            # so there is no skin to blend into above it. Keep the top
+            # edge of the garment as crisp as its sides.
+            fade_band = 6 if self._back_facing else \
+                int(np.clip(getattr(self, "_neck_gap_px", 80) * 0.33, 12, 90))
             for i in range(fade_band):
                 y = face_cutoff_y + i
                 if 0 <= y < blend_mask.shape[0]:
